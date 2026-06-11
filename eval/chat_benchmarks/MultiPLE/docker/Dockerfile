@@ -13,7 +13,7 @@ RUN pip install -I --timeout 2000 -r https://raw.githubusercontent.com/bigcode-p
 RUN pip install --no-cache-dir ninja packaging psutil 
 RUN pip install --no-cache-dir -I --timeout 2000 -r https://raw.githubusercontent.com/bigcode-project/bigcodebench/refs/heads/main/Requirements/requirements-eval.txt 
 RUN cd /evalchemy && pip install --no-cache-dir -e . && pip install -e eval/chat_benchmarks/alpaca_eval
-RUN pip install lm-eval[vllm]@git+https://github.com/EtashGuha/lm-evaluation-harness@etashg/tokenize_fix
+RUN pip install lm-eval[vllm]@git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12
 RUN pip install "opencv-python-headless<4.3"
 RUN MAX_JOBS=10 pip install -U flash-attn --no-build-isolation
 

@@ -153,8 +153,14 @@ dependencies = [
     # SWE-bench
     "swebench>=3.0.4",
 
-    # LM Eval
-    "lm-eval[vllm] @ git+https://github.com/EtashGuha/lm-evaluation-harness@etashg/tokenize_fix",
+    # LM Eval -- pinned to the latest stable upstream EleutherAI release (v0.4.12).
+    # Previously a fork (EtashGuha/lm-evaluation-harness@etashg/tokenize_fix); verified
+    # the fork carried no grader/metric patch missing upstream (boxed-answer math grader
+    # lm_eval/tasks/hendrycks_math/utils.py is byte-identical; the fork's sole code delta
+    # -- a one-line EOS-token truncation in models/huggingface.py -- is superseded upstream
+    # by postprocess_generated_text + stop-sequence handling). The removed lm_eval CLI/logging
+    # symbols are reprovided via eval/lm_eval_compat.py.
+    "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
 ]
 
 [project.urls]
