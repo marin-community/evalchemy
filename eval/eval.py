@@ -16,7 +16,17 @@ import torch.distributed as dist
 import yaml
 from lm_eval import evaluator as pretrain_evaluator
 from lm_eval import utils
-from lm_eval.__main__ import parse_eval_args, setup_parser
+
+# Upstream EleutherAI lm-eval (>=0.4.8) refactored the CLI into lm_eval._cli and
+# removed lm_eval.__main__.{setup_parser,parse_eval_args} as well as the
+# module-level lm_eval.utils.eval_logger singleton. We vendor compatible
+# versions in eval.lm_eval_compat to stay decoupled from lm-eval CLI churn.
+from eval.lm_eval_compat import parse_eval_args, setup_parser
+
+if not hasattr(utils, "eval_logger"):
+    from eval.lm_eval_compat import eval_logger as _eval_logger
+
+    utils.eval_logger = _eval_logger
 from lm_eval.api.model import LM
 from lm_eval.loggers import EvaluationTracker, WandbLogger
 from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_commit_hash
