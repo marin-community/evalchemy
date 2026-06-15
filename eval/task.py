@@ -19,9 +19,75 @@ from lm_eval.api.model import LM
 class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None, system_instruction: Optional[str] = None):
+    def __init__(
+        self,
+        logger: Optional[logging.Logger] = None,
+        system_instruction: Optional[str] = None,
+        num_samples: int = 1,
+        pass_at_k: Optional[Union[str, List[int]]] = None,
+    ):
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.system_instruction = system_instruction
+        # Native pass@k controls (Stage 2b). ``num_samples=1`` (the default)
+        # is a strict no-op: every benchmark takes its current single-sample
+        # path and produces byte-identical output. ``pass_at_k`` is only
+        # consulted when ``num_samples > 1``.
+        from eval.passk import parse_pass_at_k
+
+        self.num_samples = int(num_samples) if num_samples else 1
+        self.pass_at_k = parse_pass_at_k(pass_at_k)
+
+    def generate_n_samples(
+        self,
+        model: LM,
+        build_instances: Callable[[int, List[int]], List[Instance]],
+        num_samples: Optional[int] = None,
+    ) -> List[List[str]]:
+        """Generic "N completions per problem" generator (Stage 2b).
+
+        Generalizes the per-(problem, sample) scaffold that AIME24/AMC23 hand-
+        rolled (``for i in range(self.n_repeat): ... compute(...)``) up into the
+        base so any benchmark can request ``num_samples`` completions per problem
+        and grade each with its own grader.
+
+        ``build_instances(sample_idx, seed)`` must return one ``Instance`` per
+        problem (in problem order) for that sample pass; it owns the prompt,
+        decoding params, ``repeat_idx`` and metadata exactly as the subclass
+        does today. This method loops over the samples, calls
+        ``self.compute(...)`` once per sample pass (each problem keeps its full
+        per-pass batch — no n-split), and on rank 0 returns a list (one entry
+        per problem) of lists (one completion per sample).
+
+        Non-primary ranks get ``None`` propagated from ``compute``/all_gather.
+        """
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        base_seed = getattr(self, "seed", [0, 1234, 1234, 1234])
+        all_outputs: List[List[str]] = []
+        for sample_idx in range(n):
+            seed = [s + sample_idx for s in base_seed]
+            instances = build_instances(sample_idx, seed)
+            outputs = self.compute(model, instances)
+            all_outputs.append(outputs)
+        if model.rank != 0:
+            return None
+        # transpose: all_outputs[sample][problem] -> per_problem[problem][sample]
+        return [list(per_problem) for per_problem in zip(*all_outputs)]
+
+    def aggregate_pass_at_k(
+        self,
+        num_correct: List[int],
+        num_samples: Optional[int] = None,
+        ks: Optional[List[int]] = None,
+    ) -> Dict[str, float]:
+        """Aggregate per-problem correct counts into a {pass@k: mean} table.
+
+        Thin wrapper over the shared estimator in ``eval/passk.py`` so there is
+        exactly one definition of the unbiased estimator in the tree.
+        """
+        from eval.passk import aggregate_pass_at_k as _agg
+
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:

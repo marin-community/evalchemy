@@ -141,6 +141,19 @@ def setup_custom_parser():
         action="store_true",
         help="Run evalutaions in debug mode on a few examples",
     )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=1,
+        help="Number of completions to generate per problem. 1 (default) reproduces today's "
+        "single-sample score byte-identically; >1 enables native pass@k for supported benchmarks.",
+    )
+    parser.add_argument(
+        "--pass_at_k",
+        type=str,
+        default="1,8,32,128",
+        help="Comma-separated k-list for pass@k aggregation (only consulted when --num_samples > 1).",
+    )
     return parser
 
 
@@ -385,6 +398,8 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         seed=args.seed,
         task_list=task_list,
         system_instruction=args.system_instruction,
+        num_samples=getattr(args, "num_samples", 1),
+        pass_at_k=getattr(args, "pass_at_k", None),
     )
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=args.include_path)
 
