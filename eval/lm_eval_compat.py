@@ -275,3 +275,34 @@ def setup_parser() -> argparse.ArgumentParser:
 def parse_eval_args(parser: argparse.ArgumentParser) -> argparse.Namespace:
     check_argument_types(parser)
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Model-submodule attribute binding (upstream EleutherAI >= 0.4.8 churn).
+#
+# evalchemy chat_benchmarks reference model classes as ATTRIBUTES of the
+# lm_eval.models package, e.g. `lm_eval.models.huggingface.HFLM` and
+# `lm_eval.models.openai_completions.OpenAIChatCompletion`
+# (eval/chat_benchmarks/MATH500/eval_instruct.py:65, and the analogous lines
+# in AIME24/AMC23/etc.). The old EtashGuha fork (~v0.4.7) eagerly imported all
+# model submodules at `import lm_eval.models`, so those attributes were always
+# bound. Upstream v0.4.12 switched lm_eval.models to lazy/registry-based loading
+# and no longer auto-imports the submodules, so `lm_eval.models.huggingface` is
+# NOT bound until something imports it -> `AttributeError: module
+# lm_eval.models has no attribute huggingface` on the first generate call.
+#
+# Importing the submodules here (idempotent) re-binds them as package attributes,
+# exactly as the fork did, with zero change to grading/decoding behavior. Guarded
+# so a future upstream rename of a submodule does not hard-break the shim import.
+# ---------------------------------------------------------------------------
+def _bind_lm_eval_model_submodules() -> None:
+    import importlib
+
+    for _submod in ("huggingface", "openai_completions", "vllm_causallms"):
+        try:
+            importlib.import_module(f"lm_eval.models.{_submod}")
+        except Exception:  # noqa: BLE001 - best-effort attribute binding
+            pass
+
+
+_bind_lm_eval_model_submodules()
