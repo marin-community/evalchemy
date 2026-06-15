@@ -36,6 +36,21 @@ class BaseBenchmark(ABC):
 
         self.num_samples = int(num_samples) if num_samples else 1
         self.pass_at_k = parse_pass_at_k(pass_at_k)
+        # Resume manager (Stage 3a). ``None`` (the default) is a strict no-op:
+        # ``compute`` takes its current generate-everything path and produces
+        # byte-identical output. Wired by the driver (Stage 4) via
+        # ``attach_resume_manager``; until then nothing attaches it.
+        self._resume_manager = None
+
+    def attach_resume_manager(self, manager) -> None:
+        """Attach a ResumeManager so ``compute`` skips already-done problems.
+
+        A ``None`` manager (the default) leaves ``compute`` byte-identical to
+        today (global invariant #1). The driver constructs the manager from the
+        run fingerprint and attaches it here (Stage 4); Stage 3a only wires the
+        consumption side.
+        """
+        self._resume_manager = manager
 
     def generate_n_samples(
         self,
@@ -144,6 +159,20 @@ class BaseBenchmark(ABC):
 
         return messages
 
+    def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
+        """Resume unit key for one instance: ``{task, problem_idx}`` (+``repeat_idx``).
+
+        ``instance.idx`` is the problem index (the 4th positional arg at instance
+        construction). AIME24's ``n_repeat`` loop and the native pass@k scaffold set
+        ``instance.repeat_idx`` per pass, so each (problem, repeat) is its own unit —
+        giving per-seed resume granularity (scope doc, Stage 3a).
+        """
+        key: Dict[str, Any] = {"task": task_name, "problem_idx": int(instance.idx)}
+        repeat_idx = getattr(instance, "repeat_idx", None)
+        if repeat_idx is not None:
+            key["repeat_idx"] = int(repeat_idx)
+        return key
+
     def compute(self, model: LM, inputs: List[Instance], do_slice: bool = True) -> List[str]:
         inputs = self._normalize_model_args(model, inputs)
 
@@ -157,7 +186,7 @@ class BaseBenchmark(ABC):
         else:
             prompts = inputs
 
-        results = model.generate_until(prompts)
+        results = self._generate_with_resume(model, task_name, prompts)
         if model.world_size > 1:
             all_results = [None for _ in range(model.world_size)]
 
@@ -173,6 +202,62 @@ class BaseBenchmark(ABC):
             return merged
         else:
             return results
+
+    def _generate_with_resume(self, model: LM, task_name: str, prompts: List[Instance]) -> List[str]:
+        """Generate over this rank's prompt slice, skipping resume-done units.
+
+        When no manager is attached (the default) this is exactly
+        ``model.generate_until(prompts)`` — byte-identical to today (global
+        invariant #1). With a manager in ``auto``/``force-fresh`` mode and a
+        matching prior run-state, the already-done problems are restored from the
+        per-rank manifest and only the remaining problems are regenerated; each
+        newly generated output is appended to the manifest as it finishes, then
+        restored + new are merged back into ``prompts`` order so grading sees the
+        same list it would have seen uninterrupted.
+
+        Unit granularity is per-(problem, repeat) — a wall timeout loses at most
+        the in-flight problem, not the whole run.
+        """
+        manager = getattr(self, "_resume_manager", None)
+        if manager is None:
+            return model.generate_until(prompts)
+
+        # Ensure the resume decision (fresh / resume / refuse) is made before we
+        # consult done units; ``decide`` is idempotent and is the place a material
+        # fingerprint delta refuses loudly (global invariant #3).
+        manager.decide()
+
+        restored = manager.restore()  # {unit_key: payload} for completed units
+        keys = [self._unit_key(task_name, inst) for inst in prompts]
+
+        remaining_instances: List[Instance] = []
+        remaining_positions: List[int] = []
+        results: List[Optional[str]] = [None] * len(prompts)
+        skipped = 0
+        from eval.resume import canonical_unit_key
+
+        for pos, (inst, unit) in enumerate(zip(prompts, keys)):
+            if manager.should_skip(unit):
+                results[pos] = restored[canonical_unit_key(unit)]["output"]
+                skipped += 1
+            else:
+                remaining_instances.append(inst)
+                remaining_positions.append(pos)
+
+        if skipped:
+            self.logger.info(
+                f"resume[{task_name}] rank={getattr(model, 'rank', 0)}: skipped {skipped} done "
+                f"units, generating {len(remaining_instances)} remaining"
+            )
+
+        if remaining_instances:
+            new_outputs = model.generate_until(remaining_instances)
+            for pos, inst, output in zip(remaining_positions, remaining_instances, new_outputs):
+                results[pos] = output
+                manager.record(self._unit_key(task_name, inst), {"output": output})
+
+        manager.finalize()
+        return results
 
     @abstractmethod
     def generate_responses(self, model: LM) -> Dict[str, Any]:
