@@ -154,6 +154,19 @@ def setup_custom_parser():
         default="1,8,32,128",
         help="Comma-separated k-list for pass@k aggregation (only consulted when --num_samples > 1).",
     )
+    parser.add_argument(
+        "--resume-mode",
+        "--resume_mode",
+        dest="resume_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "force-fresh", "off"],
+        help="Unified resume manager mode. 'auto' (default) auto-detects matching prior "
+        "run-state under --output_path and resumes (or refuses on a material delta); a first "
+        "run with no prior state is a pure no-op (byte-identical to today). 'force-fresh' wipes "
+        "prior state and starts over. 'off' disables the manager entirely (reproduces today "
+        "exactly). Requires --output_path; without it resume is disabled.",
+    )
     return parser
 
 
@@ -450,6 +463,23 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             chat_template=lm.chat_template(args.apply_chat_template),
             fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
+
+    # Stage 4: auto-detect resume wiring. ONE construction site that feeds all
+    # three resume paths (global invariant #5). Builds a per-task ResumeManager
+    # factory from the run inputs and sets `args.resume_manager_factory` (the
+    # lm-eval-native 3b + native pass@k 3c seam) AND attaches a manager to each
+    # chat_benchmark instance (the 3a/3c seam). `--resume-mode off` (or no
+    # `--output_path`) builds nothing and attaches nothing -> byte-identical to
+    # today (invariant #1); `auto` (the default) on a first run with no prior
+    # state is a pure no-op that only writes the inert fingerprint/state dir.
+    try:
+        from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
+
+        _resume_factory = build_resume_wiring(args, lm)
+        attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
+    except Exception as e:
+        utils.eval_logger.warning(f"resume: wiring failed ({e}); running without resume.")
+        args.resume_manager_factory = None
 
     # Initialize logging and environment
     eval_logger = utils.eval_logger
