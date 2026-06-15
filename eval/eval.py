@@ -251,8 +251,20 @@ def evaluate(
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
         try:
+            # Stage 3b: route the lm-eval-native (gsm8k) `simple_evaluate` call through
+            # the unified ResumeManager (supersedes lm-eval `--use_cache`, decision #5).
+            # When no resume-manager factory is attached to `args` (the default — Stage 4
+            # wires it), `resume_simple_evaluate` is a VERBATIM passthrough to upstream
+            # `simple_evaluate(**kwargs)`: the gsm8k path is byte-identical to today and
+            # no `resume/` dir is written (global invariant #1). When a factory is present
+            # it wraps the LM in a resume-aware, sampling-capable cache.
+            from eval.resume.lm_eval_native import resume_simple_evaluate
+
+            _resume_factory = getattr(args, "resume_manager_factory", None)
             for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
-                pretrain_results = pretrain_evaluator.simple_evaluate(
+                pretrain_results = resume_simple_evaluate(
+                    pretrain_evaluator.simple_evaluate,
+                    resume_manager_factory=_resume_factory,
                     model=args.model,
                     model_args=args.model_args,
                     tasks=[pretrain_task],
