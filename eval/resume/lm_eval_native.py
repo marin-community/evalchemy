@@ -139,6 +139,23 @@ def _impl_load_interop_db(self, path: str) -> None:
     """
     if not os.path.exists(path):
         return
+    # Reject a non-SQLite / partially-written file by its header magic BEFORE handing it to
+    # SqliteDict — SqliteDict opens a background writer thread that would raise
+    # `sqlite3.DatabaseError: file is not a database` off-thread (uncatchable here) on garbage.
+    # A valid SQLite file begins with the 16-byte magic "SQLite format 3\000".
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(16)
+    except OSError as exc:  # pragma: no cover - defensive
+        logger.warning("resume[%s]: could not open legacy cache %s (%s); ignoring", self._task_name, path, exc)
+        return
+    if header != b"SQLite format 3\x00":
+        logger.warning(
+            "resume[%s]: legacy cache %s is not a valid SQLite db (bad header); ignoring (read-only interop)",
+            self._task_name,
+            path,
+        )
+        return
     try:
         from sqlitedict import SqliteDict  # lazy: only when a db is actually present
 
@@ -176,7 +193,23 @@ def _impl_interop_lookup(self, req: Any) -> Optional[Any]:
         hsh = hash_args("generate_until", req.args)
     except Exception:  # pragma: no cover - lm_eval shape drift
         return None
-    return self._interop_cache.get(hsh)
+    cached = self._interop_cache.get(hsh)
+    # Inconsistent / partially-written legacy entries (None, or a not-yet-resolved
+    # placeholder) must NOT be adopted as a completed unit — treat them as a miss so the
+    # request is regenerated rather than recorded as a corrupt "done" payload.
+    if cached is None:
+        return None
+    # CachingLM stores the generate_until response, which is a plain completion string.
+    # Anything else (a stray list/dict from a different cache schema) is not a trustworthy
+    # completion -> ignore it (read-only interop, never crash, never writeback).
+    if not isinstance(cached, str):
+        logger.warning(
+            "resume[%s]: legacy cache entry has unexpected type %s; ignoring (regenerating)",
+            self._task_name,
+            type(cached).__name__,
+        )
+        return None
+    return cached
 
 
 def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -> List[str]:

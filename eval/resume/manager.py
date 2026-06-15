@@ -118,8 +118,19 @@ class ResumeManager:
             self._done = set()
             return self._decision
 
-        # Prior state exists -> validate fingerprint.
-        prior = RunFingerprint(inputs=json.loads(fp_path.read_text())["canonical_payload"])
+        # Prior state exists -> validate fingerprint. A corrupt/truncated fingerprint.json
+        # cannot be trusted to gate comparability, so we REFUSE rather than resume into an
+        # unverifiable prior state (fail-safe toward refuse — global invariant #3). force-fresh
+        # is the documented escape hatch.
+        try:
+            prior_doc = json.loads(fp_path.read_text())
+            prior = RunFingerprint(inputs=prior_doc["canonical_payload"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError, OSError) as exc:
+            raise ResumeRefused(
+                f"Run dir {self.run_dir} has an existing but corrupt/unreadable "
+                f"fingerprint.json ({fp_path}): {exc}. Cannot verify comparability; refusing "
+                f"to resume. Use --resume-mode force-fresh to start over."
+            ) from exc
         if not self.fingerprint.matches(prior):
             changed = self.fingerprint.diff_material(prior)
             raise ResumeRefused(
@@ -128,27 +139,62 @@ class ResumeManager:
                 f"Use --resume-mode force-fresh to start over."
             )
 
-        # rank-layout guard (decision #3): if world_size>1, this rank's manifest must be the
-        # per-rank file; a mismatch (e.g. prior single-rank manifest under a now-multi-rank run)
-        # refuses rather than reusing another layout's state.
-        self._guard_rank_layout()
+        # rank-layout guard (decision #3): the run's world_size must match the prior run's
+        # recorded world_size; a mismatch refuses rather than resuming against an unmergeable
+        # per-rank layout (per-rank slices are disjoint `islice`s — merge is deferred).
+        self._guard_rank_layout(prior_doc)
         self._decision = "resume"
         self._done = None  # lazily loaded by done_units()
         return self._decision
 
-    def _guard_rank_layout(self) -> None:
-        single = _resume_dir(self.run_dir) / "manifest.jsonl"
-        if self.world_size > 1 and single.exists():
+    def _guard_rank_layout(self, prior_doc: Dict[str, Any]) -> None:
+        """Refuse any resume whose world_size differs from the prior run's world_size.
+
+        The per-rank manifest layout encodes the rank count: a single-rank run writes
+        ``manifest.jsonl``; a W-way run writes ``manifest.jsonl.rankR`` for R in [0, W). The
+        AUTHORITATIVE prior rank count is the ``world_size`` stamped into ``fingerprint.json``
+        at fresh time — inferring it from the on-disk per-rank files is unreliable because each
+        rank writes its file lazily (a partially-complete W-way run has < W files). A resume
+        whose ``world_size`` differs from the prior cannot be safely merged (decision #3, merge
+        deferred), so we REFUSE loudly rather than silently resume against the wrong slice or an
+        empty done set. Guards every direction: 1->W, W->1 (the dangerous silent-rerun case),
+        and W->W'.
+        """
+        prior_world = prior_doc.get("world_size")
+        if prior_world is None:
+            # Backward-compat: a fingerprint.json written before world_size provenance existed.
+            # Fall back to the on-disk layout CLASS (single vs per-rank), which is unambiguous
+            # even if the exact prior W is unknown.
+            rdir = _resume_dir(self.run_dir)
+            prior_is_multi = bool(sorted(rdir.glob("manifest.jsonl.rank*")))
+            prior_is_single = (rdir / "manifest.jsonl").exists()
+            now_is_multi = self.world_size > 1
+            if (prior_is_multi and not now_is_multi) or (prior_is_single and now_is_multi):
+                raise ResumeRefused(
+                    f"Run dir {self.run_dir} has a "
+                    f"{'multi' if prior_is_multi else 'single'}-rank manifest layout but this "
+                    f"run has world_size={self.world_size}; rank-layout mismatch. Refusing "
+                    f"(merge deferred). Use --resume-mode force-fresh."
+                )
+            return
+
+        if int(prior_world) != int(self.world_size):
             raise ResumeRefused(
-                f"Run dir {self.run_dir} has a single-rank manifest but world_size="
-                f"{self.world_size}; per-rank manifest layout mismatch. Refusing "
-                f"(rank-layout merge is deferred to future work). Use force-fresh."
+                f"Run dir {self.run_dir} was created with world_size={prior_world} but this "
+                f"run has world_size={self.world_size}; rank-layout mismatch — per-rank slices "
+                f"don't align and merge is deferred (decision #3). Refusing rather than "
+                f"silently resuming against the wrong layout. Use --resume-mode force-fresh."
             )
 
     def _write_fingerprint(self) -> None:
         fp_path = _fingerprint_path(self.run_dir)
         fp_path.parent.mkdir(parents=True, exist_ok=True)
-        fp_path.write_text(json.dumps(self.fingerprint.to_json(), indent=2, sort_keys=True))
+        doc = self.fingerprint.to_json()
+        # Stamp the rank count as provenance (NOT part of the content hash — world_size is an
+        # IGNORED field for comparability) so a later resume can authoritatively detect a
+        # rank-layout change (decision #3). Mirrors Harbor preserving provenance on lock rewrite.
+        doc["world_size"] = int(self.world_size)
+        fp_path.write_text(json.dumps(doc, indent=2, sort_keys=True))
 
     # ---- unified interface ------------------------------------------------------------------
     def done_units(self) -> Set[UnitKey]:
