@@ -148,7 +148,12 @@ class MATH500Benchmark(BaseBenchmark):
             return instances
 
         self.logger.info(f"Generating {self.num_samples} samples/problem for MATH500 pass@k...")
-        per_problem = self.generate_n_samples(model, build_instances, self.num_samples)
+        # Stage 3c: resume-aware per-problem-batch generation. With no manager
+        # attached (the default) this delegates to ``generate_n_samples`` and is
+        # byte-identical to the Stage-2b output; with a manager it checkpoints at
+        # ``{task, batch_idx}`` granularity (full ``num_samples`` per problem, no
+        # n-split -> parity by construction).
+        per_problem = self.generate_n_samples_batched(model, build_instances, self.num_samples)
         if model.rank != 0:
             return None
         for example, outputs in zip(examples, per_problem):
