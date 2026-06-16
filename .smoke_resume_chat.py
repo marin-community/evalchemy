@@ -82,6 +82,10 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--acc-tol", type=float, default=0.20,
                     help="tolerance on |resumed_acc - full_N_baseline_acc| (vLLM batch-composition artifact)")
+    ap.add_argument("--determinism-mode", action="store_true",
+                    help="build the LM with enable_prefix_caching=False,enforce_eager=True to test whether "
+                         "byte-exact matched-baseline parity is achievable (rules out KV-cache eviction + "
+                         "cudagraph nondeterminism on top of VLLM_BATCH_INVARIANT).")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
@@ -101,6 +105,8 @@ def main():
         f"pretrained={args.model_repo},tensor_parallel_size={args.tp},"
         f"dtype=bfloat16,max_model_len={args.max_model_len},gpu_memory_utilization=0.9,seed=42"
     )
+    if args.determinism_mode:
+        model_args += ",enable_prefix_caching=False,enforce_eager=True"
     print(f">>> building vLLM LM: {model_args}", flush=True)
     lm = build_lm(model_args)
 
