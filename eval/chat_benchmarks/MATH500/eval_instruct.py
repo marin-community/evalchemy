@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional  # noqa: F401
 
 import lm_eval.models
 from lm_eval.api.instance import Instance
@@ -30,6 +30,8 @@ class MATH500Benchmark(BaseBenchmark):
         max_tokens: int = 32768,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        num_samples: int = 1,
+        pass_at_k: Optional[Any] = None,
     ):
         """
         Initialize MATH500 benchmark.
@@ -40,8 +42,15 @@ class MATH500Benchmark(BaseBenchmark):
             seed: Random seed for reproducibility. Default is [0, 1234, 1234, 1234] for lm-eval-harness.
             logger: Optional logger instance
             system_instruction: Optional system instruction for the model
+            num_samples: Number of completions per problem. 1 (default) = today's single-sample path.
+            pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
         """
-        super().__init__(logger=logger, system_instruction=system_instruction)
+        super().__init__(
+            logger=logger,
+            system_instruction=system_instruction,
+            num_samples=num_samples,
+            pass_at_k=pass_at_k,
+        )
         self.data_file = data_file
         self.debug = debug
         self.seed = seed
@@ -59,6 +68,10 @@ class MATH500Benchmark(BaseBenchmark):
             or None for non-primary ranks
         """
         examples = self.load_questions()
+
+        # ---- native pass@k path (Stage 2b): num_samples > 1 ----
+        if self.num_samples > 1:
+            return self._generate_pass_at_k(model, examples)
 
         # Prepare instances for model
         all_instances = []
@@ -106,6 +119,48 @@ class MATH500Benchmark(BaseBenchmark):
 
         return {"examples": examples}
 
+    def _generate_pass_at_k(self, model: LM, examples: List[Dict[str, str]]) -> Dict[str, Any]:
+        """Generate ``num_samples`` completions per problem via the base scaffold."""
+
+        def build_instances(sample_idx: int, seed: List[int]) -> List[Instance]:
+            instances = []
+            for idx, example in enumerate(examples):
+                messages = [{"role": "user", "content": PROMPT.format(problem=example["problem"])}]
+                templated_messages = self._prepare_messages(messages, model)
+                instance = Instance(
+                    "generate_until",
+                    example,
+                    (
+                        templated_messages,
+                        {
+                            # Sampling on (pass@k needs diversity); seed varies per sample.
+                            "do_sample": True,
+                            "max_new_tokens": self.max_new_tokens,
+                            "temperature": 0.7,
+                            "top_p": 1.0,
+                            "seed": seed,
+                        },
+                    ),
+                    idx,
+                )
+                instance.repeat_idx = sample_idx
+                instances.append(instance)
+            return instances
+
+        self.logger.info(f"Generating {self.num_samples} samples/problem for MATH500 pass@k...")
+        # Stage 3c: resume-aware per-problem-batch generation. With no manager
+        # attached (the default) this delegates to ``generate_n_samples`` and is
+        # byte-identical to the Stage-2b output; with a manager it checkpoints at
+        # ``{task, batch_idx}`` granularity (full ``num_samples`` per problem, no
+        # n-split -> parity by construction).
+        per_problem = self.generate_n_samples_batched(model, build_instances, self.num_samples)
+        if model.rank != 0:
+            return None
+        for example, outputs in zip(examples, per_problem):
+            example["model_outputs"] = list(outputs)
+            example["model_answers"] = [self.extract_answer(o) for o in outputs]
+        return {"examples": examples, "pass_at_k": True}
+
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
         """Evaluate the generated solution completions."""
 
@@ -115,6 +170,23 @@ class MATH500Benchmark(BaseBenchmark):
 
         examples = results["examples"]
         total = len(examples)
+
+        # ---- native pass@k aggregation (Stage 2b) ----
+        if results.get("pass_at_k"):
+            num_correct = [
+                sum(int(bool(is_equiv(str(ex["answer"]), ans))) for ans in ex["model_answers"]) for ex in examples
+            ]
+            pass_at_k_table = self.aggregate_pass_at_k(num_correct)
+            results.update(
+                {
+                    "num_total": total,
+                    "num_samples": self.num_samples,
+                    "num_correct": num_correct,
+                    **pass_at_k_table,
+                }
+            )
+            return results
+
         solved = sum(is_equiv(str(example["answer"]), example["model_answer"]) for example in examples)
 
         results.update(

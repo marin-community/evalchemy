@@ -141,6 +141,32 @@ def setup_custom_parser():
         action="store_true",
         help="Run evalutaions in debug mode on a few examples",
     )
+    parser.add_argument(
+        "--num_samples",
+        type=int,
+        default=1,
+        help="Number of completions to generate per problem. 1 (default) reproduces today's "
+        "single-sample score byte-identically; >1 enables native pass@k for supported benchmarks.",
+    )
+    parser.add_argument(
+        "--pass_at_k",
+        type=str,
+        default="1,8,32,128",
+        help="Comma-separated k-list for pass@k aggregation (only consulted when --num_samples > 1).",
+    )
+    parser.add_argument(
+        "--resume-mode",
+        "--resume_mode",
+        dest="resume_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "force-fresh", "off"],
+        help="Unified resume manager mode. 'auto' (default) auto-detects matching prior "
+        "run-state under --output_path and resumes (or refuses on a material delta); a first "
+        "run with no prior state is a pure no-op (byte-identical to today). 'force-fresh' wipes "
+        "prior state and starts over. 'off' disables the manager entirely (reproduces today "
+        "exactly). Requires --output_path; without it resume is disabled.",
+    )
     return parser
 
 
@@ -238,8 +264,20 @@ def evaluate(
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
         try:
+            # Stage 3b: route the lm-eval-native (gsm8k) `simple_evaluate` call through
+            # the unified ResumeManager (supersedes lm-eval `--use_cache`, decision #5).
+            # When no resume-manager factory is attached to `args` (the default — Stage 4
+            # wires it), `resume_simple_evaluate` is a VERBATIM passthrough to upstream
+            # `simple_evaluate(**kwargs)`: the gsm8k path is byte-identical to today and
+            # no `resume/` dir is written (global invariant #1). When a factory is present
+            # it wraps the LM in a resume-aware, sampling-capable cache.
+            from eval.resume.lm_eval_native import resume_simple_evaluate
+
+            _resume_factory = getattr(args, "resume_manager_factory", None)
             for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
-                pretrain_results = pretrain_evaluator.simple_evaluate(
+                pretrain_results = resume_simple_evaluate(
+                    pretrain_evaluator.simple_evaluate,
+                    resume_manager_factory=_resume_factory,
                     model=args.model,
                     model_args=args.model_args,
                     tasks=[pretrain_task],
@@ -385,6 +423,8 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         seed=args.seed,
         task_list=task_list,
         system_instruction=args.system_instruction,
+        num_samples=getattr(args, "num_samples", 1),
+        pass_at_k=getattr(args, "pass_at_k", None),
     )
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=args.include_path)
 
@@ -423,6 +463,23 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             chat_template=lm.chat_template(args.apply_chat_template),
             fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
+
+    # Stage 4: auto-detect resume wiring. ONE construction site that feeds all
+    # three resume paths (global invariant #5). Builds a per-task ResumeManager
+    # factory from the run inputs and sets `args.resume_manager_factory` (the
+    # lm-eval-native 3b + native pass@k 3c seam) AND attaches a manager to each
+    # chat_benchmark instance (the 3a/3c seam). `--resume-mode off` (or no
+    # `--output_path`) builds nothing and attaches nothing -> byte-identical to
+    # today (invariant #1); `auto` (the default) on a first run with no prior
+    # state is a pure no-op that only writes the inert fingerprint/state dir.
+    try:
+        from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
+
+        _resume_factory = build_resume_wiring(args, lm)
+        attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
+    except Exception as e:
+        utils.eval_logger.warning(f"resume: wiring failed ({e}); running without resume.")
+        args.resume_manager_factory = None
 
     # Initialize logging and environment
     eval_logger = utils.eval_logger

@@ -19,9 +19,202 @@ from lm_eval.api.model import LM
 class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None, system_instruction: Optional[str] = None):
+    def __init__(
+        self,
+        logger: Optional[logging.Logger] = None,
+        system_instruction: Optional[str] = None,
+        num_samples: int = 1,
+        pass_at_k: Optional[Union[str, List[int]]] = None,
+    ):
         self.logger = logger or logging.getLogger(self.__class__.__name__)
         self.system_instruction = system_instruction
+        # Native pass@k controls (Stage 2b). ``num_samples=1`` (the default)
+        # is a strict no-op: every benchmark takes its current single-sample
+        # path and produces byte-identical output. ``pass_at_k`` is only
+        # consulted when ``num_samples > 1``.
+        from eval.passk import parse_pass_at_k
+
+        self.num_samples = int(num_samples) if num_samples else 1
+        self.pass_at_k = parse_pass_at_k(pass_at_k)
+        # Resume manager (Stage 3a). ``None`` (the default) is a strict no-op:
+        # ``compute`` takes its current generate-everything path and produces
+        # byte-identical output. Wired by the driver (Stage 4) via
+        # ``attach_resume_manager``; until then nothing attaches it.
+        self._resume_manager = None
+        # Set by the native pass@k batch path to suspend the per-(problem,repeat)
+        # resume wrap on its inner ``compute`` calls (Stage 3c).
+        self._suspend_resume = False
+
+    def attach_resume_manager(self, manager) -> None:
+        """Attach a ResumeManager so ``compute`` skips already-done problems.
+
+        A ``None`` manager (the default) leaves ``compute`` byte-identical to
+        today (global invariant #1). The driver constructs the manager from the
+        run fingerprint and attaches it here (Stage 4); Stage 3a only wires the
+        consumption side.
+        """
+        self._resume_manager = manager
+
+    def generate_n_samples(
+        self,
+        model: LM,
+        build_instances: Callable[[int, List[int]], List[Instance]],
+        num_samples: Optional[int] = None,
+    ) -> List[List[str]]:
+        """Generic "N completions per problem" generator (Stage 2b).
+
+        Generalizes the per-(problem, sample) scaffold that AIME24/AMC23 hand-
+        rolled (``for i in range(self.n_repeat): ... compute(...)``) up into the
+        base so any benchmark can request ``num_samples`` completions per problem
+        and grade each with its own grader.
+
+        ``build_instances(sample_idx, seed)`` must return one ``Instance`` per
+        problem (in problem order) for that sample pass; it owns the prompt,
+        decoding params, ``repeat_idx`` and metadata exactly as the subclass
+        does today. This method loops over the samples, calls
+        ``self.compute(...)`` once per sample pass (each problem keeps its full
+        per-pass batch — no n-split), and on rank 0 returns a list (one entry
+        per problem) of lists (one completion per sample).
+
+        Non-primary ranks get ``None`` propagated from ``compute``/all_gather.
+        """
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        base_seed = getattr(self, "seed", [0, 1234, 1234, 1234])
+        all_outputs: List[List[str]] = []
+        for sample_idx in range(n):
+            seed = [s + sample_idx for s in base_seed]
+            instances = build_instances(sample_idx, seed)
+            outputs = self.compute(model, instances)
+            all_outputs.append(outputs)
+        if model.rank != 0:
+            return None
+        # transpose: all_outputs[sample][problem] -> per_problem[problem][sample]
+        return [list(per_problem) for per_problem in zip(*all_outputs)]
+
+    def generate_n_samples_batched(
+        self,
+        model: LM,
+        build_instances: Callable[[int, List[int]], List[Instance]],
+        num_samples: Optional[int] = None,
+        batch_size: Optional[int] = None,
+    ) -> List[List[str]]:
+        """Resume-aware native pass@k generation in per-problem batches (Stage 3c).
+
+        Same contract as :meth:`generate_n_samples` (return, on rank 0, a list with
+        one entry per problem, each a list of ``num_samples`` completions) but the
+        unit of resume is a **problem-batch** of size ``B`` (``{task, batch_idx}``,
+        stage-0 decision #4). For each batch the full ``num_samples`` are generated
+        per problem (no n-split), so a fresh run and a resumed run produce identical
+        per-(problem, sample) outputs by construction (global invariant #7).
+
+        Flag-off invariant: when no manager is attached (the default), this delegates
+        to :meth:`generate_n_samples` and is **byte-identical to the Stage-2b output**.
+        With a manager: completed batches are ``should_skip``-ped and their per-
+        (problem, sample) outputs ``restore``-d from the manifest; only the remaining
+        batches are regenerated and ``record``-ed as each finishes; the union is
+        re-assembled in problem order so aggregation is unchanged.
+
+        ``build_instances(sample_idx, seed)`` returns one ``Instance`` per problem
+        (full problem list, in problem order) for that sample pass — exactly the
+        callback :meth:`generate_n_samples` takes. This method slices it per batch.
+        """
+        manager = getattr(self, "_resume_manager", None)
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        # No manager (or off-mode) -> the Stage-2b path verbatim (byte-identical).
+        if manager is None:
+            return self.generate_n_samples(model, build_instances, n)
+
+        task_name = self.__class__.__name__.replace("Benchmark", "")
+        B = int(batch_size) if batch_size else self._passk_batch_size()
+
+        # Build the full per-sample instance lists once; slice per batch below. This
+        # matches generate_n_samples' instance construction exactly (same seeds, same
+        # repeat_idx) so each (problem, sample) is identical regardless of batching.
+        base_seed = getattr(self, "seed", [0, 1234, 1234, 1234])
+        per_sample_instances: List[List[Instance]] = []
+        for sample_idx in range(n):
+            seed = [s + sample_idx for s in base_seed]
+            per_sample_instances.append(build_instances(sample_idx, seed))
+
+        num_problems = len(per_sample_instances[0]) if per_sample_instances else 0
+        # batch_idx -> list of problem indices it covers
+        batches = [list(range(i, min(i + B, num_problems))) for i in range(0, num_problems, B)]
+
+        manager.decide()  # fresh / resume / refuse (loud refuse on material delta, inv #3)
+        restored = manager.restore()  # {unit_key: payload} for completed batches
+        from eval.resume import canonical_unit_key
+
+        # per_problem_outputs[problem_idx] -> list of `n` completions
+        per_problem_outputs: List[Optional[List[str]]] = [None] * num_problems
+        skipped = 0
+        for batch_idx, problem_idxs in enumerate(batches):
+            unit = {"task": task_name, "batch_idx": batch_idx}
+            if manager.should_skip(unit):
+                payload = restored[canonical_unit_key(unit)]
+                # payload["outputs"] is keyed by problem index (as strings in JSON)
+                stored = payload["outputs"]
+                for pidx in problem_idxs:
+                    per_problem_outputs[pidx] = list(stored[str(pidx)])
+                skipped += 1
+                continue
+            # Generate the full num_samples for just this batch's problems. Suspend
+            # the per-(problem,repeat) resume wrap on the inner compute so pass@k
+            # records ONLY the {task, batch_idx} unit (no double-recording).
+            batch_per_problem: Dict[int, List[str]] = {pidx: [] for pidx in problem_idxs}
+            self._suspend_resume = True
+            try:
+                for sample_idx in range(n):
+                    sub_instances = [per_sample_instances[sample_idx][pidx] for pidx in problem_idxs]
+                    outputs = self.compute(model, sub_instances)
+                    if model.rank == 0:
+                        for pidx, out in zip(problem_idxs, outputs):
+                            batch_per_problem[pidx].append(out)
+            finally:
+                self._suspend_resume = False
+            if model.rank == 0:
+                for pidx in problem_idxs:
+                    per_problem_outputs[pidx] = batch_per_problem[pidx]
+                manager.record(unit, {"outputs": {str(pidx): batch_per_problem[pidx] for pidx in problem_idxs}})
+
+        if skipped:
+            self.logger.info(
+                f"resume[{task_name}] rank={getattr(model, 'rank', 0)}: skipped {skipped} done "
+                f"batches (B={B}), generating {len(batches) - skipped} remaining"
+            )
+
+        manager.finalize()
+        if model.rank != 0:
+            return None
+        return [list(p) for p in per_problem_outputs]
+
+    def _passk_batch_size(self) -> int:
+        """Fingerprinted pass@k problem-batch size ``B``. Defaults to all problems in one batch.
+
+        A subclass / driver may set ``self.passk_batch_size``; absent that, the whole
+        problem list is one batch (equivalent to the Stage-2b single-pass behavior, just
+        resume-checkpointed once). ``B`` is a fingerprint input (decision #4) so changing
+        it refuses a resume.
+        """
+        b = getattr(self, "passk_batch_size", None)
+        if b:
+            return int(b)
+        return 1 << 30  # effectively "all problems"
+
+    def aggregate_pass_at_k(
+        self,
+        num_correct: List[int],
+        num_samples: Optional[int] = None,
+        ks: Optional[List[int]] = None,
+    ) -> Dict[str, float]:
+        """Aggregate per-problem correct counts into a {pass@k: mean} table.
+
+        Thin wrapper over the shared estimator in ``eval/passk.py`` so there is
+        exactly one definition of the unbiased estimator in the tree.
+        """
+        from eval.passk import aggregate_pass_at_k as _agg
+
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:
@@ -78,6 +271,20 @@ class BaseBenchmark(ABC):
 
         return messages
 
+    def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
+        """Resume unit key for one instance: ``{task, problem_idx}`` (+``repeat_idx``).
+
+        ``instance.idx`` is the problem index (the 4th positional arg at instance
+        construction). AIME24's ``n_repeat`` loop and the native pass@k scaffold set
+        ``instance.repeat_idx`` per pass, so each (problem, repeat) is its own unit —
+        giving per-seed resume granularity (scope doc, Stage 3a).
+        """
+        key: Dict[str, Any] = {"task": task_name, "problem_idx": int(instance.idx)}
+        repeat_idx = getattr(instance, "repeat_idx", None)
+        if repeat_idx is not None:
+            key["repeat_idx"] = int(repeat_idx)
+        return key
+
     def compute(self, model: LM, inputs: List[Instance], do_slice: bool = True) -> List[str]:
         inputs = self._normalize_model_args(model, inputs)
 
@@ -91,7 +298,7 @@ class BaseBenchmark(ABC):
         else:
             prompts = inputs
 
-        results = model.generate_until(prompts)
+        results = self._generate_with_resume(model, task_name, prompts)
         if model.world_size > 1:
             all_results = [None for _ in range(model.world_size)]
 
@@ -107,6 +314,67 @@ class BaseBenchmark(ABC):
             return merged
         else:
             return results
+
+    def _generate_with_resume(self, model: LM, task_name: str, prompts: List[Instance]) -> List[str]:
+        """Generate over this rank's prompt slice, skipping resume-done units.
+
+        When no manager is attached (the default) this is exactly
+        ``model.generate_until(prompts)`` — byte-identical to today (global
+        invariant #1). With a manager in ``auto``/``force-fresh`` mode and a
+        matching prior run-state, the already-done problems are restored from the
+        per-rank manifest and only the remaining problems are regenerated; each
+        newly generated output is appended to the manifest as it finishes, then
+        restored + new are merged back into ``prompts`` order so grading sees the
+        same list it would have seen uninterrupted.
+
+        Unit granularity is per-(problem, repeat) — a wall timeout loses at most
+        the in-flight problem, not the whole run.
+        """
+        manager = getattr(self, "_resume_manager", None)
+        # ``_suspend_resume`` is set by the native pass@k batch path
+        # (``generate_n_samples_batched``) so its inner ``compute`` calls do NOT
+        # double-record at per-(problem,repeat) granularity — pass@k checkpoints at
+        # the ``{task, batch_idx}`` unit only (decision #4). When suspended this is a
+        # plain generate, exactly as if no manager were attached.
+        if manager is None or getattr(self, "_suspend_resume", False):
+            return model.generate_until(prompts)
+
+        # Ensure the resume decision (fresh / resume / refuse) is made before we
+        # consult done units; ``decide`` is idempotent and is the place a material
+        # fingerprint delta refuses loudly (global invariant #3).
+        manager.decide()
+
+        restored = manager.restore()  # {unit_key: payload} for completed units
+        keys = [self._unit_key(task_name, inst) for inst in prompts]
+
+        remaining_instances: List[Instance] = []
+        remaining_positions: List[int] = []
+        results: List[Optional[str]] = [None] * len(prompts)
+        skipped = 0
+        from eval.resume import canonical_unit_key
+
+        for pos, (inst, unit) in enumerate(zip(prompts, keys)):
+            if manager.should_skip(unit):
+                results[pos] = restored[canonical_unit_key(unit)]["output"]
+                skipped += 1
+            else:
+                remaining_instances.append(inst)
+                remaining_positions.append(pos)
+
+        if skipped:
+            self.logger.info(
+                f"resume[{task_name}] rank={getattr(model, 'rank', 0)}: skipped {skipped} done "
+                f"units, generating {len(remaining_instances)} remaining"
+            )
+
+        if remaining_instances:
+            new_outputs = model.generate_until(remaining_instances)
+            for pos, inst, output in zip(remaining_positions, remaining_instances, new_outputs):
+                results[pos] = output
+                manager.record(self._unit_key(task_name, inst), {"output": output})
+
+        manager.finalize()
+        return results
 
     @abstractmethod
     def generate_responses(self, model: LM) -> Dict[str, Any]:
