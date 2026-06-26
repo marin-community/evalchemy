@@ -727,10 +727,13 @@ def handle_evaluation_output(
             is_external=args.is_external_model,
         )
 
-    if args.log_samples:
-        # `configs` is now populated for chat_benchmarks at the driver loop, but
-        # keep the `.get` + per-task `.get` as cheap insurance so a missing key can
-        # never crash the persist path after scoring already finished.
+    # `configs` is now populated for chat_benchmarks at the driver loop, but keep
+    # the `.get` insurance so a missing key can never crash the persist path after
+    # scoring already finished. The `hasattr` guard tolerates a tracker that doesn't
+    # implement save_results_samples (DCEvaluationTracker now does; this protects any
+    # other tracker — the aggregated score is already persisted via
+    # save_results_aggregated above regardless).
+    if args.log_samples and hasattr(evaluation_tracker, "save_results_samples"):
         _samples = samples or {}
         for task_name, config in results.get("configs", {}).items():
             evaluation_tracker.save_results_samples(

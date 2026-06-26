@@ -175,6 +175,42 @@ class DCEvaluationTracker:
         else:
             eval_logger.info("Output path not provided, skipping saving results aggregated")
 
+    def save_results_samples(
+        self,
+        task_name: str,
+        samples: list,
+    ) -> None:
+        """Write a task's per-doc sample records to a JSONL under the model dir.
+
+        Stock-lm_eval parity: ``save_results_aggregated`` only folds samples into the
+        per-task cumulative hash — it does NOT persist the sample bodies — and the
+        marin ``DCEvaluationTracker`` historically lacked this method, so the
+        ``--log_samples`` persist loop in eval.py AttributeError'd once ``configs``
+        was populated. This writes the bodies so the samples are actually saved.
+        DEFENSIVE: never raises — a save failure must not lose the already-written
+        aggregated score.
+        """
+        if not self.output_path:
+            eval_logger.info("Output path not provided, skipping saving samples")
+            return
+        try:
+            path = Path(self.output_path).joinpath(self.general_config_tracker.model_name_sanitized)
+            path.mkdir(parents=True, exist_ok=True)
+            # Reuse the aggregated-results timestamp when present so the samples
+            # files sit alongside the matching results_<date>.json.
+            date_id = getattr(self, "date_id", None) or datetime.now().isoformat().replace(":", "-")
+            safe_task = re.sub(r"[^\w.-]", "_", str(task_name))
+            file_samples = path.joinpath(f"samples_{safe_task}_{date_id}.jsonl")
+            with file_samples.open("w", encoding="utf-8") as f:
+                for sample in samples or []:
+                    f.write(
+                        json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n"
+                    )
+            eval_logger.info(f"Wrote {len(samples or [])} samples for {task_name} to: {file_samples}")
+        except Exception as e:
+            eval_logger.warning(f"Could not save samples for {task_name}")
+            eval_logger.info(repr(e))
+
     def get_or_create_model(
         self, model_name: str, model_id: Optional[str], model_source: str = "hf"
     ) -> Tuple[uuid.UUID, uuid.UUID]:
