@@ -661,7 +661,13 @@ def handle_evaluation_output(
             rather than returning values.
     """
     if args.log_samples:
-        samples = results.pop("samples")
+        # Chat-benchmark eval paths (e.g. MATH500/AIME24) don't always populate
+        # results["samples"] even when --log_samples is set, unlike lm-eval-native
+        # tasks. Guard the pop so a missing key can't crash the persist step AFTER
+        # inference+scoring already finished (which silently discarded the score).
+        # NOTE: this is the belt; the suspenders fix (actually emit chat-benchmark
+        # samples) is tracked separately.
+        samples = results.pop("samples", None)
 
     dumped = json.dumps(
         results,
