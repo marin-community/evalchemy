@@ -261,6 +261,32 @@ def evaluate(
                 for task, result in zip(valid_tasks, evaluate_results):
                     results["results"][task] = result
 
+                    # Suspenders: under --log_samples, emit native lm-eval per-sample
+                    # records + a minimal per-task config for the chat_benchmark path
+                    # (the lm-eval-native path produces these itself; this driver
+                    # historically dropped both, crashing the persist step). Flag-off
+                    # path is untouched. DEFENSIVE: a to_samples failure must NEVER
+                    # lose the already-computed score — log + emit []; still populate
+                    # configs so the persist loop finds a task entry.
+                    if getattr(args, "log_samples", False):
+                        benchmark = task_manager.get_benchmark(task)
+                        try:
+                            task_samples = benchmark.to_samples(result) if benchmark is not None else []
+                        except Exception as e:
+                            eval_logger.warning(
+                                f"log_samples: to_samples failed for {task} ({e}); "
+                                f"emitting [] samples (score is preserved)."
+                            )
+                            task_samples = []
+                        results.setdefault("samples", {})[task] = task_samples
+                        results.setdefault("configs", {})[task] = {
+                            "task": task,
+                            "model_args": getattr(args, "model_args", None),
+                            "gen_kwargs": getattr(args, "gen_kwargs", None),
+                            "num_fewshot": getattr(args, "num_fewshot", 0),
+                            "max_tokens": getattr(args, "max_tokens", None),
+                        }
+
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
         try:
@@ -702,8 +728,14 @@ def handle_evaluation_output(
         )
 
     if args.log_samples:
-        for task_name, config in results["configs"].items():
-            evaluation_tracker.save_results_samples(task_name=task_name, samples=samples[task_name])
+        # `configs` is now populated for chat_benchmarks at the driver loop, but
+        # keep the `.get` + per-task `.get` as cheap insurance so a missing key can
+        # never crash the persist path after scoring already finished.
+        _samples = samples or {}
+        for task_name, config in results.get("configs", {}).items():
+            evaluation_tracker.save_results_samples(
+                task_name=task_name, samples=_samples.get(task_name, [])
+            )
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "

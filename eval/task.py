@@ -393,6 +393,81 @@ class BaseBenchmark(ABC):
         evaluation_results = self.evaluate_responses(generation_results)
         return evaluation_results
 
+    def to_samples(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Reshape this benchmark's ``evaluate_responses`` result into native
+        lm-eval per-doc sample records (the schema ``save_results_samples`` /
+        ``save_results_aggregated`` / ``wandb.log_eval_samples`` consume).
+
+        Default implementation reads the ``{"examples": [...]}`` convention shared
+        by the math chat_benchmarks (MATH500/AIME24/AMC23): each ``example`` is the
+        source doc enriched in place with ``model_output``/``model_answer`` (single
+        sample) or ``model_outputs``/``model_answers`` (native pass@k), with the gold
+        in ``example["answer"]``. A benchmark whose ``result`` shape differs should
+        override this method.
+
+        Each record mirrors stock ``lm_eval.evaluator.evaluate``'s per-doc dict:
+        ``doc_id``, ``doc``, ``target``, ``arguments`` (a list of
+        ``[prompt_str, gen_kwargs]`` pairs, so ``save_results_samples``'s
+        ``enumerate(sample["arguments"])`` → ``enumerate(arg)`` unpacking works),
+        ``resps``/``filtered_resps`` (lists), and the MANDATORY ``doc_hash`` /
+        ``prompt_hash`` / ``target_hash`` (``eval_tracker.save_results_aggregated``
+        reads all three to build the cumulative task hash).
+        """
+        import json as _json
+
+        from lm_eval.utils import handle_non_serializable as _hns
+        from lm_eval.utils import hash_string
+
+        examples = (result or {}).get("examples", []) or []
+        samples: List[Dict[str, Any]] = []
+        for doc_id, example in enumerate(examples):
+            prompt = self._sample_prompt(example)
+            gen_kwargs = self._sample_gen_kwargs(example)
+            target = example.get("answer", "")
+
+            if "model_outputs" in example:  # native pass@k: list of completions
+                resps = list(example.get("model_outputs", []))
+                filtered = list(example.get("model_answers", []))
+            else:  # single-sample path
+                resps = [example.get("model_output", "")]
+                filtered = [example.get("model_answer", "")]
+
+            doc_hash = hash_string(
+                _json.dumps(example, indent=2, default=_hns, ensure_ascii=False)
+            )
+            samples.append(
+                {
+                    "doc_id": doc_id,
+                    "doc": example,
+                    "target": target,
+                    # list-of-pairs: one (prompt, gen_kwargs) "request" per doc.
+                    "arguments": [[prompt, gen_kwargs]],
+                    "resps": [resps],
+                    "filtered_resps": filtered,
+                    "filter": "none",
+                    "doc_hash": doc_hash,
+                    "prompt_hash": hash_string(prompt),
+                    "target_hash": hash_string(str(target)),
+                }
+            )
+        return samples
+
+    def _sample_prompt(self, example: Dict[str, Any]) -> str:
+        """Best-effort rendered prompt string for a sample record.
+
+        Default reads a ``problem`` field (the math benches' source field). Override
+        for benchmarks whose prompt is built differently.
+        """
+        return str(example.get("problem", example.get("question", "")))
+
+    def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        """Generation kwargs recorded alongside the prompt in ``arguments``."""
+        kwargs: Dict[str, Any] = {}
+        max_new = getattr(self, "max_new_tokens", None)
+        if max_new is not None:
+            kwargs["max_new_tokens"] = max_new
+        return kwargs
+
 
 class TaskManager:
     """
