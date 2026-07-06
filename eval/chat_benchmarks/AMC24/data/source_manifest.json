@@ -11,65 +11,68 @@
   "excluded": [
     {
       "exam": "AMC 12A",
-      "id": "2024-amc12a-14",
-      "problem_number": 14,
-      "reason": "figure-dependent",
-      "review_status": "excluded",
-      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_14"
-    },
-    {
-      "exam": "AMC 12A",
       "id": "2024-amc12a-18",
       "problem_number": 18,
-      "reason": "figure-dependent",
+      "reason": "diagram-dependent card placement and target vertex",
       "review_status": "excluded",
       "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_18"
     },
     {
       "exam": "AMC 12A",
-      "id": "2024-amc12a-20",
-      "problem_number": 20,
-      "reason": "answer-choice-dependent prompt without source choices",
+      "id": "2024-amc12a-22",
+      "problem_number": 22,
+      "reason": "diagram-dependent grid cell labels",
       "review_status": "excluded",
-      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_20"
+      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_22"
+    }
+  ],
+  "excluded_count": 2,
+  "included_count": 48,
+  "known_hf_traps": [
+    "guldasta/amc24 is unrelated to AMC math",
+    "TAUR-dev/amc25 contains AMC23 rows"
+  ],
+  "last_reviewed": "2026-07-06",
+  "manual_inclusions": [
+    {
+      "exam": "AMC 12A",
+      "id": "2024-amc12a-14",
+      "problem_number": 14,
+      "reason": "source figure omitted because the text fully specifies the problem",
+      "review_status": "included",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_14"
     },
     {
       "exam": "AMC 12A",
-      "id": "2024-amc12a-22",
-      "problem_number": 22,
-      "reason": "figure-dependent",
-      "review_status": "excluded",
-      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_22"
+      "id": "2024-amc12a-20",
+      "problem_number": 20,
+      "reason": "AoPS choices added to make the prompt self-contained",
+      "review_status": "included",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12A_Problems/Problem_20"
     },
     {
       "exam": "AMC 12B",
       "id": "2024-amc12b-07",
       "problem_number": 7,
-      "reason": "figure-dependent",
-      "review_status": "excluded",
+      "reason": "source figure omitted because the text fully specifies the problem",
+      "review_status": "included",
       "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12B_Problems/Problem_7"
     },
     {
       "exam": "AMC 12B",
       "id": "2024-amc12b-19",
       "problem_number": 19,
-      "reason": "figure-dependent",
-      "review_status": "excluded",
+      "reason": "source figure omitted because the text fully specifies the problem",
+      "review_status": "included",
       "url": "https://artofproblemsolving.com/wiki/index.php/2024_AMC_12B_Problems/Problem_19"
     }
   ],
-  "excluded_count": 6,
-  "included_count": 44,
-  "known_hf_traps": [
-    "guldasta/amc24 is unrelated to AMC math",
-    "TAUR-dev/amc25 contains AMC23 rows"
-  ],
-  "last_reviewed": "2026-07-06",
   "source_policy": {
     "canonical_owner": "MAA AMC",
     "canonical_url": "https://maa.org/student-programs/amc/",
     "extraction_source": "rawsh/2024_AMC12",
-    "primary_provenance": "AoPS problem pages cited by the HF mirror",
+    "manual_review_policy": "Rows with source figures are included only when the prompt text fully specifies the problem without the diagram.",
+    "primary_provenance": "Hugging Face mirror rows plus AoPS problem pages for reviewed self-contained figure rows",
     "runtime_network_access": false
   },
   "task": "AMC24",

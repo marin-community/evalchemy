@@ -16,14 +16,16 @@ TASKS = {
     "AMC24": {
         "data": REPO / "eval/chat_benchmarks/AMC24/data/amc24.json",
         "manifest": REPO / "eval/chat_benchmarks/AMC24/data/source_manifest.json",
-        "expected_rows": 44,
+        "expected_rows": 48,
         "expected_year": 2024,
         "expected_extraction_source": "rawsh/2024_AMC12",
         "expected_excluded": {
-            "2024-amc12a-14",
             "2024-amc12a-18",
-            "2024-amc12a-20",
             "2024-amc12a-22",
+        },
+        "expected_manual_included": {
+            "2024-amc12a-14",
+            "2024-amc12a-20",
             "2024-amc12b-07",
             "2024-amc12b-19",
         },
@@ -31,11 +33,13 @@ TASKS = {
     "AMC25": {
         "data": REPO / "eval/chat_benchmarks/AMC25/data/amc25.json",
         "manifest": REPO / "eval/chat_benchmarks/AMC25/data/source_manifest.json",
-        "expected_rows": 42,
+        "expected_rows": 49,
         "expected_year": 2025,
         "expected_extraction_source": "sonthenguyen/amc12-2025-non-figure",
         "expected_excluded": {
             "2025-amc12a-05",
+        },
+        "expected_manual_included": {
             "2025-amc12a-10",
             "2025-amc12a-14",
             "2025-amc12a-20",
@@ -109,9 +113,21 @@ def test_amc_data_files_are_valid_and_self_contained():
             assert row["source"] == "AoPS"
             assert row["canonical_source"] == "MAA AMC"
             assert row["canonical_url"] == "https://maa.org/student-programs/amc/"
-            assert row["extraction_source"] == paths["expected_extraction_source"]
-            assert row["checked_against"] == [paths["expected_extraction_source"]]
-            assert row["review_status"] == "hf_mirror_imported"
+            if row["review_status"] == "hf_mirror_imported":
+                assert row["extraction_source"] == paths["expected_extraction_source"]
+                assert row["checked_against"] == [paths["expected_extraction_source"]]
+            elif row["review_status"] == "aops_self_contained_imported":
+                assert row["id"] in paths["expected_manual_included"]
+                assert row["extraction_source"] == "AoPS"
+                assert row["checked_against"] == ["AoPS"]
+            else:
+                assert False, row["review_status"]
+
+            if row["has_figure"]:
+                assert (
+                    row.get("figure_handling")
+                    == "source_figure_omitted_text_self_contained"
+                )
             assert row["url"] == row["source_url"]
             assert row["url"].startswith(
                 "https://artofproblemsolving.com/wiki/index.php/"
@@ -123,6 +139,7 @@ def test_amc_data_files_are_valid_and_self_contained():
                 assert row.get("choices") or row.get("review_notes") == "self-contained"
 
         assert not ids & paths["expected_excluded"]
+        assert paths["expected_manual_included"] <= ids
 
 
 def test_amc_source_manifests_match_data():
@@ -147,9 +164,13 @@ def test_amc_source_manifests_match_data():
         assert [check["name"] for check in manifest["cross_checks"]] == [
             paths["expected_extraction_source"]
         ]
+        assert manifest["source_policy"]["manual_review_policy"]
 
         excluded_ids = {excluded["id"] for excluded in manifest["excluded"]}
         assert excluded_ids == paths["expected_excluded"]
+        manual_ids = {included["id"] for included in manifest["manual_inclusions"]}
+        assert manual_ids == paths["expected_manual_included"]
+        assert not manual_ids & excluded_ids
         for excluded in manifest["excluded"]:
             assert {
                 "id",
@@ -162,6 +183,20 @@ def test_amc_source_manifests_match_data():
             assert excluded["review_status"] == "excluded"
             assert excluded["reason"]
             assert excluded["url"].startswith(
+                "https://artofproblemsolving.com/wiki/index.php/"
+            )
+        for included in manifest["manual_inclusions"]:
+            assert {
+                "id",
+                "exam",
+                "problem_number",
+                "url",
+                "reason",
+                "review_status",
+            } <= set(included)
+            assert included["review_status"] == "included"
+            assert included["reason"]
+            assert included["url"].startswith(
                 "https://artofproblemsolving.com/wiki/index.php/"
             )
 
