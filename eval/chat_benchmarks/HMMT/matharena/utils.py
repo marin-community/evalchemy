@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import sympy
 from sympy.parsing.latex import parse_latex

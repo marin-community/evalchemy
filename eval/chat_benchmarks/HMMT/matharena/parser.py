@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import regex
 from typing import Optional
 from loguru import logger

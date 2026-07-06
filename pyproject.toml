@@ -63,8 +63,9 @@ dependencies = [
     "openai",
     "numpy",
     "pyyaml",
-    # HMMT grades via the vendored `matharena`, which imports loguru at module load;
+    # HMMT grades via the vendored `matharena`, which imports regex/loguru at module load;
     # kept in core so the math benchmarks (AIME/AMC/MATH500/HMMT) all import lean.
+    "regex>=2024.11.6",
     "loguru",
 
     # eval.eval_tracker imports database/ at module load (config.py runs load_dotenv();
@@ -188,6 +189,10 @@ codeforces = []
 gpqadiamond = []
 hle = []
 hmmt = []
+hmmtfeb2023 = []
+hmmtfeb2024 = []
+hmmtfeb2026 = []
+hmmtnov2025 = []
 jeebench = []
 livecodebench = []
 livecodebenchv5 = []
@@ -202,7 +207,7 @@ olympiadbench = []
 # (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
 # ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
 benchmarks = [
-    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,hmmtfeb2023,hmmtfeb2024,hmmtfeb2026,hmmtnov2025,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
