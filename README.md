@@ -115,6 +115,7 @@ huggingface-cli login
   - **CRUXEval:** [Code Reasoning, Understanding, and Execution Evaluation](https://arxiv.org/abs/2401.03065)
   - **AIME24**: [Math Reasoning Dataset](https://huggingface.co/datasets/di-zhang-fdu/AIME_1983_2024)
   - **AIME25**: [Math Reasoning Dataset](https://huggingface.co/datasets/TIGER-Lab/AIME25)
+  - **AIME26**: [Math Reasoning Dataset](https://huggingface.co/datasets/MathArena/aime_2026)
   - **AMC23**: [Math Reasoning Dataset](https://huggingface.co/datasets/AI-MO/aimo-validation-amc)
   - **MATH500**: [Math Reasoning Dataset](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) split from [Let's Verify Step by Step](https://github.com/openai/prm800k/tree/main?tab=readme-ov-file#math-splits)
   - **LiveCodeBench**: [Benchmark of LLMs for code](https://livecodebench.github.io/)
