@@ -1,0 +1,3 @@
+tasks:
+  - task_name: OlympiadBench
+    batch_size: 8
