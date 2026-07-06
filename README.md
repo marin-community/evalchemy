@@ -116,6 +116,8 @@ huggingface-cli login
   - **AIME24**: [Math Reasoning Dataset](https://huggingface.co/datasets/di-zhang-fdu/AIME_1983_2024)
   - **AIME25**: [Math Reasoning Dataset](https://huggingface.co/datasets/TIGER-Lab/AIME25)
   - **AMC23**: [Math Reasoning Dataset](https://huggingface.co/datasets/AI-MO/aimo-validation-amc)
+  - **AMC24**: AoPS-provenance MAA AMC 12 2024 text-ready subset
+  - **AMC25**: AoPS-provenance MAA AMC 12 2025 text-ready subset
   - **MATH500**: [Math Reasoning Dataset](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) split from [Let's Verify Step by Step](https://github.com/openai/prm800k/tree/main?tab=readme-ov-file#math-splits)
   - **LiveCodeBench**: [Benchmark of LLMs for code](https://livecodebench.github.io/)
   - **LiveBench**: [A benchmark for LLMs designed with test set contamination and objective evaluation in mind](https://livebench.ai/#/)
@@ -127,6 +129,8 @@ huggingface-cli login
   - **SciCode Bench** (Coming soon): [Evaluate language models in generating code for solving realistic scientific research problems](https://github.com/scicode-bench/SciCode)
   - **Berkeley Function Calling Leaderboard** (Coming soon): [Evaluating ability of LLMs to use APIs](https://gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html)
   
+AMC24 and AMC25 vendor reviewed AMC 12 A/B text-ready subsets. Figure-dependent or incomplete rows are excluded unless manually converted into self-contained text. See each task's `source_manifest.json` for provenance and exclusions.
+
 
 We have recorded reproduced results against published numbers for these benchmarks in [`reproduced_benchmarks.md`](reproduced_benchmarks.md).
 

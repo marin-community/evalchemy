@@ -1,0 +1,93 @@
+{
+  "candidate_count": 50,
+  "cross_checks": [
+    {
+      "name": "sonthenguyen/amc12-2025-non-figure",
+      "row_count": 42,
+      "split": "default/train",
+      "url": "https://huggingface.co/datasets/sonthenguyen/amc12-2025-non-figure"
+    }
+  ],
+  "excluded": [
+    {
+      "exam": "AMC 12A",
+      "id": "2025-amc12a-05",
+      "problem_number": 5,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12A_Problems/Problem_5"
+    },
+    {
+      "exam": "AMC 12A",
+      "id": "2025-amc12a-10",
+      "problem_number": 10,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12A_Problems/Problem_10"
+    },
+    {
+      "exam": "AMC 12A",
+      "id": "2025-amc12a-14",
+      "problem_number": 14,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12A_Problems/Problem_14"
+    },
+    {
+      "exam": "AMC 12A",
+      "id": "2025-amc12a-20",
+      "problem_number": 20,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12A_Problems/Problem_20"
+    },
+    {
+      "exam": "AMC 12A",
+      "id": "2025-amc12a-24",
+      "problem_number": 24,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12A_Problems/Problem_24"
+    },
+    {
+      "exam": "AMC 12B",
+      "id": "2025-amc12b-12",
+      "problem_number": 12,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12B_Problems/Problem_12"
+    },
+    {
+      "exam": "AMC 12B",
+      "id": "2025-amc12b-13",
+      "problem_number": 13,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12B_Problems/Problem_13"
+    },
+    {
+      "exam": "AMC 12B",
+      "id": "2025-amc12b-15",
+      "problem_number": 15,
+      "reason": "figure-dependent",
+      "review_status": "excluded",
+      "url": "https://artofproblemsolving.com/wiki/index.php/2025_AMC_12B_Problems/Problem_15"
+    }
+  ],
+  "excluded_count": 8,
+  "included_count": 42,
+  "known_hf_traps": [
+    "guldasta/amc24 is unrelated to AMC math",
+    "TAUR-dev/amc25 contains AMC23 rows"
+  ],
+  "last_reviewed": "2026-07-06",
+  "source_policy": {
+    "canonical_owner": "MAA AMC",
+    "canonical_url": "https://maa.org/student-programs/amc/",
+    "extraction_source": "sonthenguyen/amc12-2025-non-figure",
+    "primary_provenance": "AoPS problem pages cited by the HF mirror",
+    "runtime_network_access": false
+  },
+  "task": "AMC25",
+  "year": 2025
+}
