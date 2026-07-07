@@ -1,4 +1,4 @@
 max_tokens: 32768
 tasks:
-  - task_name: MathArenaBRUMO2025
+  - task_name: BRUMO2025
     batch_size: 1

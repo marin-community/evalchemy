@@ -1,7 +1,7 @@
 from eval.chat_benchmarks.matharena_final_answer_common import MathArenaFinalAnswerBenchmark
 
 
-class MathArenaSMT2025Benchmark(MathArenaFinalAnswerBenchmark):
+class SMT2025Benchmark(MathArenaFinalAnswerBenchmark):
     """SMT 2025 final-answer benchmark from MathArena."""
 
     DATASET_NAME = "MathArena/smt_2025"

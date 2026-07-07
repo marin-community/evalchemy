@@ -1,7 +1,7 @@
 from eval.chat_benchmarks.matharena_final_answer_common import MathArenaFinalAnswerBenchmark
 
 
-class MathArenaCMIMC2025Benchmark(MathArenaFinalAnswerBenchmark):
+class CMIMC2025Benchmark(MathArenaFinalAnswerBenchmark):
     """CMIMC 2025 final-answer benchmark from MathArena."""
 
     DATASET_NAME = "MathArena/cmimc_2025"

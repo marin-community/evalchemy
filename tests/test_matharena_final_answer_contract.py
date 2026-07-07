@@ -12,36 +12,36 @@ if str(REPO) not in sys.path:
 
 TASK_SPECS = [
     {
-        "task_name": "MathArenaApex2025",
-        "class_name": "MathArenaApex2025Benchmark",
+        "task_name": "Apex2025",
+        "class_name": "Apex2025Benchmark",
         "dataset_name": "MathArena/apex_2025",
         "expected_rows": 12,
         "config_file": "matharena_apex_2025.yaml",
     },
     {
-        "task_name": "MathArenaApexShortlist",
-        "class_name": "MathArenaApexShortlistBenchmark",
+        "task_name": "ApexShortlist",
+        "class_name": "ApexShortlistBenchmark",
         "dataset_name": "MathArena/apex-shortlist",
         "expected_rows": 47,
         "config_file": "matharena_apex_shortlist.yaml",
     },
     {
-        "task_name": "MathArenaCMIMC2025",
-        "class_name": "MathArenaCMIMC2025Benchmark",
+        "task_name": "CMIMC2025",
+        "class_name": "CMIMC2025Benchmark",
         "dataset_name": "MathArena/cmimc_2025",
         "expected_rows": 40,
         "config_file": "matharena_cmimc_2025.yaml",
     },
     {
-        "task_name": "MathArenaBRUMO2025",
-        "class_name": "MathArenaBRUMO2025Benchmark",
+        "task_name": "BRUMO2025",
+        "class_name": "BRUMO2025Benchmark",
         "dataset_name": "MathArena/brumo_2025",
         "expected_rows": 30,
         "config_file": "matharena_brumo_2025.yaml",
     },
     {
-        "task_name": "MathArenaSMT2025",
-        "class_name": "MathArenaSMT2025Benchmark",
+        "task_name": "SMT2025",
+        "class_name": "SMT2025Benchmark",
         "dataset_name": "MathArena/smt_2025",
         "expected_rows": 53,
         "config_file": "matharena_smt_2025.yaml",
@@ -75,19 +75,19 @@ def loaded_matharena_modules():
     pytest.importorskip("sympy")
 
     from eval.chat_benchmarks import matharena_final_answer_common as common
-    from eval.chat_benchmarks.MathArenaApex2025.eval_instruct import MathArenaApex2025Benchmark
-    from eval.chat_benchmarks.MathArenaApexShortlist.eval_instruct import MathArenaApexShortlistBenchmark
-    from eval.chat_benchmarks.MathArenaBRUMO2025.eval_instruct import MathArenaBRUMO2025Benchmark
-    from eval.chat_benchmarks.MathArenaCMIMC2025.eval_instruct import MathArenaCMIMC2025Benchmark
-    from eval.chat_benchmarks.MathArenaSMT2025.eval_instruct import MathArenaSMT2025Benchmark
+    from eval.chat_benchmarks.Apex2025.eval_instruct import Apex2025Benchmark
+    from eval.chat_benchmarks.ApexShortlist.eval_instruct import ApexShortlistBenchmark
+    from eval.chat_benchmarks.BRUMO2025.eval_instruct import BRUMO2025Benchmark
+    from eval.chat_benchmarks.CMIMC2025.eval_instruct import CMIMC2025Benchmark
+    from eval.chat_benchmarks.SMT2025.eval_instruct import SMT2025Benchmark
     from eval.task import TaskManager
 
     classes = {
-        "MathArenaApex2025": MathArenaApex2025Benchmark,
-        "MathArenaApexShortlist": MathArenaApexShortlistBenchmark,
-        "MathArenaCMIMC2025": MathArenaCMIMC2025Benchmark,
-        "MathArenaBRUMO2025": MathArenaBRUMO2025Benchmark,
-        "MathArenaSMT2025": MathArenaSMT2025Benchmark,
+        "Apex2025": Apex2025Benchmark,
+        "ApexShortlist": ApexShortlistBenchmark,
+        "CMIMC2025": CMIMC2025Benchmark,
+        "BRUMO2025": BRUMO2025Benchmark,
+        "SMT2025": SMT2025Benchmark,
     }
     return {"common": common, "TaskManager": TaskManager, "classes": classes}
 
@@ -160,7 +160,7 @@ def test_load_questions_normalizes_and_debug_slices(monkeypatch, loaded_matharen
 
     monkeypatch.setattr(common, "load_dataset", fake_load_dataset)
 
-    questions = classes["MathArenaApexShortlist"](debug=True).load_questions()
+    questions = classes["ApexShortlist"](debug=True).load_questions()
 
     assert calls == {"dataset_name": "MathArena/apex-shortlist", "kwargs": {"split": "train"}}
     assert len(questions) == 2
@@ -182,7 +182,7 @@ def test_load_questions_passes_revision(monkeypatch, loaded_matharena_modules):
 
     monkeypatch.setattr(common, "load_dataset", fake_load_dataset)
 
-    questions = classes["MathArenaApex2025"](dataset_revision="abc123", debug=True).load_questions()
+    questions = classes["Apex2025"](dataset_revision="abc123", debug=True).load_questions()
 
     assert calls == {"dataset_name": "MathArena/apex_2025", "kwargs": {"split": "train", "revision": "abc123"}}
     assert questions[0]["id"] == "1"
@@ -198,20 +198,20 @@ def test_load_questions_validates_expected_rows(monkeypatch, loaded_matharena_mo
     )
 
     with pytest.raises(ValueError, match="MathArena/apex_2025 expected 12 rows, got 1"):
-        classes["MathArenaApex2025"]().load_questions()
+        classes["Apex2025"]().load_questions()
 
 
 @pytest.mark.parametrize(
     "task_name,row,metadata_key,metadata_value",
     [
         (
-            "MathArenaApexShortlist",
+            "ApexShortlist",
             {"problem_idx": 7, "problem": "Problem", "answer": "1", "source": "smt-2025-p1"},
             "source",
             "smt-2025-p1",
         ),
         (
-            "MathArenaSMT2025",
+            "SMT2025",
             {"problem_idx": 8, "problem": "Problem", "answer": "2", "problem_type": ["Geometry"]},
             "problem_type",
             ["Geometry"],
@@ -241,12 +241,12 @@ def test_normalize_example_rejects_missing_required_fields(row, loaded_matharena
     classes = loaded_matharena_modules["classes"]
 
     with pytest.raises(KeyError):
-        classes["MathArenaApex2025"]()._normalize_example(row, 0)
+        classes["Apex2025"]()._normalize_example(row, 0)
 
 
 def test_unsupported_native_passk_guard_is_task_local(loaded_matharena_modules):
     classes = loaded_matharena_modules["classes"]
-    bench = classes["MathArenaApex2025"](num_samples=2)
+    bench = classes["Apex2025"](num_samples=2)
 
     with pytest.raises(ValueError, match="does not implement native pass@k"):
         bench._ensure_single_sample_mode()
@@ -258,7 +258,7 @@ def test_generate_responses_builds_instances_and_extracts_answers(
 ):
     common = loaded_matharena_modules["common"]
     classes = loaded_matharena_modules["classes"]
-    bench = classes["MathArenaSMT2025"](debug=True, max_tokens=99)
+    bench = classes["SMT2025"](debug=True, max_tokens=99)
     bench.n_repeat = 2
     examples = [
         bench._normalize_example(
@@ -329,7 +329,7 @@ def test_generate_responses_builds_instances_and_extracts_answers(
 def test_evaluate_responses_aggregates_repeated_runs_with_matharena_checker(loaded_matharena_modules):
     common = loaded_matharena_modules["common"]
     classes = loaded_matharena_modules["classes"]
-    bench = classes["MathArenaApex2025"]()
+    bench = classes["Apex2025"]()
     bench.n_repeat = 2
     results = {
         "examples": [
