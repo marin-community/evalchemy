@@ -39,6 +39,7 @@ from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # register p
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
+from eval.judges.config import JudgeConfig, add_judge_config_args, apply_annotator_config_overrides
 from eval.task import TaskManager as InstructTaskManager
 
 
@@ -124,6 +125,7 @@ def setup_custom_parser():
         default="auto",
         help="Judge model used to evaluate generations. Example: gpt-4o-mini-2024-07-18",
     )
+    add_judge_config_args(parser)
     parser.add_argument(
         "--max_tokens",
         type=str,
@@ -168,6 +170,19 @@ def setup_custom_parser():
         "exactly). Requires --output_path; without it resume is disabled.",
     )
     return parser
+
+
+def apply_config_overrides(args: argparse.Namespace, tasks_yaml: Dict) -> List[Union[int, str]]:
+    """Apply Evalchemy YAML overrides to parsed args and return per-task batch sizes."""
+
+    args.tasks = ",".join([t["task_name"] for t in tasks_yaml["tasks"]])
+    batch_sizes_list = [int(t["batch_size"]) if t["batch_size"] != "auto" else "auto" for t in tasks_yaml["tasks"]]
+
+    apply_annotator_config_overrides(args, tasks_yaml)
+
+    max_tokens = tasks_yaml.get("max_tokens", args.max_tokens)
+    args.max_tokens = int(max_tokens) if max_tokens is not None else None
+    return batch_sizes_list
 
 
 def evaluate(
@@ -398,19 +413,21 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         parser = setup_custom_parser()
         args = parse_eval_args(parser)
 
+    tasks_yaml = None
     if args.config is not None:
         # This overwrites `--tasks` and `--batch_size`
         with open(args.config, "r") as file:
             tasks_yaml = yaml.safe_load(file)
-        args.tasks = ",".join([t["task_name"] for t in tasks_yaml["tasks"]])
-        batch_sizes_list = [int(t["batch_size"]) if t["batch_size"] != "auto" else "auto" for t in tasks_yaml["tasks"]]
-        args.annotator_model = tasks_yaml.get("annotator_model", args.annotator_model)
-        args.max_tokens = int(tasks_yaml.get("max_tokens", args.max_tokens))
+        batch_sizes_list = apply_config_overrides(args, tasks_yaml)
     else:
         batch_sizes_list = [
             int(args.batch_size) if args.batch_size != "auto" else args.batch_size
             for _ in range(len(args.tasks.split(",")))
         ]
+
+    args.judge_config = (
+        JudgeConfig.from_yaml(tasks_yaml, args) if tasks_yaml is not None else JudgeConfig.from_args(args)
+    )
 
     # Initialize evaluation tracker
     if args.output_path:
@@ -451,6 +468,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         system_instruction=args.system_instruction,
         num_samples=getattr(args, "num_samples", 1),
         pass_at_k=getattr(args, "pass_at_k", None),
+        judge_config=args.judge_config,
     )
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=args.include_path)
 
@@ -648,6 +666,9 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "torch_seed": args.seed[2],
         "fewshot_seed": args.seed[3],
     }
+    judge_config = getattr(args, "judge_config", None)
+    if judge_config is not None:
+        results["config"]["judge_config"] = judge_config.redacted_dict()
 
     if isinstance(lm, lm_eval.models.huggingface.HFLM):
         results["config"].update(lm.get_model_info())

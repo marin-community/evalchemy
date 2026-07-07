@@ -484,6 +484,7 @@ class TaskManager:
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
+        self.list_of_tasks_that_require_judge_config = []
 
         # Load benchmarks from directory
         self._load_benchmarks(benchmarks_dir)
@@ -543,8 +544,11 @@ class TaskManager:
 
                 benchmark_class = benchmark_classes[0]
 
+                init_params = inspect.signature(benchmark_class.__init__).parameters
+
                 # Check if this benchmark requires OpenAI as annotator model
-                requires_annotator = "annotator_model" in inspect.signature(benchmark_class.__init__).parameters
+                requires_annotator = "annotator_model" in init_params
+                requires_judge_config = "judge_config" in init_params
 
                 # Check if the benchmark explicitly requires OpenAI for annotation
                 requires_openai = (
@@ -553,6 +557,8 @@ class TaskManager:
 
                 if requires_annotator:
                     self.list_of_tasks_that_require_annotator_model.append(item)
+                if requires_judge_config:
+                    self.list_of_tasks_that_require_judge_config.append(item)
 
                 if not has_openai_key and requires_openai:
                     self.logger.warning(
@@ -659,6 +665,25 @@ class TaskManager:
 
         # Check if 'annotator_model' is in the parameters
         return "annotator_model" in init_params
+
+    def requires_judge_config(self, task_name: str) -> bool:
+        """
+        Check if a task accepts the shared reusable LLM judge config.
+
+        This is intentionally separate from ``requires_annotator_model`` because
+        existing judge benchmarks use benchmark-specific annotator plumbing. New
+        proof/rubric benchmarks can opt into ``judge_config`` without changing old
+        benchmark behavior.
+        """
+        if task_name in self.list_of_tasks_that_require_judge_config:
+            return True
+        if task_name not in self.tasks:
+            self.logger.warning(f"Task not found: {task_name}")
+            return False
+
+        task_cls = self.tasks[task_name]
+        init_params = inspect.signature(task_cls.__init__).parameters
+        return "judge_config" in init_params
 
 
 def evaluate(

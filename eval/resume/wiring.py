@@ -160,6 +160,9 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
         "fewshot_as_multiturn": bool(getattr(args, "fewshot_as_multiturn", False)),
         "system_instruction": getattr(args, "system_instruction", None),
     }
+    judge_config = getattr(args, "judge_config", None)
+    if judge_config is not None:
+        rendered_config["judge_config"] = judge_config.redacted_dict()
 
     model_dir = _sanitize(model_repo or "model")
     base_run_dir = Path(output_path) / ".resume" / model_dir
