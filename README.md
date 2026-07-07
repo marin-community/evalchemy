@@ -117,6 +117,11 @@ huggingface-cli login
   - **AIME25**: [Math Reasoning Dataset](https://huggingface.co/datasets/TIGER-Lab/AIME25)
   - **AMC23**: [Math Reasoning Dataset](https://huggingface.co/datasets/AI-MO/aimo-validation-amc)
   - **MATH500**: [Math Reasoning Dataset](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) split from [Let's Verify Step by Step](https://github.com/openai/prm800k/tree/main?tab=readme-ov-file#math-splits)
+  - **MathArena 2025 final-answer suite**: [MathArena Apex 2025](https://huggingface.co/datasets/MathArena/apex_2025),
+    [Apex Shortlist](https://huggingface.co/datasets/MathArena/apex-shortlist),
+    [CMIMC 2025](https://huggingface.co/datasets/MathArena/cmimc_2025),
+    [BRUMO 2025](https://huggingface.co/datasets/MathArena/brumo_2025),
+    and [SMT 2025](https://huggingface.co/datasets/MathArena/smt_2025)
   - **LiveCodeBench**: [Benchmark of LLMs for code](https://livecodebench.github.io/)
   - **LiveBench**: [A benchmark for LLMs designed with test set contamination and objective evaluation in mind](https://livebench.ai/#/)
   - **GPQA Diamond**: [A Graduate-Level Google-Proof Q&A Benchmark](https://huggingface.co/datasets/Idavidrein/gpqa)

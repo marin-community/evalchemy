@@ -1,0 +1,4 @@
+max_tokens: 32768
+tasks:
+  - task_name: MathArenaCMIMC2025
+    batch_size: 1
