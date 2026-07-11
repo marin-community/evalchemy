@@ -1,0 +1,33 @@
+{
+  "provenance": {
+    "model": "Qwen/Qwen3-0.6B",
+    "model_revision": null,
+    "tokenizer": "Qwen/Qwen3-0.6B",
+    "lm_eval_version": "0.4.12",
+    "serving_backend": "marin-serve",
+    "adapter": "local-chat-completions",
+    "apply_chat_template": true,
+    "limit": 20,
+    "num_fewshot": 5,
+    "seed": 1234,
+    "recorded_at": "2026-07-11T00:45:05.827591+00:00",
+    "note": "Smoke/coarse gate seeded from a real run -- not a statistical regression baseline."
+  },
+  "tasks": {
+    "gsm8k": {
+      "metrics": {
+        "exact_match,flexible-extract": {
+          "min": 0.25
+        },
+        "exact_match,strict-match": {
+          "min": 0.05
+        }
+      },
+      "observed": {
+        "exact_match,flexible-extract": 0.5,
+        "exact_match,strict-match": 0.3
+      },
+      "expected_samples": 20
+    }
+  }
+}

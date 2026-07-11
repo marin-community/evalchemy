@@ -226,3 +226,6 @@ eval/chat_benchmarks/MixEval/mix_eval/data/model_responses
 eval/chat_benchmarks/MixEval/mix_eval/eval_scripts
 eval/chat_benchmarks/MixEval/results
 results/
+
+# e2e harness run outputs (results_*.json land here by default)
+eval/e2e/runs/

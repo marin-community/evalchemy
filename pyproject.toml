@@ -10,15 +10,14 @@ authors = [
     { name = "Your Name", email = "your.email@example.com" },
 ]
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 
 dependencies = [
@@ -74,7 +73,7 @@ dependencies = [
     "reka-api",
     "together",
     "dashscope",
-    "fschat @ file:eval/chat_benchmarks/MTBench",  # Use relative path that pip will resolve during installation
+    "fschat",  # local vendored copy; path resolved via [tool.uv.sources] below
     
     # Cloud & Storage
     "gcsfs",
@@ -83,7 +82,10 @@ dependencies = [
     "boto3",
     "botocore",
     "sagemaker",
-    "fsspec==2024.6.1",
+    # Relaxed from ==2024.6.1: an exact pin conflicts with anything needing a
+    # newer fsspec (e.g. marin-core, the [iris] extra, wants >=2025.3.0). `datasets`
+    # already floors fsspec; keep a floor here, not a hard pin, so the two coexist.
+    "fsspec>=2024.6.1",
     "hf-transfer",
     "huggingface_hub[cli]",
     
@@ -160,7 +162,18 @@ dependencies = [
     # -- a one-line EOS-token truncation in models/huggingface.py -- is superseded upstream
     # by postprocess_generated_text + stop-sequence handling). The removed lm_eval CLI/logging
     # symbols are reprovided via eval/lm_eval_compat.py.
-    "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+    #
+    # NB: the local-vLLM engine is an OPTIONAL extra (`.[vllm]`), not a base dep.
+    # It is a large, GPU/accelerator-oriented package and is unnecessary when
+    # evaluating against a *served* OpenAI-compatible endpoint (the marin-serve /
+    # e2e path) -- the server owns inference. Keeping it out of the base install
+    # lets evalchemy install on a CPU box for endpoint-dispatch eval.
+    "lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+
+    # e2e harness config loader (eval/e2e/run_e2e.py) reads config.yaml. A base
+    # dep (not dev) because the `endpoint`/`marin-serve` providers run under
+    # `uv sync --no-dev`. Previously only transitively present via datasets.
+    "pyyaml",
 ]
 
 [project.urls]
@@ -174,8 +187,43 @@ dev = [
     "isort",
     "flake8",
     "pre-commit",
-    "isort",
 ]
+
+# --- Marin `marin-serve` (Iris) provider for the e2e harness (eval/e2e/) --------
+#
+# marin-serve is NOT an evalchemy optional-dependency, on purpose. The e2e harness
+# dispatches over an OpenAI-compatible HTTP endpoint (eval/e2e/providers.py), so
+# the serving tool (marin-core) and the eval stack (evalchemy) are SEPARATE
+# environments that never share a Python import graph. Co-installing them is not
+# just unnecessary, it is unsatisfiable: marin-core (nightly) requires Python
+# >=3.12 and pins newer fsspec / curator ranges than evalchemy's eval deps, so
+# `evalchemy[marin-core]` cannot resolve.
+#
+# Install marin-serve as an ISOLATED tool instead (its console scripts land on
+# PATH, which is all the `marin-serve` provider needs). The `marin-*` libs publish
+# to public PyPI as nightly pre-releases (`<base>.dev<stamp>`):
+#
+#     uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+#     # or, to pin the newest nightly explicitly:
+#     uv tool install "marin-core==<base>.dev<stamp>"
+#
+# NOTE: a `>=X.Y.Z.dev0` floor alone does NOT force a nightly -- a stable X.Y.Z
+# sorts above every X.Y.Z.dev*. The CI workflow (.github/workflows/e2e.yaml) does
+# exactly this isolated install; the `endpoint` provider needs none of it.
+
+# Local vLLM inference engine. Needed only to serve/evaluate models locally
+# (`--model vllm`); NOT needed to evaluate against a served OpenAI-compatible
+# endpoint. Split out of the base deps so a CPU-only install stays lean.
+vllm = [
+    "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+]
+
+[tool.uv.sources]
+# Resolve the vendored FastChat copy from a local path. Using an absolute-at-
+# resolve-time path source avoids baking a relative `file:` URL into the built
+# wheel metadata (which uv cannot re-parse: "relative path without a working
+# directory").
+fschat = { path = "eval/chat_benchmarks/MTBench" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["evalchemy", "database"]

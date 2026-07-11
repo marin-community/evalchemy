@@ -66,31 +66,37 @@ python -m eval.eval \
 
 ### Installation
 
-We suggest using conda ([installation instructions](https://docs.anaconda.com/miniconda/install/#quick-command-line-install)). 
+Evalchemy uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
 ```bash
-# Create and activate conda environment
-conda create --name evalchemy python=3.10
-conda activate evalchemy
+# Install uv (https://docs.astral.sh/uv/getting-started/installation/)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone the repo
-git clone git@github.com:mlfoundations/evalchemy.git   
+git clone git@github.com:mlfoundations/evalchemy.git
 cd evalchemy
 
-# Install dependencies
-pip install -e .
-pip install -e eval/chat_benchmarks/alpaca_eval
+# Create the environment from the lockfile (base install; Python 3.11).
+# The vendored fschat dependency resolves automatically via [tool.uv.sources].
+uv sync --python 3.11
+#   make install         # equivalent, plus pre-commit hooks
 
-# Note: On some HPC systems you may need to modify pyproject.toml 
-# to use absolute paths for the fschat dependency:
-# Change: "fschat @ file:eval/chat_benchmarks/MTBench"
-# To:     "fschat @ file:///absolute/path/to/evalchemy/eval/chat_benchmarks/MTBench"
-# Or remove entirely and separately run
-# pip install -e eval/chat_benchmarks/MTBench 
+# The base install is vLLM-free (evaluation against served/API models needs no
+# local inference engine). To also install the local vLLM backend (`--model vllm`):
+uv sync --python 3.11 --extra vllm
+
+# alpaca_eval is still an editable add-on:
+uv pip install -e eval/chat_benchmarks/alpaca_eval
+
+# Run commands inside the environment with `uv run`, e.g.:
+uv run python -m eval.eval --help
 
 # Log into HuggingFace for datasets and models.
-huggingface-cli login
+uv run huggingface-cli login
 ```
+
+> Prefer conda/pip? `pip install -e .` still works from an activated environment,
+> but `uv sync` is the supported path and is what CI uses.
 
 ## 📚 Available Tasks
 

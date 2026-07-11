@@ -6,10 +6,9 @@ Welcome to the Evalchemy project! We value your contributions and are excited to
 
 Get setup with
 ```
-conda create -n evalchemy python=3.10
-conda activate evalchemy
-make install
+make install        # uv sync (Python 3.11) + pre-commit hooks
 ```
+(Install [uv](https://docs.astral.sh/uv/) first; `make install` creates the `.venv` and installs deps + hooks. Run commands with `uv run ...`.)
 
 Refer to the [instructions on how to add an evaluation benchmark](https://github.com/mlfoundations/evalchemy?tab=readme-ov-file#%EF%B8%8F-implementing-custom-evaluations)
 
@@ -30,12 +29,13 @@ Add eval name to the list in [README.md](README.md)
 ## Setting Up the Project
 
 ```bash
-conda create -n evalchemy python=3.10
-conda activate evalchemy
 make install
 ```
 
-This will create a virtual environment and install the dependencies, and pre-commit hooks.
+This uses [uv](https://docs.astral.sh/uv/) to create a `.venv` (Python 3.11) from the
+committed `uv.lock`, install the dependencies, and set up the pre-commit hooks. Run
+project commands inside the environment with `uv run ...` (e.g. `uv run pytest`). The
+base install is vLLM-free; add the local inference engine with `uv sync --extra vllm`.
 
 ## How to Contribute
 

@@ -1,0 +1,143 @@
+name: E2E
+
+# End-to-end test for the evalchemy eval path against a served model.
+# See eval/e2e/README.md.
+#
+#   * unit           -- hosted, every push/PR. Guards the harness core
+#                       (eval/e2e/ arg-builder + gate + providers). No model.
+#   * endpoint-smoke -- hosted, opt-in. Runs the real eval cycle against an
+#                       already-running OpenAI-compatible server. Enabled only
+#                       when the repo variable E2E_BASE_URL is set.
+#   * marin-serve    -- self-hosted (needs Marin cluster creds + a TPU slice).
+#                       Nightly + manual. Provisions via `marin-serve`, runs the
+#                       full cycle, tears the Iris job down unconditionally.
+#
+# Tooling: uv throughout. marin-serve is installed as an ISOLATED `uv tool`
+# (marin-core cannot co-resolve with evalchemy's eval deps -- see pyproject),
+# and reaches evalchemy only over the served HTTP endpoint.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Inference provider"
+        type: choice
+        options: [marin-serve, endpoint]
+        default: marin-serve
+      model:
+        description: "HF model id to serve/evaluate"
+        default: Qwen/Qwen3-0.6B
+      tpu:
+        description: "TPU slice (marin-serve)"
+        default: v5litepod-8
+      region:
+        description: "Region to pin the slice (marin-serve)"
+        default: europe-west4
+      tasks:
+        description: "Comma-separated tasks"
+        default: gsm8k
+      limit:
+        description: "Per-task sample cap"
+        default: "20"
+
+# One expensive provisioning run at a time; cancel superseded PR-triggered runs.
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # ---- Fast, hosted guard for the harness core (no model, no Marin) ----------
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run e2e harness unit tests
+        # The pure core (eval_args / compare / providers) imports only stdlib +
+        # pyyaml, so the tests run with an ephemeral uv env -- no evalchemy install.
+        run: uv run --python 3.11 --with pytest --with pyyaml pytest tests/e2e/ -q
+
+  # ---- Opt-in: real eval cycle against an existing endpoint (hosted) ---------
+  endpoint-smoke:
+    # Enabled only when the repo/environment variable E2E_BASE_URL is configured.
+    # (A job-level value compare -- NOT `if: secrets.X`, which is not valid here.)
+    if: ${{ vars.E2E_BASE_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      E2E_API_KEY: ${{ secrets.E2E_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Sync evalchemy (base, vLLM-free)
+        run: uv sync --no-dev --python 3.11
+      - name: Run e2e (endpoint provider)
+        run: |
+          uv run python -m eval.e2e.run_e2e --provider endpoint \
+            --base-url "$E2E_BASE_URL" \
+            --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
+            --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
+            --limit "${{ github.event.inputs.limit || '20' }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-endpoint-results
+          path: eval/e2e/runs/**
+          if-no-files-found: ignore
+
+  # ---- Full cycle via marin-serve on an Iris TPU slice (self-hosted) ---------
+  marin-serve:
+    # Provisioning a TPU costs money + needs cluster credentials, so this runs
+    # only on the nightly schedule or a manual dispatch (never on PRs), and only
+    # on a runner that has the Marin cluster config + GCP identity + TPU access.
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.provider == 'marin-serve') }}
+    runs-on: [self-hosted, marin, tpu]   # provision a runner with these labels
+    timeout-minutes: 90
+    env:
+      IRIS_CLUSTER: marin
+      # marin-serve bundles its cwd as the Iris job workspace and the container
+      # `uv sync`s it, so it must run from a marin checkout (a dir whose pyproject
+      # resolves marin-core[tpu,vllm]) -- NOT the evalchemy checkout. The runner
+      # provides one here. Until marin-serve ships a self-contained workspace
+      # (marin-community/marin#7106) this is required. Keep the checkout free of
+      # large untracked siblings (e.g. .worktrees/) or the bundle exceeds 25 MB.
+      MARIN_WORKSPACE: ${{ vars.MARIN_WORKSPACE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install marin-serve (isolated nightly tool)
+        # marin-core can't co-install with evalchemy (Python/fsspec/curator pins),
+        # so it lives in its own uv tool env; only its `marin-serve`/`iris` console
+        # scripts need to be on PATH. --prerelease allow opts into the dev wheels.
+        run: uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+      - name: Sync evalchemy (base, vLLM-free)
+        run: uv sync --no-dev --python 3.11
+      - name: Run e2e (marin-serve provider, mint-mode public URL)
+        run: |
+          uv run python -m eval.e2e.run_e2e --provider marin-serve --access link \
+            --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
+            --tpu "${{ github.event.inputs.tpu || 'v5litepod-8' }}" \
+            --region "${{ github.event.inputs.region || 'europe-west4' }}" \
+            --marin-workspace "$MARIN_WORKSPACE" \
+            --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
+            --limit "${{ github.event.inputs.limit || '20' }}"
+      - name: Cleanup stray Iris job
+        if: always()
+        # Backstop: the provider stops its own job in a finally, and marin-serve
+        # self-stops after --timeout-hours; this catches a hard-killed step. The
+        # name matches MarinServeProvider.default_job_name(model); --cluster is a
+        # top-level iris flag.
+        run: iris --cluster marin job stop "evalchemy-e2e-qwen3-0-6b" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-marin-serve-results
+          path: eval/e2e/runs/**
+          if-no-files-found: ignore

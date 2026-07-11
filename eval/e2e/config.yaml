@@ -1,0 +1,45 @@
+# Evalchemy end-to-end test configuration.
+#
+# One place to describe WHAT is served and evaluated. Every field is overridable
+# on the run_e2e.py CLI. See eval/e2e/README.md.
+
+# The test model. qwen3-0.6b is small enough to boot quickly on one TPU slice.
+model: Qwen/Qwen3-0.6B
+# Pin a commit before recording a *numeric* baseline -- the Hub tag is mutable.
+model_revision: null
+tokenizer: Qwen/Qwen3-0.6B
+
+# Baseline the gate compares against (see eval/e2e/baselines/).
+baseline: eval/e2e/baselines/qwen3-0.6b.json
+
+# The evalchemy run. gsm8k is self-graded (exact-match) -- no judge model / no
+# OPENAI_API_KEY -- so it is a clean generation smoke through the chat endpoint.
+eval:
+  tasks:
+    - gsm8k
+  apply_chat_template: true      # -> local-chat-completions (bare flag; never "True")
+  limit: 20                      # the "sample query set"; a smoke size, not a stat baseline
+  num_fewshot: 5                 # gsm8k standard
+  batch_size: 1
+  seed: 1234                     # pinned greedy decoding for reproducibility
+  # max_gen_toks headroom for reasoning models (Qwen3 emits <think> ... </think>
+  # before the answer); 256 (lm-eval default) truncates them mid-thought.
+  gen_kwargs: temperature=0,do_sample=false,max_gen_toks=1024
+  extra_model_args:
+    num_concurrent: 8
+    timeout: 120
+    max_retries: 3
+
+# Per-provider defaults.
+provider:
+  marin-serve:
+    cluster: marin               # the Iris cluster to submit to
+    # v5litepod-8 is a single-host slice with serving capacity on the marin
+    # cluster's v5e-serving pool (europe-west4-b). v6e-8 also works where v6e
+    # capacity exists; override with --tpu / --region.
+    tpu: v5litepod-8
+    region: europe-west4         # pin the slice to a zone with capacity
+    access: link                 # mint a PUBLIC capability URL (no IAP token plumbing)
+    wait_timeout_s: 1800         # vLLM boot budget
+    timeout_hours: 2             # server self-stop backstop
+  endpoint: {}
