@@ -8,7 +8,6 @@ from abc import ABC, abstractmethod
 from itertools import islice
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
-import lm_eval.models as lm_eval_models
 import numpy as np
 
 try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run torch-free
@@ -18,17 +17,6 @@ except ModuleNotFoundError:
     torch = None
     dist = None
 
-# The vLLM model class is only importable with the [vllm] extra. Resolve it defensively so
-# the endpoint path (local-completions / curator, no vllm) does not AttributeError on the
-# `isinstance(model, VLLM)` checks below; isinstance(x, ()) is always False.
-try:
-    from lm_eval.models.vllm_causallms import VLLM as _VLLM
-except Exception:
-    _VLLM = ()
-# Force-import the OpenAI-completions submodule so `lm_eval_models.openai_completions.*` in
-# `_normalize_model_args` resolves regardless of which model registered: `local-completions`
-# imports it as a side effect, `curator` does not. Base lm-eval ([api]); no extra required.
-import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
@@ -234,6 +222,17 @@ class BaseBenchmark(ABC):
         return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
+        # lm-eval v0.4.12 registers model modules lazily, so attributes such as
+        # ``lm_eval.models.openai_completions`` are not guaranteed to exist.
+        # Inspect the model MRO instead of importing optional provider backends.
+        model_types = {(cls.__module__, cls.__name__) for cls in type(model).__mro__}
+        is_openai_completion = any(
+            module == "lm_eval.models.openai_completions" and name in {"OpenAIChatCompletion", "OpenAICompletionsAPI"}
+            for module, name in model_types
+        )
+        is_vllm = ("lm_eval.models.vllm_causallms", "VLLM") in model_types
+        is_upload_model = "UploadInstancesToHF" in model.__class__.__name__
+
         for instance in instances:
             seeds = None
             if "seed" in instance.args[1]:
@@ -244,26 +243,19 @@ class BaseBenchmark(ABC):
                 if torch is not None:
                     torch.manual_seed(seeds[2])
 
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                if is_openai_completion:
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
-                elif (
-                    isinstance(model, _VLLM)
-                    or "UploadInstancesToHF" in model.__class__.__name__
-                ):
+                elif is_vllm or is_upload_model:
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 else:  # Huggingface does not support seed
                     _ = instance.args[1].pop("seed") if "seed" in instance.args[1] else None
             if "max_new_tokens" in instance.args[1]:
                 max_new_tokens = instance.args[1].pop("max_new_tokens")
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                if is_openai_completion:
                     instance.args[1]["max_tokens"] = max_new_tokens
                     if "4o" in model.model:
                         instance.args[1]["max_tokens"] = min(max_new_tokens, 16384)
-                elif isinstance(model, _VLLM):
+                elif is_vllm:
                     instance.args[1]["max_gen_toks"] = max_new_tokens
                 else:  # Huggingface
                     instance.args[1]["max_new_tokens"] = max_new_tokens
@@ -450,9 +442,7 @@ class BaseBenchmark(ABC):
                 resps = [example.get("model_output", "")]
                 filtered = [example.get("model_answer", "")]
 
-            doc_hash = hash_string(
-                _json.dumps(example, indent=2, default=_hns, ensure_ascii=False)
-            )
+            doc_hash = hash_string(_json.dumps(example, indent=2, default=_hns, ensure_ascii=False))
             samples.append(
                 {
                     "doc_id": doc_id,

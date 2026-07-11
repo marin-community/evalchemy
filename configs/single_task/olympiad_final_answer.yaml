@@ -1,0 +1,9 @@
+tasks:
+  - task_name: RIMON
+    batch_size: 8
+  - task_name: OlymMATHEasy
+    batch_size: 8
+  - task_name: OlymMATHHard
+    batch_size: 8
+  - task_name: AMOBenchParser
+    batch_size: 8

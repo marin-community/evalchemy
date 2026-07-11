@@ -1,0 +1,9 @@
+{
+  "benchmark": "RIMO-N",
+  "license": "Apache-2.0",
+  "revision": "a6fb235c1eeb9592f66db5ac5fbbd2d0435fdb5e",
+  "rows": 335,
+  "sha256": "71a4d791210a954f03479c1541edd29e855c224fed786d45e44e48f7789fc08d",
+  "source": "https://huggingface.co/datasets/ziye2chen/RIMO/blob/a6fb235c1eeb9592f66db5ac5fbbd2d0435fdb5e/RIMO-N.jsonl"
+}
+

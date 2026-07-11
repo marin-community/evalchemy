@@ -1,0 +1,10 @@
+{
+  "benchmark": "OlymMATH-EN-EASY",
+  "grader_revision": "dd3d3042cceef1f1b0fb508ab50281a7ce8b60bf",
+  "grader_source": "https://github.com/RUCAIBox/OlymMATH/blob/dd3d3042cceef1f1b0fb508ab50281a7ce8b60bf/local_tester.py",
+  "license": "MIT",
+  "revision": "2c6532ea2cf929ac1c421532af5951553eaee727",
+  "rows": 100,
+  "sha256": "1d96903b3017abd80388005ca9ad68c8074540ad6f41ee7cd92ac79cbcf5bc0a",
+  "source": "https://huggingface.co/datasets/RUC-AIBOX/OlymMATH/blob/2c6532ea2cf929ac1c421532af5951553eaee727/data/OlymMATH-EN-EASY.jsonl"
+}

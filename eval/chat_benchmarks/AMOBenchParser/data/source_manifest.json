@@ -1,0 +1,16 @@
+{
+  "benchmark": "AMO-Bench parser subset",
+  "excluded_answer_types": {
+    "description": 11
+  },
+  "grader_revision": "52e1f378e4bcb0c593e860be38f9251b1a192571",
+  "grader_source": "https://github.com/meituan-longcat/AMO-Bench/blob/52e1f378e4bcb0c593e860be38f9251b1a192571/utils.py",
+  "license": "MIT",
+  "normalized_rows": 39,
+  "normalized_sha256": "58ebd76884e88a7301abd4d788cdb93ebc570995677cab68ad0985345a4a3ff5",
+  "revision": "2f422616c25d862984408fbbfaed63a961e8e025",
+  "source": "https://huggingface.co/datasets/meituan-longcat/AMO-Bench/blob/2f422616c25d862984408fbbfaed63a961e8e025/data/test-00000-of-00001.parquet",
+  "source_rows": 50,
+  "source_sha256": "eb08f5239c0cc092e13552c31e505a7fdb8e8140aa8e227beedd62fc442cde58",
+  "transform": "../prepare_data.py"
+}
