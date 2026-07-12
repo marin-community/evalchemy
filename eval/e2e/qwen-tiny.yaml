@@ -1,0 +1,32 @@
+# Run config for the evalchemy e2e test: Qwen3-0.6B on gsm8k.
+# Loaded by eval.e2e.models.E2EConfig (pydantic-settings). CLI flags and E2E_* env
+# vars override these. See eval/e2e/README.md.
+
+model: Qwen/Qwen3-0.6B
+model_revision: null          # pin a commit before recording a numeric baseline -- the Hub tag is mutable
+tokenizer: Qwen/Qwen3-0.6B
+baseline: eval/e2e/baselines/qwen3-0.6b.json
+
+# gsm8k is self-graded (exact-match) -- no judge model, no OPENAI_API_KEY -- so it
+# is a clean generation smoke through the chat endpoint.
+tasks:
+  - gsm8k
+apply_chat_template: true
+limit: 200                    # human default; CI passes --limit 20; --limit 0 runs the full task
+num_fewshot: 5
+batch_size: 1
+seed: 1234                    # pinned greedy decoding
+# Qwen3 emits <think> ... </think> before the answer; 256 (lm-eval default) truncates it.
+gen_kwargs: temperature=0,do_sample=false,max_gen_toks=1024
+extra_model_args:
+  num_concurrent: 8
+  timeout: 120
+  max_retries: 3
+
+# marin-serve provider
+cluster: marin
+tpu: v5litepod-8              # single-host slice on marin's v5e-serving pool; override with --tpu / --region
+region: europe-west4
+access: link                  # mint a PUBLIC capability URL (no bearer header)
+wait_timeout_s: 1800
+timeout_hours: 2

@@ -29,7 +29,7 @@ from eval.e2e.models import (
 )
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "e2e", "config.yaml")
+_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "e2e", "qwen-tiny.yaml")
 
 # Metric families we record floors for (exact_match / acc / pass@k); never their
 # stderr companions. pass@k is included so sampled tasks (AIME/MATH/HumanEval run
@@ -74,10 +74,10 @@ def build_baseline(
         tokenizer=cfg.tokenizer or model or cfg.model,
         lm_eval_version=results.lm_eval_version,
         adapter=results.model_source,
-        apply_chat_template=cfg.eval.apply_chat_template,
-        limit=results.config.get("limit") if results.config.get("limit") is not None else cfg.eval.limit,
-        num_fewshot=cfg.eval.num_fewshot,
-        seed=results.config.get("random_seed") if results.config.get("random_seed") is not None else cfg.eval.seed,
+        apply_chat_template=cfg.apply_chat_template,
+        limit=results.config.get("limit") if results.config.get("limit") is not None else cfg.limit,
+        num_fewshot=cfg.num_fewshot,
+        seed=results.config.get("random_seed") if results.config.get("random_seed") is not None else cfg.seed,
         recorded_at=datetime.now(timezone.utc).isoformat(),
         note="Smoke/coarse gate seeded from a real run -- not a statistical regression baseline.",
     )
@@ -95,7 +95,7 @@ def cli() -> None:
 @click.option("--config", "config_path", default=_DEFAULT_CONFIG, help="Config yaml (for the default baseline path).")
 def check(results_path: str, baseline_path: Optional[str], config_path: str) -> None:
     """Gate a run against a baseline. Exit 0 = pass, 1 = fail."""
-    cfg = E2EConfig.load_or_empty(config_path)
+    cfg = E2EConfig.load(config_path)
     baseline_path = baseline_path or cfg.baseline
     if not baseline_path or not os.path.exists(baseline_path):
         raise click.UsageError(f"no baseline to gate against ({baseline_path!r}); pass --baseline")
@@ -129,7 +129,7 @@ def record(
     margin: float,
 ) -> None:
     """Write a golden baseline from a real run's results."""
-    cfg = E2EConfig.load_or_empty(config_path)
+    cfg = E2EConfig.load(config_path)
     baseline_path = baseline_path or cfg.baseline
     if not baseline_path:
         raise click.UsageError("no output path (--baseline or config 'baseline')")

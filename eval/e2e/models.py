@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Pydantic models for the harness's JSON/YAML files:
 
-* :class:`E2EConfig`   -- ``config.yaml`` (what to serve + evaluate).
+* :class:`E2EConfig`   -- the run config (e.g. ``qwen-tiny.yaml``).
 * :class:`Baseline`    -- a golden ``baselines/*.json`` the gate checks against.
 * :class:`EvalResults` -- the ``results_*.json`` lm-eval/evalchemy writes.
 
@@ -13,33 +13,42 @@ from __future__ import annotations
 
 import glob
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, ClassVar, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettingsSource
 
-# --- config.yaml ---------------------------------------------------------------
+# --- the run config (e.g. qwen-tiny.yaml) --------------------------------------
 
 
-class EvalSettings(BaseModel):
-    """The evalchemy run: which tasks, how many samples, decoding."""
+class E2EConfig(BaseSettings):
+    """What to serve and evaluate.
 
-    model_config = ConfigDict(extra="forbid")
+    Layered by :meth:`load`: CLI overrides win, then ``E2E_*`` env vars, then the
+    yaml file (e.g. ``qwen-tiny.yaml``), then these defaults.
+    """
 
+    model_config = SettingsConfigDict(env_prefix="E2E_", extra="forbid", protected_namespaces=())
+
+    _yaml_path: ClassVar[Optional[str]] = None
+
+    # what to serve
+    model: Optional[str] = None
+    model_revision: Optional[str] = None
+    tokenizer: Optional[str] = None
+    baseline: Optional[str] = None
+
+    # the evalchemy run
     tasks: List[str] = Field(default_factory=lambda: ["gsm8k"])
     apply_chat_template: bool = False
-    limit: Optional[int] = None
+    limit: Optional[int] = 200
     num_fewshot: Optional[int] = None
     batch_size: Union[int, str] = 1
     seed: Optional[int] = 1234
     gen_kwargs: Optional[str] = None
     extra_model_args: Dict[str, Union[str, int, float, bool]] = Field(default_factory=dict)
 
-
-class MarinServeSettings(BaseModel):
-    """Defaults for the ``marin-serve`` provisioning provider."""
-
-    model_config = ConfigDict(extra="forbid")
-
+    # marin-serve provider
     cluster: str = "marin"
     tpu: str = "v5litepod-8"
     region: Optional[str] = None
@@ -48,40 +57,23 @@ class MarinServeSettings(BaseModel):
     timeout_hours: float = 2.0
     marin_workspace: Optional[str] = None
 
-
-class ProviderSettings(BaseModel):
-    """Per-provider config blocks (``provider:`` in the yaml)."""
-
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
-    marin_serve: MarinServeSettings = Field(default_factory=MarinServeSettings, alias="marin-serve")
-    endpoint: Dict[str, Any] = Field(default_factory=dict)
-
-
-class E2EConfig(BaseModel):
-    """The whole ``config.yaml``. Every field is overridable on the CLI."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    model: Optional[str] = None
-    model_revision: Optional[str] = None
-    tokenizer: Optional[str] = None
-    baseline: Optional[str] = None
-    eval: EvalSettings = Field(default_factory=EvalSettings)
-    provider: ProviderSettings = Field(default_factory=ProviderSettings)
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        sources = [init_settings, env_settings]
+        if cls._yaml_path:
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=cls._yaml_path))
+        return tuple(sources)
 
     @classmethod
-    def load(cls, path: str) -> "E2EConfig":
-        import yaml  # local import: pure-JSON consumers (validate) need no yaml
+    def load(cls, path: Optional[str] = None, **overrides: Any) -> "E2EConfig":
+        """Load from ``path`` (if it exists) + ``E2E_*`` env + CLI ``overrides``.
 
-        with open(path, "r", encoding="utf-8") as f:
-            return cls.model_validate(yaml.safe_load(f) or {})
-
-    @classmethod
-    def load_or_empty(cls, path: Optional[str]) -> "E2EConfig":
-        if path and os.path.exists(path):
-            return cls.load(path)
-        return cls()
+        ``None`` overrides are dropped so an unset CLI flag can't clobber the file.
+        """
+        cls._yaml_path = path if (path and os.path.exists(path)) else None
+        return cls(**{k: v for k, v in overrides.items() if v is not None})
 
 
 # --- baselines/*.json ----------------------------------------------------------

@@ -56,6 +56,7 @@ accepts an optional `reference ± tolerance` band for a tighter gate at higher l
 Pin `provenance.model_revision` in the baseline before committing floors — the Hub
 tag is mutable.
 
-Config defaults are in `config.yaml`. CI runs from `.github/workflows/e2e-ci.yaml`
+Config defaults are in `qwen-tiny.yaml` (loaded with pydantic-settings; CLI flags
+and `E2E_*` env vars override it). CI runs from `.github/workflows/e2e-ci.yaml`
 (per-PR) and `e2e-nightly.yaml` (cluster run); the secrets the nightly needs are
 documented in its workflow header.

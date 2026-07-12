@@ -1,26 +1,17 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Resolve a *served* model (base_url + model + optional bearer) for the e2e run.
+"""Resolve a served model (base_url + model + optional key) for the run.
 
-Two providers:
+* :class:`EndpointProvider` -- attach to an already-running OpenAI-compatible
+  server at a ``/v1`` root.
+* :class:`MarinServeProvider` -- run the ``marin-serve`` CLI (Iris -> vLLM on a TPU
+  slice) as a background process, parse the endpoint URL it prints, and stop the
+  Iris job in a ``finally`` (killing the CLI leaves the job running). Needs Marin +
+  cluster access + a TPU slice.
 
-* :class:`EndpointProvider` -- the stable, dependency-free boundary. You point it
-  at an already-running OpenAI-compatible server (``/v1`` root). This is what the
-  unit tests and hosted-CI smoke exercise; it is also how you attach to a server
-  a teammate brought up with ``marin-serve`` by hand.
-
-* :class:`MarinServeProvider` -- a thin managed adapter over the real
-  ``marin-serve`` CLI (Iris controller -> vLLM on a TPU slice). It runs the CLI as
-  a background process (``--wait`` blocks holding the SSH tunnel), parses the
-  printed ``OpenAI: {root}/v1`` line, and -- because killing the CLI deliberately
-  leaves the Iris job running -- tears the job down explicitly via ``iris job
-  stop`` in a ``finally``. It needs Marin + cluster credentials + a TPU slice and
-  cannot run on hosted CI.
-
-Auth note: the Marin controller proxy is IAP-gated. Minting a correct-audience,
-refresh-capable token from CI identity is out of scope here, so the bearer is
-**bring-your-own** (``--api-key`` / ``E2E_API_KEY``), sent by lm-eval as
-``Authorization: Bearer``. The verified path in this PR is ``endpoint`` mode.
+In ``--access link`` (mint) mode ``marin-serve`` returns a capability URL with a
+scoped token in its path, so no bearer header is needed. ``--access private`` keeps
+the proxy IAP-gated; pass a bearer with ``--api-key`` / ``E2E_API_KEY`` for it.
 """
 
 from __future__ import annotations

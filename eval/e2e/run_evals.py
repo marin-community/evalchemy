@@ -4,7 +4,7 @@
 
 Brings up an inference server -- a TPU via ``marin-serve``, or an OpenAI-compatible
 endpoint you already have -- runs ``python -m eval.eval`` against it, and prints each
-task's metrics. Defaults live in ``eval/e2e/config.yaml``; every field is overridable.
+task's metrics. Defaults live in ``eval/e2e/qwen-tiny.yaml``; every field is overridable.
 
     python -m eval.e2e.run_evals --model Qwen/Qwen3-0.6B \
         --tpu v5litepod-8 --region europe-west4 --marin-workspace /path/to/marin
@@ -30,43 +30,21 @@ from eval.e2e.providers import build_provider
 logger = logging.getLogger("eval.e2e")
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "e2e", "config.yaml")
+_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "e2e", "qwen-tiny.yaml")
 
 
-def _pick(cli_value, config_value, default=None):
-    """CLI override wins, then config, then default."""
-    if cli_value is not None:
-        return cli_value
-    if config_value is not None:
-        return config_value
-    return default
-
-
-def resolve_limit(cli_limit: Optional[int], config_limit: Optional[int], default: int = 200) -> Optional[int]:
-    """Resolve the per-task sample cap into what lm-eval should receive.
-
-    CLI value wins, else the config value, else ``default`` (a real-ish eval). The
-    non-obvious part: ``<= 0`` is the escape hatch for the FULL task -- lm-eval
-    reads a *missing* ``--limit`` as "all samples", so a non-positive request maps
-    to ``None`` (omit the flag) rather than a literal cap of 0.
-    """
-    limit = _pick(cli_limit, config_limit, default)
-    return None if limit <= 0 else limit
-
-
-def build_invocation(cfg: E2EConfig, served: ServedModel, output_dir: str, tasks, limit, extra_args) -> EvalInvocation:
-    ev = cfg.eval
+def build_invocation(cfg: E2EConfig, served: ServedModel, output_dir: str, limit, extra_args) -> EvalInvocation:
     return EvalInvocation(
         served=served,
-        tasks=list(tasks),
+        tasks=list(cfg.tasks),
         output_path=output_dir,
-        apply_chat_template=ev.apply_chat_template,
+        apply_chat_template=cfg.apply_chat_template,
         limit=limit,
-        num_fewshot=ev.num_fewshot,
-        batch_size=ev.batch_size,
-        seed=ev.seed,
-        gen_kwargs=ev.gen_kwargs,
-        extra_model_args=dict(ev.extra_model_args),
+        num_fewshot=cfg.num_fewshot,
+        batch_size=cfg.batch_size,
+        seed=cfg.seed,
+        gen_kwargs=cfg.gen_kwargs,
+        extra_model_args=dict(cfg.extra_model_args),
         extra_args=list(extra_args),
     )
 
@@ -162,45 +140,55 @@ def main(
     ``run_evals --tasks MATH500 -- --num_samples 8 --pass_at_k 1,8`` for pass@k.
     """
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="[e2e] %(message)s")
-    cfg = E2EConfig.load_or_empty(config_path)
-
-    model = model or cfg.model
-    if not model:
+    cfg = E2EConfig.load(
+        config_path,
+        model=model,
+        tokenizer=tokenizer,
+        tasks=tasks.split(",") if tasks else None,
+        limit=limit,
+        cluster=cluster,
+        tpu=tpu,
+        region=region,
+        access=access,
+        marin_workspace=marin_workspace,
+        wait_timeout_s=wait_timeout,
+        timeout_hours=timeout_hours,
+    )
+    if not cfg.model:
         raise click.UsageError("no model given (--model or config 'model')")
-    task_list = tasks.split(",") if tasks else list(cfg.eval.tasks)
-    limit = resolve_limit(limit, cfg.eval.limit)
+    # --limit 0 (or negative) means the FULL task: lm-eval reads no --limit as "all samples".
+    limit = None if (cfg.limit is not None and cfg.limit <= 0) else cfg.limit
 
     output_dir = output_dir or os.path.join(
         _REPO_ROOT, "eval", "e2e", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    ms = cfg.provider.marin_serve
     prov = build_provider(
         provider,
-        model,
+        cfg.model,
         base_url=base_url,
         api_key=api_key,
-        tokenizer=_pick(tokenizer, cfg.tokenizer),
-        cluster=_pick(cluster, ms.cluster, "marin"),
-        tpu=_pick(tpu, ms.tpu, "v5litepod-8"),
+        tokenizer=cfg.tokenizer,
+        cluster=cfg.cluster,
+        tpu=cfg.tpu,
         name=name,
-        access=_pick(access, ms.access, "link"),
-        region=_pick(region, ms.region),
-        marin_workspace=_pick(marin_workspace, ms.marin_workspace),
-        wait_timeout_s=_pick(wait_timeout, ms.wait_timeout_s, 1800.0),
-        timeout_hours=_pick(timeout_hours, ms.timeout_hours, 2.0),
+        access=cfg.access,
+        region=cfg.region,
+        marin_workspace=cfg.marin_workspace,
+        wait_timeout_s=cfg.wait_timeout_s,
+        timeout_hours=cfg.timeout_hours,
         wait_ready=not no_wait_ready,
     )
 
     with prov as served:
         logger.info("served model: base_url=%s model=%s (auth=%s)", served.base_url, served.model, bool(served.api_key))
-        inv = build_invocation(cfg, served, output_dir, task_list, limit, extra_eval_args)
+        inv = build_invocation(cfg, served, output_dir, limit, extra_eval_args)
         run_eval(inv, python_bin)
 
     results_path = EvalResults.find_latest_path(output_dir)
     results = EvalResults.load(results_path)
-    click.echo("\n" + summarize(results, task_list))
+    click.echo("\n" + summarize(results, cfg.tasks))
     click.echo(f"\nresults: {results_path}")
     click.echo(f"to gate: python -m eval.e2e.validate check --results {output_dir} --baseline <baseline.json>")
 

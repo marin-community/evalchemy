@@ -170,12 +170,13 @@ dependencies = [
     # lets evalchemy install on a CPU box for endpoint-dispatch eval.
     "lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
 
-    # e2e harness (eval/e2e/): the run_evals/validate CLIs use click, parse
-    # config/baseline/results JSON+YAML with pydantic, and load config.yaml with
-    # pyyaml. Base deps (not dev) because the providers run under `uv sync --no-dev`.
-    # All three were previously only transitively present.
+    # e2e harness (eval/e2e/): the run_evals/validate CLIs use click, parse the
+    # baseline/results JSON with pydantic, and load the run config (qwen-tiny.yaml)
+    # with pydantic-settings. Base deps (not dev) because the providers run under
+    # `uv sync --no-dev`.
     "pyyaml",
     "pydantic>=2",
+    "pydantic-settings>=2",
     "click>=8",
 ]
 

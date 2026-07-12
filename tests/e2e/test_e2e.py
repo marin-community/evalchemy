@@ -178,15 +178,14 @@ def test_metric_threshold_reference_without_tolerance_raises():
 
 def test_config_rejects_unknown_key():
     with pytest.raises(ValidationError):
-        E2EConfig.model_validate({"eval": {"tasks": ["gsm8k"], "typo_field": 1}})
+        E2EConfig.model_validate({"tasks": ["gsm8k"], "typo_field": 1})
 
 
-def test_shipped_config_parses_with_marin_serve_alias():
-    cfg = E2EConfig.load(os.path.join(_HERE, "eval", "e2e", "config.yaml"))
+def test_shipped_config_and_baseline_parse():
+    cfg = E2EConfig.load(os.path.join(_HERE, "eval", "e2e", "qwen-tiny.yaml"))
     assert cfg.model == "Qwen/Qwen3-0.6B"
-    assert cfg.eval.apply_chat_template is True
-    # The hyphenated `marin-serve` yaml key maps to the marin_serve field via alias.
-    assert cfg.provider.marin_serve.tpu == "v5litepod-8"
+    assert cfg.apply_chat_template is True
+    assert cfg.tpu == "v5litepod-8"
     assert "gsm8k" in Baseline.load(cfg.baseline).tasks
 
 
