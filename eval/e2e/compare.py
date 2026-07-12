@@ -1,73 +1,23 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Gate an evalchemy ``results_*.json`` against a checked-in baseline.
+"""Gate a run's :class:`EvalResults` against a golden :class:`Baseline`.
 
 The gate is deliberately a **connectivity + coarse-quality smoke check**, not a
 statistical regression test: a small ``--limit`` run of a 0.6B model moves in
-coarse increments, so we assert (a) the endpoint actually answered the expected
-number of samples and (b) each tracked metric clears a floor (and, optionally,
-stays within a tolerance of a recorded reference). See ``eval/e2e/README.md`` and
-the baseline's ``provenance`` block for what a given baseline was recorded with.
+coarse increments (gsm8k strict-match swings ~3/20 run-to-run even greedy), so we
+assert (a) the endpoint answered the expected number of samples and (b) each
+tracked metric clears a floor -- plus, optionally, stays within ``tolerance`` of a
+recorded ``reference``. See ``eval/e2e/README.md`` and the baseline's ``provenance``.
 
-Pure stdlib; no Marin / lm-eval import, so it runs on stock CI.
+Consumes typed models (:mod:`eval.e2e.models`); no raw-dict access.
 """
 
 from __future__ import annotations
 
-import glob
-import json
-import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-
-def find_latest_results(output_dir: str) -> str:
-    """Return the newest ``results_*.json`` written under ``output_dir`` (recursive).
-
-    evalchemy's ``DCEvaluationTracker`` writes to
-    ``<output_path>/<model_name_sanitized>/results_<ts>.json``.
-    """
-    matches = glob.glob(os.path.join(output_dir, "**", "results_*.json"), recursive=True)
-    matches += glob.glob(os.path.join(output_dir, "results_*.json"))
-    if not matches:
-        raise FileNotFoundError(f"no results_*.json found under {output_dir!r}")
-    return max(set(matches), key=os.path.getmtime)
-
-
-def load_results(results_path: str) -> dict:
-    with open(results_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def effective_sample_count(results: dict, task: str) -> Optional[int]:
-    """Best-effort effective sample count for ``task`` from the results dict."""
-    n_samples = results.get("n-samples") or {}
-    entry = n_samples.get(task)
-    if isinstance(entry, dict):
-        for key in ("effective", "original"):
-            if isinstance(entry.get(key), int):
-                return entry[key]
-    # evalchemy's lm-eval-native (pretrain) path does not populate the top-level
-    # ``n-samples`` map; it records the count on the task result as ``sample_len``.
-    task_results = (results.get("results") or {}).get(task) or {}
-    if isinstance(task_results.get("sample_len"), int):
-        return task_results["sample_len"]
-    return None
-
-
-def get_metric(results: dict, task: str, metric: str) -> float:
-    """Extract ``results['results'][task][metric]`` as a float, with a clear error."""
-    task_results = (results.get("results") or {}).get(task)
-    if task_results is None:
-        available = sorted((results.get("results") or {}).keys())
-        raise KeyError(f"task {task!r} not in results; available tasks: {available}")
-    if metric not in task_results:
-        available = sorted(k for k, v in task_results.items() if isinstance(v, (int, float)))
-        raise KeyError(f"metric {metric!r} not in results[{task!r}]; available numeric metrics: {available}")
-    value = task_results[metric]
-    if not isinstance(value, (int, float)):
-        raise TypeError(f"results[{task!r}][{metric!r}] is not numeric: {value!r}")
-    return float(value)
+from eval.e2e.models import Baseline, EvalResults, MetricThreshold
 
 
 @dataclass
@@ -141,64 +91,42 @@ class GateReport:
         return out
 
 
-def evaluate_gate(results: dict, baseline: dict) -> GateReport:
-    """Compare a results dict against a parsed baseline dict; return a report.
+def _metric_check(results: EvalResults, task: str, metric: str, thresholds: MetricThreshold) -> MetricCheck:
+    check = MetricCheck(
+        task=task,
+        metric=metric,
+        observed=None,
+        min_threshold=thresholds.min,
+        reference=thresholds.reference,
+        tolerance=thresholds.tolerance,
+    )
+    observed = results.metric(task, metric)
+    if observed is None:
+        available = sorted(results.numeric_metrics(task))
+        check.error = f"metric {metric!r} not in results[{task!r}]; available: {available}"
+    else:
+        check.observed = observed
+    return check
 
-    Baseline schema::
 
-        {
-          "provenance": {...free-form metadata...},
-          "tasks": {
-            "<task>": {
-              "expected_samples": <int>,             # optional
-              "metrics": {
-                "<metric-key>": {"min": <float>,      # optional coarse floor
-                                 "reference": <float>, # optional
-                                 "tolerance": <float>} # required iff reference set
-              }
-            }
-          }
-        }
-    """
-    report = GateReport()
-    tasks = baseline.get("tasks") or {}
-    if not tasks:
+def evaluate_gate(results: EvalResults, baseline: Baseline) -> GateReport:
+    """Compare a run's results against a baseline; return a :class:`GateReport`."""
+    if not baseline.tasks:
         raise ValueError("baseline has no 'tasks' entries to check")
 
-    for task, spec in tasks.items():
-        expected_samples = spec.get("expected_samples")
-        if expected_samples is not None:
+    report = GateReport()
+    for task, spec in baseline.tasks.items():
+        if spec.expected_samples is not None:
             report.sample_checks.append(
-                SampleCheck(task=task, expected=int(expected_samples), observed=effective_sample_count(results, task))
+                SampleCheck(task=task, expected=int(spec.expected_samples), observed=results.sample_count(task))
             )
-        metrics = spec.get("metrics") or {}
-        if not metrics:
+        if not spec.metrics:
             raise ValueError(f"baseline task {task!r} has no 'metrics' to check")
-        for metric, thresholds in metrics.items():
-            reference = thresholds.get("reference")
-            tolerance = thresholds.get("tolerance")
-            if reference is not None and tolerance is None:
-                raise ValueError(f"baseline {task}/{metric}: 'reference' requires 'tolerance'")
-            check = MetricCheck(
-                task=task,
-                metric=metric,
-                observed=None,
-                min_threshold=thresholds.get("min"),
-                reference=reference,
-                tolerance=tolerance,
-            )
-            try:
-                check.observed = get_metric(results, task, metric)
-            except (KeyError, TypeError) as exc:
-                check.error = str(exc)
-            report.metric_checks.append(check)
+        for metric, thresholds in spec.metrics.items():
+            report.metric_checks.append(_metric_check(results, task, metric, thresholds))
     return report
 
 
-def load_baseline(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def gate_results_file(results_path: str, baseline_path: str) -> GateReport:
-    return evaluate_gate(load_results(results_path), load_baseline(baseline_path))
+def gate_paths(results_path: str, baseline_path: str) -> GateReport:
+    """Convenience: gate a results file (or run dir) against a baseline file."""
+    return evaluate_gate(EvalResults.load_path_or_dir(results_path), Baseline.load(baseline_path))

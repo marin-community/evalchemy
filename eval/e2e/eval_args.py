@@ -127,6 +127,11 @@ class EvalInvocation:
     seed: Optional[int] = 1234
     gen_kwargs: Optional[str] = None
     extra_model_args: Dict[str, ModelArgValue] = field(default_factory=dict)
+    # Extra ``eval.eval`` flags forwarded verbatim (e.g. ``--num_samples 8
+    # --pass_at_k 1,8``). Appended last so lm-eval's argparse lets them override
+    # our defaults; this is how pass@k / --predict_only / future flags reach the
+    # eval without re-plumbing each one here.
+    extra_args: List[str] = field(default_factory=list)
 
     @property
     def adapter(self) -> str:
@@ -175,4 +180,5 @@ def build_eval_argv(inv: EvalInvocation, python: str = "python") -> List[str]:
         argv += ["--seed", str(inv.seed)]
     if inv.gen_kwargs:
         argv += ["--gen_kwargs", inv.gen_kwargs]
+    argv += list(inv.extra_args)  # verbatim eval.eval passthrough (last => can override)
     return argv

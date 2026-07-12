@@ -1,7 +1,8 @@
 # Evalchemy end-to-end test configuration.
 #
 # One place to describe WHAT is served and evaluated. Every field is overridable
-# on the run_e2e.py CLI. See eval/e2e/README.md.
+# on the run_evals / validate CLIs. Parsed by eval.e2e.models.E2EConfig (pydantic).
+# See eval/e2e/README.md.
 
 # The test model. qwen3-0.6b is small enough to boot quickly on one TPU slice.
 model: Qwen/Qwen3-0.6B
@@ -18,7 +19,10 @@ eval:
   tasks:
     - gsm8k
   apply_chat_template: true      # -> local-chat-completions (bare flag; never "True")
-  limit: 20                      # the "sample query set"; a smoke size, not a stat baseline
+  # The default eval size for `run_evals` (the human tool) -- a real-ish sample of
+  # gsm8k's 1319. CI's smoke steps override with `--limit 20` for speed; pass
+  # `--limit 0` to run the full task. (The shipped baseline is recorded at 20.)
+  limit: 200
   num_fewshot: 5                 # gsm8k standard
   batch_size: 1
   seed: 1234                     # pinned greedy decoding for reproducibility

@@ -35,24 +35,48 @@ large untracked siblings (e.g. `.worktrees/`): the bundle is collected by
 until that lands, a marin checkout is required for the provisioning path. The
 `endpoint` provider needs none of this.
 
-## Quick start
+## Two CLIs
 
-The one-shot entrypoint is the Python module `eval.e2e.run_e2e` (`--help` for all
-flags):
+Split by audience, so neither is doing the other's job:
+
+* **`eval.e2e.run_evals`** -- the human tool. Bring up a server (or attach to one),
+  run the eval, print the numbers. No pass/fail.
+* **`eval.e2e.validate`** -- the CI tool. `check` a run against a golden baseline
+  (exit 0/1), or `record` a new one.
+
+`run_evals` is a thin orchestrator over `python -m eval.eval`: it provisions/attaches
+the server, builds the endpoint `--model_args`, and shells out to evalchemy -- so all
+of evalchemy's task/scoring machinery is used as-is. Anything after `--` is forwarded
+verbatim to `eval.eval` (that's how pass@k and other flags reach it).
 
 ```bash
-# A) Provision the accelerator AND run the eval (the default, one-shot path).
-#    Brings up Qwen3-0.6B on a v5litepod-8 in europe-west4 via marin-serve mint
-#    mode, evaluates, gates, and tears the Iris job down. Needs the marin-serve
-#    tool + marin cluster creds + TPU quota + a marin checkout (see above).
-uv run python -m eval.e2e.run_e2e --model Qwen/Qwen3-0.6B \
+# A) Provision a TPU via marin-serve, run the eval, print results (needs the
+#    marin-serve tool + cluster creds + TPU quota + a marin checkout; see above):
+uv run python -m eval.e2e.run_evals --model Qwen/Qwen3-0.6B \
     --tpu v5litepod-8 --region europe-west4 --marin-workspace /path/to/marin
 
 # B) Attach to a server you already have (no Marin dependency, runs anywhere):
-E2E_BASE_URL=http://localhost:8000/v1 uv run python -m eval.e2e.run_e2e --provider endpoint
+E2E_BASE_URL=http://localhost:8000/v1 uv run python -m eval.e2e.run_evals --provider endpoint
 
-# Seed / refresh a baseline from a first real run (either provider):
-uv run python -m eval.e2e.run_e2e --record-baseline
+# Gate a run against the golden baseline (CI); exit 1 on regression:
+uv run python -m eval.e2e.validate check \
+    --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
+
+# Seed / refresh a baseline from a real run:
+uv run python -m eval.e2e.validate record \
+    --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
+```
+
+**Sample size.** `run_evals` defaults to `--limit 200` (config `eval.limit`) -- a
+real-ish slice of gsm8k's 1319, ~a few minutes. Pass `--limit 0` for the full task,
+or a smaller number for a quick look. CI's smoke steps pass `--limit 20` (~1 min).
+
+**pass@k / other eval.eval flags.** gsm8k is greedy single-sample, but sampled tasks
+take pass@k via the passthrough:
+
+```bash
+uv run python -m eval.e2e.run_evals --tasks MATH500 --provider endpoint \
+    -- --num_samples 8 --pass_at_k 1,8,32
 ```
 
 ## Providers
@@ -98,28 +122,30 @@ only the two things that don't false-fail on that noise:
 - **`expected_samples`** — the endpoint answered every query (the strongest
   connectivity signal);
 - each metric **`>= min`** — a wide "the model isn't broken/empty" floor
-  (`--record-baseline` sets `min = max(0.05, observed − 0.25)`).
+  (`validate record` sets `min = max(0.05, observed − 0.25)`).
 
 A tight `reference ± tolerance` band would false-fail on the small-sample noise, so
-`--record-baseline` no longer emits one; the observed values are kept under
-`observed` for provenance. `compare.py` **still supports** an optional
-`reference`/`tolerance` band if you want a tighter regression gate — add it by hand
-and raise `--limit` so the metric is stable enough to justify it.
+`validate record` no longer emits one; the observed values are kept under `observed`
+for provenance. The gate (`compare.py` / `MetricThreshold`) **still supports** an
+optional `reference`/`tolerance` band if you want a tighter regression gate — add it
+by hand and raise `--limit` so the metric is stable enough to justify it.
 
 The baseline (`eval/e2e/baselines/qwen3-0.6b.json`) also carries a `provenance` block
 (model/tokenizer revision, lm-eval version, decoding config, backend). **Pin
 `model_revision` before committing floors** — the Hub tag is mutable. Regenerate
-with `--record-baseline` after any intended change.
+with `validate record` after any intended change.
 
 ## Layout
 
 | file | role |
 |---|---|
-| `run_e2e.py` | one-shot orchestrator (CLI) |
+| `run_evals.py` | **human CLI** (click): serve → eval → print results |
+| `validate.py` | **CI CLI** (click): `check` / `record` a golden baseline |
+| `models.py` | pydantic models for config / baseline / results JSON+YAML |
 | `providers.py` | `endpoint` + `marin-serve` providers → `ServedModel(/v1, model, api_key)` |
 | `eval_args.py` | build the `eval.eval` argv (mirrors Marin's `build_lm_eval_model_args`) |
-| `compare.py` | gate `results_*.json` against a baseline |
-| `config.yaml` | run defaults |
+| `compare.py` | gate `EvalResults` against a `Baseline` |
+| `config.yaml` | run defaults (parsed by `models.E2EConfig`) |
 | `baselines/` | per-model baselines |
 | `../../tests/e2e/` | unit tests (no model/Marin — hosted-CI safe) |
 | `../../.github/workflows/e2e.yaml` | CI wiring |

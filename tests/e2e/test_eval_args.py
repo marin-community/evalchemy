@@ -119,3 +119,16 @@ def test_argv_requires_tasks():
     inv = EvalInvocation(served=ServedModel(base_url="http://h/v1", model="m"), tasks=[], output_path="/out")
     with pytest.raises(ValueError):
         build_eval_argv(inv)
+
+
+def test_argv_appends_extra_args_verbatim():
+    # pass@k etc. reach eval.eval via the passthrough, appended last so lm-eval's
+    # argparse lets them override our defaults.
+    inv = EvalInvocation(
+        served=ServedModel(base_url="http://h/v1", model="m"),
+        tasks=["MATH500"],
+        output_path="/out",
+        extra_args=["--num_samples", "8", "--pass_at_k", "1,8"],
+    )
+    argv = build_eval_argv(inv)
+    assert argv[-4:] == ["--num_samples", "8", "--pass_at_k", "1,8"]
