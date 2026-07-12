@@ -1,0 +1,109 @@
+name: E2E Nightly
+
+# Nightly end-to-end run: provision a TPU on the Marin/Iris "marin" cluster via
+# marin-serve, evaluate the served model with evalchemy, and gate the scores
+# against eval/e2e/baselines/qwen3-0.6b.json. Scheduled + manual dispatch only.
+#
+# Runs on a hosted runner and reaches the cluster over GCP, mirroring marin's own
+# iris-smoke-gcp workflow. Required repository/organization secrets:
+#   IRIS_CI_GCP_SA_KEY -- JSON key for a GCP service account that can submit jobs
+#                         to the marin Iris cluster (used by google-github-actions/auth).
+#   GCP_PROJECT_ID     -- the GCP project the service account belongs to.
+# Qwen3-0.6B is a public model, so no HF token is required; add HF_TOKEN and forward
+# it to marin-serve if you switch to a gated model.
+#
+# marin-serve resolves `--cluster marin` from lib/iris/config/marin.yaml in a marin
+# checkout and bundles its working directory as the Iris job workspace, so the marin
+# repo is checked out and reduced to its tracked tree (git archive) to keep the
+# bundle under the size limit (see marin-community/marin#7106).
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "HF model id to serve/evaluate"
+        default: Qwen/Qwen3-0.6B
+      tpu:
+        description: "TPU slice type"
+        default: v5litepod-8
+      region:
+        description: "Region(s) to pin the slice to"
+        default: europe-west4
+      tasks:
+        description: "Comma-separated tasks"
+        default: gsm8k
+      limit:
+        description: "Per-task sample cap (must match the baseline's expected_samples to gate; re-record for other values)"
+        default: "20"
+
+concurrency:
+  group: e2e-nightly
+  cancel-in-progress: false   # never interrupt a run that has a TPU provisioned
+
+jobs:
+  marin-serve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out evalchemy
+        uses: actions/checkout@v4
+
+      - name: Check out marin
+        uses: actions/checkout@v4
+        with:
+          repository: marin-community/marin
+          path: marin-src
+          fetch-depth: 1
+
+      - name: Materialize a clean marin workspace (tracked tree, no .git)
+        run: |
+          mkdir -p marin
+          git -C marin-src archive HEAD | tar -x -C marin
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          credentials_json: ${{ secrets.IRIS_CI_GCP_SA_KEY }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Install marin-serve (isolated tool env)
+        # marin-core can't co-resolve with evalchemy's deps, so it lives in its own
+        # uv tool env; only its marin-serve / iris console scripts go on PATH.
+        run: uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+
+      - name: Sync evalchemy (base install, vLLM-free)
+        run: uv sync --no-dev --python 3.11
+
+      - name: Serve, evaluate, and gate
+        run: |
+          uv run python -m eval.e2e.run_evals --provider marin-serve --access link \
+            --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
+            --tpu "${{ github.event.inputs.tpu || 'v5litepod-8' }}" \
+            --region "${{ github.event.inputs.region || 'europe-west4' }}" \
+            --marin-workspace "$GITHUB_WORKSPACE/marin" \
+            --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
+            --limit "${{ github.event.inputs.limit || '20' }}" \
+            --output-dir e2e-out
+          uv run python -m eval.e2e.validate check --results e2e-out \
+            --baseline eval/e2e/baselines/qwen3-0.6b.json
+
+      - name: Stop any Iris job the run left behind
+        if: always()
+        # The provider stops its own job in a finally and marin-serve self-stops after
+        # --timeout-hours; this covers a hard-killed step. --cluster is a top-level flag.
+        run: iris --cluster marin job stop "evalchemy-e2e-qwen3-0-6b" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-nightly-results
+          path: e2e-out/**
+          if-no-files-found: ignore

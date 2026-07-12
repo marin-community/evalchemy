@@ -1,0 +1,64 @@
+name: E2E CI
+
+# Per-push / per-PR checks for the evalchemy e2e harness (eval/e2e/).
+#
+#   harness       -- always. Runs tests/e2e against the harness core (config /
+#                    baseline / results models, the gate, the eval-arg builder,
+#                    and the providers' URL handling + PTY capability-URL parse)
+#                    using a stdlib HTTP stub and a PTY. No model, no cluster.
+#   endpoint-eval -- only when the repo variable E2E_BASE_URL is set. Runs the
+#                    real `run_evals` entrypoint against that OpenAI-compatible
+#                    endpoint, so the full serve-attach -> eval -> results path is
+#                    exercised on every push without provisioning hardware.
+#
+# The nightly cluster run (provision a TPU via marin-serve, then gate) lives in
+# e2e-nightly.yaml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: e2e-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run e2e harness tests
+        # The harness core imports only stdlib + pyyaml/pydantic/click, so the
+        # tests run in an ephemeral env (--no-project) without installing evalchemy.
+        run: >-
+          uv run --no-project --python 3.11
+          --with pytest --with pyyaml --with pydantic --with click
+          python -m pytest tests/e2e/ -q
+
+  endpoint-eval:
+    if: ${{ vars.E2E_BASE_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      E2E_BASE_URL: ${{ vars.E2E_BASE_URL }}
+      E2E_API_KEY: ${{ secrets.E2E_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Sync evalchemy (base install, vLLM-free)
+        run: uv sync --no-dev --python 3.11
+      - name: Run evalchemy against the endpoint
+        run: >-
+          uv run python -m eval.e2e.run_evals --provider endpoint
+          --base-url "$E2E_BASE_URL"
+          --model "${{ vars.E2E_MODEL || 'Qwen/Qwen3-0.6B' }}"
+          --tasks gsm8k --limit 20 --output-dir e2e-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-endpoint-results
+          path: e2e-out/**
+          if-no-files-found: ignore

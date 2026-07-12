@@ -83,7 +83,7 @@ uv run python -m eval.e2e.run_evals --tasks MATH500 --provider endpoint \
 
 | provider | how it serves | auth | needs | use |
 |---|---|---|---|---|
-| `marin-serve` *(the provisioning path)* | runs the real `marin-serve` CLI (Iris TPU job) as a background process in **`--access link` (mint) mode**, parses the printed capability `base_url`, and tears the Iris job down via `iris --cluster X job stop <id>` in a `finally` | **none** — the minted URL carries a scoped token in its path (`api_key` is any placeholder) | `marin-serve` on PATH (isolated `uv tool`), marin cluster creds, TPU quota, a marin checkout for `--marin-workspace` | provision-and-test, nightly / self-hosted CI |
+| `marin-serve` *(the provisioning path)* | runs the real `marin-serve` CLI (Iris TPU job) as a background process in **`--access link` (mint) mode**, parses the printed capability `base_url`, and tears the Iris job down via `iris --cluster X job stop <id>` in a `finally` | **none** — the minted URL carries a scoped token in its path (`api_key` is any placeholder) | `marin-serve` on PATH (isolated `uv tool`), marin cluster creds, TPU quota, a marin checkout for `--marin-workspace` | provision-and-test, nightly CI |
 | `endpoint` | attaches to an already-running `/v1` server | `--api-key` (optional, sent as `Authorization: Bearer`) | just a URL | unit tests, hosted-CI smoke, local dev, or a server someone already brought up |
 
 The script **provisions the accelerator itself** with the `marin-serve` provider —
@@ -147,15 +147,23 @@ with `validate record` after any intended change.
 | `compare.py` | gate `EvalResults` against a `Baseline` |
 | `config.yaml` | run defaults (parsed by `models.E2EConfig`) |
 | `baselines/` | per-model baselines |
-| `../../tests/e2e/` | unit tests (no model/Marin — hosted-CI safe) |
-| `../../.github/workflows/e2e.yaml` | CI wiring |
+| `../../tests/e2e/test_e2e.py` | harness behavior tests (no model/Marin — hosted-CI safe) |
+| `../../.github/workflows/` | `e2e-ci.yaml` + `e2e-nightly.yaml` |
 
 ## CI
 
-`.github/workflows/e2e.yaml`:
-- a **hosted** unit-test job (`tests/e2e/`) guards the harness on every push/PR;
-- an optional **endpoint smoke** job runs when the repo variable `E2E_BASE_URL`
-  is set;
-- a **self-hosted** `marin-serve` job (nightly `schedule` + `workflow_dispatch`)
-  provisions a TPU slice and runs the full cycle, with an unconditional cleanup
-  step.
+Two workflows:
+
+- **`e2e-ci.yaml`** (every push/PR) — runs `tests/e2e/` against the harness core,
+  and, when the repo variable `E2E_BASE_URL` is set, runs `run_evals` against that
+  endpoint. Fully hosted; no cluster.
+- **`e2e-nightly.yaml`** (`schedule` + `workflow_dispatch`) — provisions a TPU on
+  the `marin` cluster via `marin-serve`, evaluates, and gates against the baseline,
+  with an unconditional Iris-job cleanup step. Runs on a hosted runner that reaches
+  the cluster over GCP, so it needs two secrets:
+  - `IRIS_CI_GCP_SA_KEY` — JSON key for a GCP service account that can submit jobs
+    to the marin Iris cluster (used by `google-github-actions/auth`);
+  - `GCP_PROJECT_ID` — the project the service account belongs to.
+
+  It checks out `marin-community/marin` for the `marin` cluster config and reduces
+  it to its tracked tree (`git archive`) as the `marin-serve` workspace bundle.
