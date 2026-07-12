@@ -1,18 +1,20 @@
 name: E2E CI
 
-# Per-push / per-PR checks for the evalchemy e2e harness (eval/e2e/).
+# Per-push / per-PR checks for the serve-and-eval runner (eval/serve_eval/) and the
+# regression gate (eval/regression/).
 #
-#   harness       -- always. Runs tests/e2e against the harness core (config /
-#                    baseline / results models, the gate, the eval-arg builder,
-#                    and the providers' URL handling + PTY capability-URL parse)
-#                    using a stdlib HTTP stub and a PTY. No model, no cluster.
-#   endpoint-eval -- only when the repo variable E2E_BASE_URL is set. Runs the
-#                    real `run_evals` entrypoint against that OpenAI-compatible
-#                    endpoint, so the full serve-attach -> eval -> results path is
-#                    exercised on every push without provisioning hardware.
+#   harness       -- always. Runs tests/e2e (test_serve_eval + test_gate) against
+#                    both packages -- the run config / results reader, the eval-arg
+#                    builder, the providers' URL handling + PTY capability-URL parse,
+#                    and the gate's pass/fail decisions -- using a stdlib HTTP stub
+#                    and a PTY. No model, no cluster.
+#   endpoint-eval -- only when the repo variable E2E_BASE_URL is set. An OPTIONAL
+#                    smoke of the runner against a real OpenAI-compatible endpoint
+#                    (serve-attach -> eval -> results). It does NOT gate scores, so
+#                    it is not a required PR check.
 #
-# The nightly cluster run (provision a TPU via marin-serve, then gate) lives in
-# e2e-nightly.yaml.
+# The nightly cluster run (provision a TPU via marin-serve, eval, then gate against
+# the checked-in spec) lives in e2e-nightly.yaml.
 
 on:
   push:
@@ -49,11 +51,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Sync evalchemy (base install, vLLM-free)
-        run: uv sync --no-dev --python 3.11
+      - name: Sync evalchemy + the serve-eval runner (vLLM-free)
+        run: uv sync --no-dev --python 3.11 --extra serve-eval
       - name: Run evalchemy against the endpoint
         run: >-
-          uv run python -m eval.e2e.run_evals --provider endpoint
+          uv run python -m eval.serve_eval.run --provider endpoint
           --base-url "$E2E_BASE_URL"
           --model "${{ vars.E2E_MODEL || 'Qwen/Qwen3-0.6B' }}"
           --tasks gsm8k --limit 20 --output-dir e2e-out

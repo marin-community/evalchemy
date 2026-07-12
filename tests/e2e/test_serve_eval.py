@@ -1,16 +1,13 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Behavior tests for the e2e eval harness (eval/e2e).
+"""Behavior tests for the serve-and-eval runner (eval/serve_eval).
 
-One file, only the subtle behaviors that would SILENTLY break the harness or its
-CI gate: the gate pass/fail decisions, URL normalization, the bare
-``--apply_chat_template`` footgun, model_args semantics, sample-count fallback,
-pydantic config boundaries, limit resolution, the marin-serve PTY parse, the
-readiness poll, and a validate CLI round trip. Pure/at-a-boundary; no model,
-Marin, or lm-eval needed.
+Only the subtle behaviors that would SILENTLY break the runner: model_args
+semantics, the bare ``--apply_chat_template`` footgun, URL normalization, the run
+config boundaries, the readiness poll, the provider factory, and the marin-serve
+PTY parse. Each runs in-process against stdlib stubs -- a stub HTTP server and a PTY.
 """
 
-import json
 import os
 import pty
 import subprocess
@@ -20,11 +17,10 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from click.testing import CliRunner
 from pydantic import ValidationError
 
-from eval.e2e.compare import evaluate_gate
-from eval.e2e.eval_args import (
+from eval.serve_eval.config import RunConfig
+from eval.serve_eval.eval_args import (
     LOCAL_CHAT_COMPLETIONS,
     LOCAL_COMPLETIONS,
     EvalInvocation,
@@ -33,72 +29,9 @@ from eval.e2e.eval_args import (
     build_model_args,
     endpoint_url,
 )
-from eval.e2e.models import Baseline, E2EConfig, EvalResults, MetricThreshold
-from eval.e2e.providers import EndpointProvider, MarinServeProvider, build_provider, wait_for_models
-from eval.e2e.validate import cli
+from eval.serve_eval.providers import EndpointProvider, MarinServeProvider, build_provider, wait_for_models
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-# --- the CI gate (compare.evaluate_gate) --------------------------------------
-
-
-def _results(strict=0.35, flexible=0.40, n=20):
-    task = {"exact_match,strict-match": strict, "exact_match,flexible-extract": flexible}
-    doc = {"results": {"gsm8k": task}, "n-samples": {"gsm8k": {"original": n, "effective": n}}}
-    return EvalResults.model_validate(doc)
-
-
-def _baseline(min_strict=0.05, expected_samples=20, reference=None, tolerance=None):
-    metric = {"min": min_strict}
-    if reference is not None:
-        metric["reference"] = reference
-        metric["tolerance"] = tolerance
-    return Baseline.model_validate(
-        {
-            "provenance": {"model": "Qwen/Qwen3-0.6B"},
-            "tasks": {"gsm8k": {"expected_samples": expected_samples, "metrics": {"exact_match,strict-match": metric}}},
-        }
-    )
-
-
-def test_gate_healthy_run_passes():
-    report = evaluate_gate(_results(strict=0.35, n=20), _baseline(min_strict=0.05, expected_samples=20))
-    assert report.ok, report.render()
-
-
-def test_gate_metric_below_floor_fails():
-    report = evaluate_gate(_results(strict=0.02), _baseline(min_strict=0.05))
-    assert not report.ok
-    assert any("strict-match" in f for f in report.failures())
-
-
-def test_gate_wrong_sample_count_fails():
-    # The endpoint only answered 12 of 20 -> a connectivity failure, not a score.
-    report = evaluate_gate(_results(n=12), _baseline(expected_samples=20))
-    assert not report.ok
-    assert any("samples" in f for f in report.failures())
-
-
-def test_gate_missing_metric_fails():
-    results = EvalResults.model_validate(
-        {"results": {"gsm8k": {"exact_match,flexible-extract": 0.4}}, "n-samples": {"gsm8k": {"effective": 20}}}
-    )
-    report = evaluate_gate(results, _baseline())
-    assert not report.ok
-    assert any("not in results" in f for f in report.failures())
-
-
-def test_gate_optional_tolerance_band_bounds_both_sides():
-    within = evaluate_gate(_results(strict=0.33), _baseline(reference=0.30, tolerance=0.10))
-    assert within.ok
-    too_high = evaluate_gate(_results(strict=0.50), _baseline(reference=0.30, tolerance=0.10))
-    assert not too_high.ok
-
-
-def test_gate_empty_baseline_raises():
-    with pytest.raises(ValueError):
-        evaluate_gate(_results(), Baseline.model_validate({"tasks": {}}))
 
 
 # --- endpoint URL normalization -----------------------------------------------
@@ -118,7 +51,7 @@ def test_endpoint_url_appends_adapter_path_exactly_once(base_url, adapter, expec
     assert endpoint_url(base_url, adapter) == expected
 
 
-# --- model_args semantics (lm-eval parses to a dict; order is NOT the contract) --
+# --- model_args semantics (lm-eval parses to a dict; the test compares parsed keys) --
 
 
 def _parse_model_args(text):
@@ -166,39 +99,19 @@ def test_apply_chat_template_flag_is_bare_never_a_value():
     assert "True" not in argv
 
 
-# --- pydantic config boundaries -----------------------------------------------
-
-
-def test_metric_threshold_reference_without_tolerance_raises():
-    # A reference band with no tolerance is meaningless; reject at parse time.
-    MetricThreshold(reference=0.3, tolerance=0.1)  # ok
-    with pytest.raises(ValidationError):
-        MetricThreshold(reference=0.3)
+# --- run config boundaries ----------------------------------------------------
 
 
 def test_config_rejects_unknown_key():
     with pytest.raises(ValidationError):
-        E2EConfig.model_validate({"tasks": ["gsm8k"], "typo_field": 1})
+        RunConfig.model_validate({"tasks": ["gsm8k"], "typo_field": 1})
 
 
-def test_shipped_config_and_baseline_parse():
-    cfg = E2EConfig.load(os.path.join(_HERE, "eval", "e2e", "qwen-tiny.yaml"))
+def test_shipped_config_parses():
+    cfg = RunConfig.load(os.path.join(_HERE, "eval", "serve_eval", "configs", "qwen-tiny.yaml"))
     assert cfg.model == "Qwen/Qwen3-0.6B"
     assert cfg.apply_chat_template is True
     assert cfg.tpu == "v5litepod-8"
-    assert "gsm8k" in Baseline.load(cfg.baseline).tasks
-
-
-def test_baseline_save_load_round_trip(tmp_path):
-    src = {
-        "provenance": {"model": "Qwen/Qwen3-0.6B"},
-        "tasks": {"gsm8k": {"metrics": {"exact_match,strict-match": {"min": 0.05}}, "expected_samples": 20}},
-    }
-    path = tmp_path / "bl.json"
-    Baseline.model_validate(src).save(str(path))
-    loaded = Baseline.load(str(path))
-    assert loaded.tasks["gsm8k"].metrics["exact_match,strict-match"].min == 0.05
-    assert loaded.tasks["gsm8k"].expected_samples == 20
 
 
 # --- providers: readiness poll + factory fail-fast ----------------------------
@@ -293,7 +206,8 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
     # then blocks holding the tunnel WITHOUT exiting. _read_until_ready must return
     # that URL (and capture the job id), stripping ANSI colour, while the child is
     # still alive -- not deadlock waiting for more output / an exit.
-    fake = textwrap.dedent(r"""
+    fake = textwrap.dedent(
+        r"""
         import time
         print("  job          /app/evalchemy-e2e-test")
         print("        OpenAI:    https://h/proxy/serve.evalchemy-e2e-test/v1")
@@ -301,7 +215,8 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
         print("    base_url   \x1b[32mhttps://h/proxy/t/TOK123/serve.evalchemy-e2e-test/v1\x1b[0m")
         print("    example    curl https://h/.../models")
         time.sleep(30)
-        """)
+        """
+    )
     prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", access="link")
     master, slave = pty.openpty()
     prov._master_fd = master
@@ -318,49 +233,3 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
         prov._proc.kill()
         prov._proc.wait()
         os.close(master)
-
-
-# --- validate CLI (the CI entrypoint) -----------------------------------------
-
-_RESULTS = {
-    "results": {"gsm8k": {"exact_match,strict-match": 0.30, "exact_match,flexible-extract": 0.50, "sample_len": 20}},
-    "lm_eval_version": "0.4.12",
-    "model_source": "local-chat-completions",
-    "config": {"limit": 20, "random_seed": 1234},
-}
-_BASELINE = {
-    "provenance": {"model": "Qwen/Qwen3-0.6B"},
-    "tasks": {
-        "gsm8k": {
-            "metrics": {"exact_match,strict-match": {"min": 0.05}, "exact_match,flexible-extract": {"min": 0.25}},
-            "expected_samples": 20,
-        }
-    },
-}
-
-
-def _write(tmp_path, name, obj):
-    path = tmp_path / name
-    path.write_text(json.dumps(obj))
-    return str(path)
-
-
-def test_validate_record_then_check_round_trips(tmp_path):
-    res = _write(tmp_path, "results_x.json", _RESULTS)
-    out = str(tmp_path / "bl.json")
-    recorded = CliRunner().invoke(cli, ["record", "--results", res, "--baseline", out, "--model", "m"])
-    assert recorded.exit_code == 0, recorded.output
-    # The run that produced the baseline must pass its own gate.
-    checked = CliRunner().invoke(cli, ["check", "--results", res, "--baseline", out])
-    assert checked.exit_code == 0, checked.output
-
-
-def test_validate_check_exits_nonzero_on_broken_run(tmp_path):
-    broken = dict(_RESULTS)
-    broken["results"] = {
-        "gsm8k": {"exact_match,strict-match": 0.0, "exact_match,flexible-extract": 0.0, "sample_len": 20}
-    }
-    res = _write(tmp_path, "results_x.json", broken)
-    bl = _write(tmp_path, "baseline.json", _BASELINE)
-    result = CliRunner().invoke(cli, ["check", "--results", res, "--baseline", bl])
-    assert result.exit_code == 1

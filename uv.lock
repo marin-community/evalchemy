@@ -2195,7 +2195,6 @@ dependencies = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "bs4" },
-    { name = "click" },
     { name = "codebleu" },
     { name = "cohere" },
     { name = "colorama" },
@@ -2250,13 +2249,10 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg2-binary" },
     { name = "py-cpuinfo" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
     { name = "pyext" },
     { name = "python-box" },
     { name = "python-dotenv" },
     { name = "python-levenshtein" },
-    { name = "pyyaml" },
     { name = "ray", extra = ["default"] },
     { name = "reka-api" },
     { name = "requests" },
@@ -2306,6 +2302,12 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
 ]
+serve-eval = [
+    { name = "click" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+]
 vllm = [
     { name = "lm-eval", extra = ["vllm"] },
 ]
@@ -2326,7 +2328,7 @@ requires-dist = [
     { name = "boto3" },
     { name = "botocore" },
     { name = "bs4" },
-    { name = "click", specifier = ">=8" },
+    { name = "click", marker = "extra == 'serve-eval'", specifier = ">=8" },
     { name = "codebleu" },
     { name = "cohere" },
     { name = "colorama" },
@@ -2384,14 +2386,14 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"] },
     { name = "psycopg2-binary" },
     { name = "py-cpuinfo" },
-    { name = "pydantic", specifier = ">=2" },
-    { name = "pydantic-settings", specifier = ">=2" },
+    { name = "pydantic", marker = "extra == 'serve-eval'", specifier = ">=2" },
+    { name = "pydantic-settings", marker = "extra == 'serve-eval'", specifier = ">=2" },
     { name = "pyext", git = "https://github.com/penfever/PyExt" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "python-box" },
     { name = "python-dotenv" },
     { name = "python-levenshtein" },
-    { name = "pyyaml" },
+    { name = "pyyaml", marker = "extra == 'serve-eval'" },
     { name = "ray", extras = ["default"] },
     { name = "reka-api" },
     { name = "requests", specifier = ">=2.28" },
@@ -2429,7 +2431,7 @@ requires-dist = [
     { name = "websocket" },
     { name = "wget", specifier = ">=3.2" },
 ]
-provides-extras = ["dev", "vllm"]
+provides-extras = ["dev", "serve-eval", "vllm"]
 
 [[package]]
 name = "evaluate"

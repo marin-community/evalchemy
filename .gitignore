@@ -228,4 +228,4 @@ eval/chat_benchmarks/MixEval/results
 results/
 
 # e2e harness run outputs (results_*.json land here by default)
-eval/e2e/runs/
+eval/serve_eval/runs/

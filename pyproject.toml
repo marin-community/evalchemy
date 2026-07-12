@@ -169,15 +169,6 @@ dependencies = [
     # e2e path) -- the server owns inference. Keeping it out of the base install
     # lets evalchemy install on a CPU box for endpoint-dispatch eval.
     "lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
-
-    # e2e harness (eval/e2e/): the run_evals/validate CLIs use click, parse the
-    # baseline/results JSON with pydantic, and load the run config (qwen-tiny.yaml)
-    # with pydantic-settings. Base deps (not dev) because the providers run under
-    # `uv sync --no-dev`.
-    "pyyaml",
-    "pydantic>=2",
-    "pydantic-settings>=2",
-    "click>=8",
 ]
 
 [project.urls]
@@ -193,11 +184,23 @@ dev = [
     "pre-commit",
 ]
 
-# --- Marin `marin-serve` (Iris) provider for the e2e harness (eval/e2e/) --------
+# The serve-and-eval runner (eval/serve_eval/): the run/validate CLIs use click,
+# parse results/spec JSON with pydantic, and load the run config (qwen-tiny.yaml) with
+# pydantic-settings. An optional extra, not base deps -- base evalchemy evaluates fine
+# without the runner, and this keeps a plain `uv sync` lean. The regression gate
+# (eval/regression/) reuses these same deps.
+serve-eval = [
+    "click>=8",
+    "pydantic>=2",
+    "pydantic-settings>=2",
+    "pyyaml",
+]
+
+# --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
 #
-# marin-serve is NOT an evalchemy optional-dependency, on purpose. The e2e harness
-# dispatches over an OpenAI-compatible HTTP endpoint (eval/e2e/providers.py), so
-# the serving tool (marin-core) and the eval stack (evalchemy) are SEPARATE
+# marin-serve is NOT an evalchemy optional-dependency, on purpose. The runner
+# dispatches over an OpenAI-compatible HTTP endpoint (eval/serve_eval/providers.py),
+# so the serving tool (marin-core) and the eval stack (evalchemy) are SEPARATE
 # environments that never share a Python import graph. Co-installing them is not
 # just unnecessary, it is unsatisfiable: marin-core (nightly) requires Python
 # >=3.12 and pins newer fsspec / curator ranges than evalchemy's eval deps, so
@@ -212,8 +215,8 @@ dev = [
 #     uv tool install "marin-core==<base>.dev<stamp>"
 #
 # NOTE: a `>=X.Y.Z.dev0` floor alone does NOT force a nightly -- a stable X.Y.Z
-# sorts above every X.Y.Z.dev*. The CI workflow (.github/workflows/e2e.yaml) does
-# exactly this isolated install; the `endpoint` provider needs none of it.
+# sorts above every X.Y.Z.dev*. The nightly workflow (.github/workflows/e2e-nightly.yaml)
+# does exactly this isolated install; the `endpoint` provider needs none of it.
 
 # Local vLLM inference engine. Needed only to serve/evaluate models locally
 # (`--model vllm`); NOT needed to evaluate against a served OpenAI-compatible

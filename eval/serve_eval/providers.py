@@ -31,9 +31,9 @@ import urllib.request
 from dataclasses import dataclass
 from typing import List, Optional
 
-from eval.e2e.eval_args import ServedModel
+from eval.serve_eval.eval_args import ServedModel
 
-logger = logging.getLogger("eval.e2e.providers")
+logger = logging.getLogger("eval.serve_eval.providers")
 
 # In `--access link` (mint) mode, marin-serve prints, once vLLM is ready:
 #     base_url   https://iris.oa.dev/proxy/t/<token>/serve.<name>/v1

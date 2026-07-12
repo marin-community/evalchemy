@@ -9,7 +9,7 @@
     "num_fewshot": 5,
     "seed": 1234,
     "recorded_at": "2026-07-11T00:45:05.827591+00:00",
-    "note": "Smoke/coarse gate seeded from a real run -- not a statistical regression baseline."
+    "note": "Coarse smoke gate seeded from a real run."
   },
   "tasks": {
     "gsm8k": {

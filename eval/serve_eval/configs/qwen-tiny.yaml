@@ -1,11 +1,11 @@
-# Run config for the evalchemy e2e test: Qwen3-0.6B on gsm8k.
-# Loaded by eval.e2e.models.E2EConfig (pydantic-settings). CLI flags and E2E_* env
-# vars override these. See eval/e2e/README.md.
+# Run config for the serve-and-eval runner: Qwen3-0.6B on gsm8k.
+# Loaded by eval.serve_eval.config.RunConfig (pydantic-settings). CLI flags and E2E_*
+# env vars override these. See eval/serve_eval/README.md. The gate spec a run is
+# checked against lives with the regression gate -- see eval/regression/.
 
 model: Qwen/Qwen3-0.6B
-model_revision: null          # pin a commit before recording a numeric baseline -- the Hub tag is mutable
+model_revision: null          # pin a commit before recording a numeric spec -- the Hub tag is mutable
 tokenizer: Qwen/Qwen3-0.6B
-baseline: eval/e2e/baselines/qwen3-0.6b.json
 
 # gsm8k is self-graded (exact-match) -- no judge model, no OPENAI_API_KEY -- so it
 # is a clean generation smoke through the chat endpoint.

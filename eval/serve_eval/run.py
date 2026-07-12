@@ -4,12 +4,13 @@
 
 Brings up an inference server -- a TPU via ``marin-serve``, or an OpenAI-compatible
 endpoint you already have -- runs ``python -m eval.eval`` against it, and prints each
-task's metrics. Defaults live in ``eval/e2e/qwen-tiny.yaml``; every field is overridable.
+task's metrics. Defaults live in ``eval/serve_eval/configs/qwen-tiny.yaml``; every field
+is overridable.
 
-    python -m eval.e2e.run_evals --model Qwen/Qwen3-0.6B \
+    python -m eval.serve_eval.run --model Qwen/Qwen3-0.6B \
         --tpu v5litepod-8 --region europe-west4 --marin-workspace /path/to/marin
 
-    python -m eval.e2e.run_evals --provider endpoint --base-url http://localhost:8000/v1
+    python -m eval.serve_eval.run --provider endpoint --base-url http://localhost:8000/v1
 """
 
 from __future__ import annotations
@@ -23,17 +24,18 @@ from typing import List, Optional
 
 import click
 
-from eval.e2e.eval_args import EvalInvocation, ServedModel, build_eval_argv
-from eval.e2e.models import E2EConfig, EvalResults
-from eval.e2e.providers import build_provider
+from eval.serve_eval.config import RunConfig
+from eval.serve_eval.eval_args import EvalInvocation, ServedModel, build_eval_argv
+from eval.serve_eval.providers import build_provider
+from eval.serve_eval.results import EvalResults
 
-logger = logging.getLogger("eval.e2e")
+logger = logging.getLogger("eval.serve_eval")
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "e2e", "qwen-tiny.yaml")
+_DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "serve_eval", "configs", "qwen-tiny.yaml")
 
 
-def build_invocation(cfg: E2EConfig, served: ServedModel, output_dir: str, limit, extra_args) -> EvalInvocation:
+def build_invocation(cfg: RunConfig, served: ServedModel, output_dir: str, limit, extra_args) -> EvalInvocation:
     return EvalInvocation(
         served=served,
         tasks=list(cfg.tasks),
@@ -134,13 +136,13 @@ def main(
     verbose: bool,
     extra_eval_args: tuple,
 ) -> None:
-    """Serve a model, run the eval, and print the results (no pass/fail gate).
+    """Serve a model, run the eval, and print the results.
 
     Anything after ``--`` is forwarded verbatim to ``python -m eval.eval`` -- e.g.
-    ``run_evals --tasks MATH500 -- --num_samples 8 --pass_at_k 1,8`` for pass@k.
+    ``run --tasks MATH500 -- --num_samples 8 --pass_at_k 1,8`` for pass@k.
     """
     logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="[e2e] %(message)s")
-    cfg = E2EConfig.load(
+    cfg = RunConfig.load(
         config_path,
         model=model,
         tokenizer=tokenizer,
@@ -160,7 +162,7 @@ def main(
     limit = None if (cfg.limit is not None and cfg.limit <= 0) else cfg.limit
 
     output_dir = output_dir or os.path.join(
-        _REPO_ROOT, "eval", "e2e", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        _REPO_ROOT, "eval", "serve_eval", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     )
     os.makedirs(output_dir, exist_ok=True)
 
@@ -190,7 +192,7 @@ def main(
     results = EvalResults.load(results_path)
     click.echo("\n" + summarize(results, cfg.tasks))
     click.echo(f"\nresults: {results_path}")
-    click.echo(f"to gate: python -m eval.e2e.validate check --results {output_dir} --baseline <baseline.json>")
+    click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
 
 
 if __name__ == "__main__":
