@@ -1,20 +1,13 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Validate an eval run against a golden baseline (the CI half of the harness).
+"""Check an eval run against a golden baseline, or record a new baseline.
 
-Separate from ``eval.e2e.run_evals`` (which just runs and prints numbers) so CI
-gating is a standalone, model-free step over a results file:
+``check`` compares a run's ``results_*.json`` to a baseline and exits non-zero on
+regression; ``record`` writes a baseline from a run. The gate is coarse (sample-count
++ a per-metric floor); see ``compare.py``.
 
-    # Fail the build if the run regressed / the endpoint dropped samples:
-    python -m eval.e2e.validate check --results eval/e2e/runs/<ts> \
-        --baseline eval/e2e/baselines/qwen3-0.6b.json
-
-    # Seed / refresh a golden baseline from a real run:
-    python -m eval.e2e.validate record --results eval/e2e/runs/<ts> \
-        --baseline eval/e2e/baselines/qwen3-0.6b.json
-
-The gate is a coarse smoke check (sample-count + a wide floor); see ``compare.py``
-and ``eval/e2e/README.md``.
+    python -m eval.e2e.validate check  --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
+    python -m eval.e2e.validate record --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
 """
 
 from __future__ import annotations
@@ -28,6 +21,7 @@ import click
 from eval.e2e.compare import evaluate_gate
 from eval.e2e.models import (
     Baseline,
+    BaselineProvenance,
     E2EConfig,
     EvalResults,
     MetricThreshold,
@@ -74,19 +68,19 @@ def build_baseline(
             observed=observed,
             expected_samples=results.sample_count(task),
         )
-    provenance = {
-        "model": model or cfg.model or results.model_name,
-        "model_revision": cfg.model_revision,
-        "tokenizer": cfg.tokenizer or model or cfg.model,
-        "lm_eval_version": results.lm_eval_version,
-        "adapter": results.model_source,
-        "apply_chat_template": cfg.eval.apply_chat_template,
-        "limit": results.config.get("limit") if results.config.get("limit") is not None else cfg.eval.limit,
-        "num_fewshot": cfg.eval.num_fewshot,
-        "seed": results.config.get("random_seed") if results.config.get("random_seed") is not None else cfg.eval.seed,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "note": "Smoke/coarse gate seeded from a real run -- not a statistical regression baseline.",
-    }
+    provenance = BaselineProvenance(
+        model=model or cfg.model or results.model_name,
+        model_revision=cfg.model_revision,
+        tokenizer=cfg.tokenizer or model or cfg.model,
+        lm_eval_version=results.lm_eval_version,
+        adapter=results.model_source,
+        apply_chat_template=cfg.eval.apply_chat_template,
+        limit=results.config.get("limit") if results.config.get("limit") is not None else cfg.eval.limit,
+        num_fewshot=cfg.eval.num_fewshot,
+        seed=results.config.get("random_seed") if results.config.get("random_seed") is not None else cfg.eval.seed,
+        recorded_at=datetime.now(timezone.utc).isoformat(),
+        note="Smoke/coarse gate seeded from a real run -- not a statistical regression baseline.",
+    )
     return Baseline(provenance=provenance, tasks=task_models)
 
 

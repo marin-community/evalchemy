@@ -1,20 +1,15 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Run an evalchemy eval against a served model, and print the results.
+"""Run evalchemy against a served model and print the scores.
 
-The **human-facing** half of the e2e harness: bring up an inference server (or
-attach to one you already have), run the eval, and show what the model scored.
-It does NOT pass/fail against a baseline -- that is ``eval.e2e.validate`` (the CI
-half), so this stays a "just tell me the numbers" tool.
+Brings up an inference server -- a TPU via ``marin-serve``, or an OpenAI-compatible
+endpoint you already have -- runs ``python -m eval.eval`` against it, and prints each
+task's metrics. Defaults live in ``eval/e2e/config.yaml``; every field is overridable.
 
-    # Provision a TPU via marin-serve, eval, print results:
     python -m eval.e2e.run_evals --model Qwen/Qwen3-0.6B \
         --tpu v5litepod-8 --region europe-west4 --marin-workspace /path/to/marin
 
-    # Attach to a running OpenAI-compatible endpoint (no Marin needed):
     python -m eval.e2e.run_evals --provider endpoint --base-url http://localhost:8000/v1
-
-Config defaults live in ``eval/e2e/config.yaml``; every field is overridable here.
 """
 
 from __future__ import annotations
@@ -114,8 +109,8 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 @click.option("--output-dir", default=None, help="Where eval.eval writes results (default: a stamped dir under runs/).")
 @click.option("--python", "python_bin", default=sys.executable, help="Python used to run eval.eval.")
 # endpoint provider
-@click.option("--base-url", default=lambda: os.environ.get("E2E_BASE_URL"), help="OpenAI /v1 root (endpoint provider).")
-@click.option("--api-key", default=lambda: os.environ.get("E2E_API_KEY"), help="Bearer token for the endpoint.")
+@click.option("--base-url", default=None, envvar="E2E_BASE_URL", help="OpenAI /v1 root (endpoint provider).")
+@click.option("--api-key", default=None, envvar="E2E_API_KEY", help="Bearer token for the endpoint.")
 @click.option("--no-wait-ready", is_flag=True, help="Skip the /v1/models readiness poll.")
 # marin-serve provider
 @click.option("--cluster", default=None, help="Iris cluster (marin-serve provider).")
@@ -130,7 +125,8 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 @click.option("--region", default=None, help="Region(s) to pin the TPU slice to, e.g. europe-west4.")
 @click.option(
     "--marin-workspace",
-    default=lambda: os.environ.get("MARIN_WORKSPACE"),
+    default=None,
+    envvar="MARIN_WORKSPACE",
     help="marin checkout to run marin-serve from (it bundles cwd as the Iris job workspace).",
 )
 @click.option("--wait-timeout", type=float, default=None, help="Seconds for vLLM to boot (marin-serve).")

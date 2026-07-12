@@ -1,21 +1,12 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Build the ``eval.eval`` invocation for an OpenAI-compatible served model.
+"""Build the ``eval.eval`` invocation (model + ``--model_args``) for a served
+OpenAI-compatible endpoint.
 
-This mirrors, semantically, Marin's ``build_lm_eval_model_args``
-(``lib/marin/src/marin/evaluation/lm_eval.py``) so both projects agree on the
-model_args a served endpoint is evaluated with -- but it has **no Marin import**
-so the harness core stays installable on evalchemy's base Python (>=3.8) with no
-accelerator.
-
-Contract (the source of a class of real bugs, so it is enforced here):
-
-* ``ServedModel.base_url`` is the OpenAI API **root**, i.e. ``.../v1``. It must
-  NOT include the adapter path. ``marin-serve`` prints exactly this (``OpenAI:
-  {proxy}/v1``).
-* :func:`build_model_args` appends the adapter path (``/completions`` or
-  ``/chat/completions``) exactly once, tolerating a caller who redundantly
-  included it, so the emitted ``base_url`` can never double ``/v1`` or the path.
+``ServedModel.base_url`` is the ``/v1`` API root. :func:`build_model_args` appends
+the adapter path (``/completions`` or ``/chat/completions``) exactly once, tolerating
+a caller who already included it, and rejects a comma inside a value (lm-eval parses
+``--model_args`` as comma-separated ``key=value``).
 """
 
 from __future__ import annotations

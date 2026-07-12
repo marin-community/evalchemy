@@ -1,15 +1,12 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Pydantic models for the e2e harness' JSON/YAML boundaries.
-
-Three things cross a serialization boundary and are parsed here (never by hand):
+"""Pydantic models for the harness's JSON/YAML files:
 
 * :class:`E2EConfig`   -- ``config.yaml`` (what to serve + evaluate).
 * :class:`Baseline`    -- a golden ``baselines/*.json`` the gate checks against.
 * :class:`EvalResults` -- the ``results_*.json`` lm-eval/evalchemy writes.
 
-Keeping these typed means a malformed config/baseline fails loudly at load with a
-field-precise error, and the run/validate CLIs never spelunk raw dicts.
+A malformed config or baseline fails at load with a field-precise error.
 """
 
 from __future__ import annotations
@@ -119,12 +116,32 @@ class TaskBaseline(BaseModel):
     expected_samples: Optional[int] = None
 
 
+class BaselineProvenance(BaseModel):
+    """How a baseline was produced. Informational -- the gate never reads it."""
+
+    # extra="ignore": tolerate fields older/newer recorders wrote. protected_namespaces
+    # lets `model` / `model_revision` coexist with pydantic's `model_` namespace.
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    model: Optional[str] = None
+    model_revision: Optional[str] = None
+    tokenizer: Optional[str] = None
+    lm_eval_version: Optional[str] = None
+    adapter: Optional[str] = None
+    apply_chat_template: Optional[bool] = None
+    limit: Optional[int] = None
+    num_fewshot: Optional[int] = None
+    seed: Optional[int] = None
+    recorded_at: Optional[str] = None
+    note: Optional[str] = None
+
+
 class Baseline(BaseModel):
-    """A golden baseline: free-form provenance + per-task gate thresholds."""
+    """A golden baseline: provenance + per-task gate thresholds."""
 
     model_config = ConfigDict(extra="forbid")
 
-    provenance: Dict[str, Any] = Field(default_factory=dict)
+    provenance: BaselineProvenance = Field(default_factory=BaselineProvenance)
     tasks: Dict[str, TaskBaseline]
 
     @classmethod

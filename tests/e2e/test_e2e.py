@@ -35,7 +35,6 @@ from eval.e2e.eval_args import (
 )
 from eval.e2e.models import Baseline, E2EConfig, EvalResults, MetricThreshold
 from eval.e2e.providers import EndpointProvider, MarinServeProvider, build_provider, wait_for_models
-from eval.e2e.run_evals import resolve_limit
 from eval.e2e.validate import cli
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,13 +43,9 @@ _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # --- the CI gate (compare.evaluate_gate) --------------------------------------
 
 
-def _results(strict=0.35, flexible=0.40, n=20, use_sample_len=False):
+def _results(strict=0.35, flexible=0.40, n=20):
     task = {"exact_match,strict-match": strict, "exact_match,flexible-extract": flexible}
-    doc = {"results": {"gsm8k": task}, "lm_eval_version": "0.4.12"}
-    if use_sample_len:
-        task["sample_len"] = n
-    else:
-        doc["n-samples"] = {"gsm8k": {"original": n, "effective": n}}
+    doc = {"results": {"gsm8k": task}, "n-samples": {"gsm8k": {"original": n, "effective": n}}}
     return EvalResults.model_validate(doc)
 
 
@@ -171,19 +166,6 @@ def test_apply_chat_template_flag_is_bare_never_a_value():
     assert "True" not in argv
 
 
-# --- EvalResults sample-count fallback ----------------------------------------
-
-
-def test_sample_count_reads_n_samples_effective():
-    assert _results(n=17).sample_count("gsm8k") == 17
-    assert _results().sample_count("absent-task") is None
-
-
-def test_sample_count_falls_back_to_sample_len():
-    # evalchemy's lm-eval-native path omits top-level `n-samples`, using `sample_len`.
-    assert _results(n=20, use_sample_len=True).sample_count("gsm8k") == 20
-
-
 # --- pydantic config boundaries -----------------------------------------------
 
 
@@ -218,23 +200,6 @@ def test_baseline_save_load_round_trip(tmp_path):
     loaded = Baseline.load(str(path))
     assert loaded.tasks["gsm8k"].metrics["exact_match,strict-match"].min == 0.05
     assert loaded.tasks["gsm8k"].expected_samples == 20
-
-
-# --- limit resolution ---------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "cli_limit, config_limit, expected",
-    [
-        (None, None, 200),  # no CLI, no config -> the human default
-        (None, 20, 20),  # config supplies it (CI sets 20 for a fast smoke)
-        (50, 20, 50),  # CLI overrides config
-        (0, 20, None),  # 0 is the escape hatch: run the FULL task, not a cap of 0
-        (-1, None, None),  # negative is also "full task"
-    ],
-)
-def test_resolve_limit(cli_limit, config_limit, expected):
-    assert resolve_limit(cli_limit, config_limit) == expected
 
 
 # --- providers: readiness poll + factory fail-fast ----------------------------

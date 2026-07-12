@@ -1,10 +1,8 @@
 {
   "provenance": {
     "model": "Qwen/Qwen3-0.6B",
-    "model_revision": null,
     "tokenizer": "Qwen/Qwen3-0.6B",
     "lm_eval_version": "0.4.12",
-    "serving_backend": "marin-serve",
     "adapter": "local-chat-completions",
     "apply_chat_template": true,
     "limit": 20,

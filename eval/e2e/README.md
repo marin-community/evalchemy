@@ -1,169 +1,61 @@
-# Evalchemy end-to-end (e2e) test
+# Run evalchemy against an Iris/Marin (or any OpenAI) endpoint
 
-A **one-shot** harness that exercises the whole evalchemy path against a *real*
-served model:
-
-1. **Serve** a small model (`Qwen/Qwen3-0.6B`) — via Marin's `marin-serve`
-   (Iris controller → vLLM on a TPU slice), or any OpenAI-compatible endpoint.
-2. **Evaluate** it with `eval.eval` over a small "sample query set."
-3. **Gate** the results against a checked-in baseline and exit non-zero on
-   regression.
-
-```
-serve (provider) ──► OpenAIEndpoint(/v1) ──► python -m eval.eval ──► results_*.json ──► gate vs baseline
-```
+- `eval.e2e.run_evals` — serve a model and evaluate it. It provisions a TPU via
+  Marin's `marin-serve` (Iris → vLLM), or attaches to an OpenAI-compatible server
+  you already have, then runs `python -m eval.eval` against the endpoint and prints
+  each task's metrics.
+- `eval.e2e.validate` — the CI check. `check` compares a run's `results_*.json`
+  against a checked-in baseline and exits non-zero on regression; `record` writes a
+  baseline from a run.
 
 ## Install
 
 ```bash
-uv sync --no-dev --python 3.11        # evalchemy base (vLLM-free), for the eval side
+uv sync --no-dev --python 3.11        # evalchemy base (vLLM-free)
 
-# For the marin-serve (provisioning) provider only -- installed as an ISOLATED
-# tool because marin-core can't co-resolve with evalchemy's deps (see pyproject):
+# marin-serve provider only -- an isolated tool, since marin-core can't co-resolve
+# with evalchemy's deps:
 uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
 ```
 
-**marin-serve provider — workspace requirement.** `marin-serve` bundles its
-current working directory as the Iris job workspace and the container `uv sync`s
-it, so it must run from a **marin checkout** (a dir whose `pyproject.toml`
-resolves `marin-core[tpu,vllm]`) — not the evalchemy checkout. Pass it with
-`--marin-workspace <path>` (or `MARIN_WORKSPACE`). Keep that checkout free of
-large untracked siblings (e.g. `.worktrees/`): the bundle is collected by
-`rglob` minus `.gitignore`, so unrelated big directories can push it past the
-25 MB limit. Both of these are marin-side sharp edges tracked upstream in
-[marin-community/marin#7106](https://github.com/marin-community/marin/issues/7106);
-until that lands, a marin checkout is required for the provisioning path. The
-`endpoint` provider needs none of this.
+`marin-serve` bundles its working directory as the Iris job workspace, so run it
+from a marin checkout via `--marin-workspace <path>`, and keep that checkout free of
+large untracked directories — the bundle is `rglob` minus `.gitignore` with a 25 MB
+limit ([marin-community/marin#7106](https://github.com/marin-community/marin/issues/7106)).
+The `endpoint` provider needs none of this.
 
-## Two CLIs
-
-Split by audience, so neither is doing the other's job:
-
-* **`eval.e2e.run_evals`** -- the human tool. Bring up a server (or attach to one),
-  run the eval, print the numbers. No pass/fail.
-* **`eval.e2e.validate`** -- the CI tool. `check` a run against a golden baseline
-  (exit 0/1), or `record` a new one.
-
-`run_evals` is a thin orchestrator over `python -m eval.eval`: it provisions/attaches
-the server, builds the endpoint `--model_args`, and shells out to evalchemy -- so all
-of evalchemy's task/scoring machinery is used as-is. Anything after `--` is forwarded
-verbatim to `eval.eval` (that's how pass@k and other flags reach it).
+## Run
 
 ```bash
-# A) Provision a TPU via marin-serve, run the eval, print results (needs the
-#    marin-serve tool + cluster creds + TPU quota + a marin checkout; see above):
+# Provision a TPU on the marin cluster, eval, print results:
 uv run python -m eval.e2e.run_evals --model Qwen/Qwen3-0.6B \
     --tpu v5litepod-8 --region europe-west4 --marin-workspace /path/to/marin
 
-# B) Attach to a server you already have (no Marin dependency, runs anywhere):
-E2E_BASE_URL=http://localhost:8000/v1 uv run python -m eval.e2e.run_evals --provider endpoint
+# Or attach to a server you already have:
+uv run python -m eval.e2e.run_evals --provider endpoint --base-url http://localhost:8000/v1
 
-# Gate a run against the golden baseline (CI); exit 1 on regression:
-uv run python -m eval.e2e.validate check \
-    --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
-
-# Seed / refresh a baseline from a real run:
-uv run python -m eval.e2e.validate record \
-    --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
+# Gate a run against the baseline (exit 1 on regression), or record a new one:
+uv run python -m eval.e2e.validate check  --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
+uv run python -m eval.e2e.validate record --results eval/e2e/runs/<ts> --baseline eval/e2e/baselines/qwen3-0.6b.json
 ```
 
-**Sample size.** `run_evals` defaults to `--limit 200` (config `eval.limit`) -- a
-real-ish slice of gsm8k's 1319, ~a few minutes. Pass `--limit 0` for the full task,
-or a smaller number for a quick look. CI's smoke steps pass `--limit 20` (~1 min).
-
-**pass@k / other eval.eval flags.** gsm8k is greedy single-sample, but sampled tasks
-take pass@k via the passthrough:
+`--limit` caps samples per task (default 200; `0` runs the full task; CI uses 20).
+Anything after `--` is forwarded to `eval.eval`, e.g. pass@k on a sampled task:
 
 ```bash
-uv run python -m eval.e2e.run_evals --tasks MATH500 --provider endpoint \
-    -- --num_samples 8 --pass_at_k 1,8,32
+uv run python -m eval.e2e.run_evals --tasks MATH500 --provider endpoint -- --num_samples 8 --pass_at_k 1,8,32
 ```
 
-## Providers
+## The gate
 
-| provider | how it serves | auth | needs | use |
-|---|---|---|---|---|
-| `marin-serve` *(the provisioning path)* | runs the real `marin-serve` CLI (Iris TPU job) as a background process in **`--access link` (mint) mode**, parses the printed capability `base_url`, and tears the Iris job down via `iris --cluster X job stop <id>` in a `finally` | **none** — the minted URL carries a scoped token in its path (`api_key` is any placeholder) | `marin-serve` on PATH (isolated `uv tool`), marin cluster creds, TPU quota, a marin checkout for `--marin-workspace` | provision-and-test, nightly CI |
-| `endpoint` | attaches to an already-running `/v1` server | `--api-key` (optional, sent as `Authorization: Bearer`) | just a URL | unit tests, hosted-CI smoke, local dev, or a server someone already brought up |
+gsm8k `strict-match` swings a few samples run-to-run at `--limit 20` even greedy
+(vLLM/TPU batching isn't bit-exact), so `compare.py` checks two things that tolerate
+that noise: the endpoint answered `expected_samples` queries, and each metric clears
+a floor (`record` sets `min = max(0.05, observed − 0.25)`). `MetricThreshold` also
+accepts an optional `reference ± tolerance` band for a tighter gate at higher limits.
+Pin `provenance.model_revision` in the baseline before committing floors — the Hub
+tag is mutable.
 
-The script **provisions the accelerator itself** with the `marin-serve` provider —
-users do not have to stand up a server by hand (though they can, and point the
-`endpoint` provider at it). The serving tool (`marin-core`/`marin-serve`) and the
-eval stack (`evalchemy`) are **separate environments that only ever talk over the
-HTTP endpoint** — `marin-serve` is never imported into evalchemy's interpreter,
-so their (otherwise conflicting) dependency graphs never meet.
-
-### Auth — mint mode solves it
-
-`marin-serve --access link` mints a **public capability URL** with a scoped,
-time-boxed token embedded in the path. Possession of the URL is the credential,
-so a plain lm-eval OpenAI client reaches it off-cluster with **no IAP token, no
-auth header, and no SSH tunnel** — `api_key` can be any non-empty placeholder.
-The token authorizes only this endpoint and expires with the server
-(`--timeout-hours`). This is the default (`provider.marin-serve.access: link`).
-
-`--access private` restricts the proxy to cluster identity (IAP); use it only
-when you additionally supply a valid bearer via `--api-key` / `E2E_API_KEY`.
-
-## Configuration
-
-`eval/e2e/config.yaml` holds the defaults (model, tasks, `limit`, decoding,
-provider settings). Every field is overridable on the CLI. `gsm8k` is used
-because it is **self-graded** (exact-match) — no judge model, no `OPENAI_API_KEY`
-— so it is a clean generation smoke through the chat endpoint.
-
-## The gate is a smoke check, not a regression baseline
-
-A `--limit 20` run of a 0.6B model moves in coarse increments — gsm8k
-`strict-match` alone swings ~3/20 run-to-run **even with greedy decoding** (vLLM/TPU
-batching is not bit-exact). So by default the gate (`eval/e2e/compare.py`) asserts
-only the two things that don't false-fail on that noise:
-
-- **`expected_samples`** — the endpoint answered every query (the strongest
-  connectivity signal);
-- each metric **`>= min`** — a wide "the model isn't broken/empty" floor
-  (`validate record` sets `min = max(0.05, observed − 0.25)`).
-
-A tight `reference ± tolerance` band would false-fail on the small-sample noise, so
-`validate record` no longer emits one; the observed values are kept under `observed`
-for provenance. The gate (`compare.py` / `MetricThreshold`) **still supports** an
-optional `reference`/`tolerance` band if you want a tighter regression gate — add it
-by hand and raise `--limit` so the metric is stable enough to justify it.
-
-The baseline (`eval/e2e/baselines/qwen3-0.6b.json`) also carries a `provenance` block
-(model/tokenizer revision, lm-eval version, decoding config, backend). **Pin
-`model_revision` before committing floors** — the Hub tag is mutable. Regenerate
-with `validate record` after any intended change.
-
-## Layout
-
-| file | role |
-|---|---|
-| `run_evals.py` | **human CLI** (click): serve → eval → print results |
-| `validate.py` | **CI CLI** (click): `check` / `record` a golden baseline |
-| `models.py` | pydantic models for config / baseline / results JSON+YAML |
-| `providers.py` | `endpoint` + `marin-serve` providers → `ServedModel(/v1, model, api_key)` |
-| `eval_args.py` | build the `eval.eval` argv (mirrors Marin's `build_lm_eval_model_args`) |
-| `compare.py` | gate `EvalResults` against a `Baseline` |
-| `config.yaml` | run defaults (parsed by `models.E2EConfig`) |
-| `baselines/` | per-model baselines |
-| `../../tests/e2e/test_e2e.py` | harness behavior tests (no model/Marin — hosted-CI safe) |
-| `../../.github/workflows/` | `e2e-ci.yaml` + `e2e-nightly.yaml` |
-
-## CI
-
-Two workflows:
-
-- **`e2e-ci.yaml`** (every push/PR) — runs `tests/e2e/` against the harness core,
-  and, when the repo variable `E2E_BASE_URL` is set, runs `run_evals` against that
-  endpoint. Fully hosted; no cluster.
-- **`e2e-nightly.yaml`** (`schedule` + `workflow_dispatch`) — provisions a TPU on
-  the `marin` cluster via `marin-serve`, evaluates, and gates against the baseline,
-  with an unconditional Iris-job cleanup step. Runs on a hosted runner that reaches
-  the cluster over GCP, so it needs two secrets:
-  - `IRIS_CI_GCP_SA_KEY` — JSON key for a GCP service account that can submit jobs
-    to the marin Iris cluster (used by `google-github-actions/auth`);
-  - `GCP_PROJECT_ID` — the project the service account belongs to.
-
-  It checks out `marin-community/marin` for the `marin` cluster config and reduces
-  it to its tracked tree (`git archive`) as the `marin-serve` workspace bundle.
+Config defaults are in `config.yaml`. CI runs from `.github/workflows/e2e-ci.yaml`
+(per-PR) and `e2e-nightly.yaml` (cluster run); the secrets the nightly needs are
+documented in its workflow header.
