@@ -47,6 +47,18 @@ def _pick(cli_value, config_value, default=None):
     return default
 
 
+def resolve_limit(cli_limit: Optional[int], config_limit: Optional[int], default: int = 200) -> Optional[int]:
+    """Resolve the per-task sample cap into what lm-eval should receive.
+
+    CLI value wins, else the config value, else ``default`` (a real-ish eval). The
+    non-obvious part: ``<= 0`` is the escape hatch for the FULL task -- lm-eval
+    reads a *missing* ``--limit`` as "all samples", so a non-positive request maps
+    to ``None`` (omit the flag) rather than a literal cap of 0.
+    """
+    limit = _pick(cli_limit, config_limit, default)
+    return None if limit <= 0 else limit
+
+
 def build_invocation(cfg: E2EConfig, served: ServedModel, output_dir: str, tasks, limit, extra_args) -> EvalInvocation:
     ev = cfg.eval
     return EvalInvocation(
@@ -160,11 +172,7 @@ def main(
     if not model:
         raise click.UsageError("no model given (--model or config 'model')")
     task_list = tasks.split(",") if tasks else list(cfg.eval.tasks)
-    # No --limit: config value, else the human default of 200 (a real-ish eval).
-    # --limit <= 0 means the FULL task (lm-eval reads no limit as "all samples").
-    if limit is None:
-        limit = cfg.eval.limit if cfg.eval.limit is not None else 200
-    limit = None if limit <= 0 else limit
+    limit = resolve_limit(limit, cfg.eval.limit)
 
     output_dir = output_dir or os.path.join(
         _REPO_ROOT, "eval", "e2e", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
