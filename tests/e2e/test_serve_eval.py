@@ -20,16 +20,14 @@ import pytest
 from pydantic import ValidationError
 
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.eval_args import (
+from eval.serve_eval.providers import EndpointProvider, MarinServeProvider, ServedModel, build_provider, wait_for_models
+from eval.serve_eval.run import (
     LOCAL_CHAT_COMPLETIONS,
     LOCAL_COMPLETIONS,
-    EvalInvocation,
-    ServedModel,
     build_eval_argv,
     build_model_args,
     endpoint_url,
 )
-from eval.serve_eval.providers import EndpointProvider, MarinServeProvider, build_provider, wait_for_models
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -86,13 +84,9 @@ def test_model_args_reject_comma_in_value():
 def test_apply_chat_template_flag_is_bare_never_a_value():
     # The parser option is nargs="?", const=True: a following value would be read
     # as a chat-*template name*, not the boolean. The flag must appear bare.
-    inv = EvalInvocation(
-        served=ServedModel(base_url="http://h/v1", model="m"),
-        tasks=["gsm8k"],
-        output_path="/out",
-        apply_chat_template=True,
-    )
-    argv = build_eval_argv(inv)
+    served = ServedModel(base_url="http://h/v1", model="m")
+    cfg = RunConfig.load(None, tasks=["gsm8k"], apply_chat_template=True)
+    argv = build_eval_argv(served, cfg, "/out", limit=None, extra_args=[], python="python")
     assert "--apply_chat_template" in argv
     following = argv[argv.index("--apply_chat_template") + 1 :]
     assert not following or following[0].startswith("--")

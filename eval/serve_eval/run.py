@@ -20,13 +20,12 @@ import os
 import subprocess
 import sys
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 
 import click
 
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.eval_args import EvalInvocation, ServedModel, build_eval_argv
-from eval.serve_eval.providers import build_provider
+from eval.serve_eval.providers import ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
 
 logger = logging.getLogger("eval.serve_eval")
@@ -34,25 +33,95 @@ logger = logging.getLogger("eval.serve_eval")
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "serve_eval", "configs", "qwen-tiny.yaml")
 
+# lm-eval OpenAI-compatible model backends (registry names it resolves via
+# lm_eval.api.registry.get_model). Chat endpoint when a chat template is applied.
+LOCAL_COMPLETIONS = "local-completions"
+LOCAL_CHAT_COMPLETIONS = "local-chat-completions"
+_ADAPTER_PATH = {LOCAL_COMPLETIONS: "completions", LOCAL_CHAT_COMPLETIONS: "chat/completions"}
 
-def build_invocation(cfg: RunConfig, served: ServedModel, output_dir: str, limit, extra_args) -> EvalInvocation:
-    return EvalInvocation(
-        served=served,
-        tasks=list(cfg.tasks),
-        output_path=output_dir,
-        apply_chat_template=cfg.apply_chat_template,
-        limit=limit,
-        num_fewshot=cfg.num_fewshot,
-        batch_size=cfg.batch_size,
-        seed=cfg.seed,
-        gen_kwargs=cfg.gen_kwargs,
-        extra_model_args=dict(cfg.extra_model_args),
-        extra_args=list(extra_args),
-    )
+ModelArgValue = Union[str, int, float, bool]
 
 
-def run_eval(inv: EvalInvocation, python: str) -> None:
-    argv = build_eval_argv(inv, python=python)
+def adapter_for(apply_chat_template: bool) -> str:
+    return LOCAL_CHAT_COMPLETIONS if apply_chat_template else LOCAL_COMPLETIONS
+
+
+def endpoint_url(base_url: str, adapter: str) -> str:
+    """The concrete OpenAI endpoint URL for ``adapter`` under the ``/v1`` root."""
+    return api_root(base_url) + "/" + _ADAPTER_PATH[adapter]
+
+
+def _model_arg(value: ModelArgValue) -> str:
+    # lm-eval parses --model_args as comma-separated key=value, so a value cannot
+    # contain a comma or the pair boundary is lost.
+    text = "True" if value is True else "False" if value is False else str(value)
+    if "," in text:
+        raise ValueError(f"model_args value cannot contain ',': {text!r}")
+    return text
+
+
+def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str, ModelArgValue]] = None) -> str:
+    """Build the comma-delimited ``--model_args`` string for a served endpoint."""
+    args: Dict[str, ModelArgValue] = {
+        "model": served.model,
+        "base_url": endpoint_url(served.base_url, adapter),
+        # The served model already tokenizes; keep requests as text and let lm-eval
+        # use a HF tokenizer only for length bookkeeping.
+        "tokenizer_backend": "huggingface",
+        "tokenized_requests": False,
+    }
+    if served.api_key is not None:
+        args["api_key"] = served.api_key
+    if served.tokenizer is not None:
+        args["tokenizer"] = served.tokenizer
+    if extra:
+        args.update(extra)
+    return ",".join(f"{k}={_model_arg(v)}" for k, v in args.items())
+
+
+def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit, extra_args, python: str) -> List[str]:
+    """Build the ``python -m eval.eval`` argv for this run.
+
+    Uses the **bare** ``--apply_chat_template`` flag: that parser option is
+    ``nargs="?", const=True`` (eval/lm_eval_compat.py), so a value like ``True``
+    would be read as a chat-*template name*, not the boolean -- a real footgun.
+    """
+    if not cfg.tasks:
+        raise ValueError("no tasks to run (--tasks or config 'tasks')")
+    adapter = adapter_for(cfg.apply_chat_template)
+    argv = [
+        python,
+        "-m",
+        "eval.eval",
+        "--model",
+        adapter,
+        "--model_args",
+        build_model_args(served, adapter, dict(cfg.extra_model_args)),
+        "--tasks",
+        ",".join(cfg.tasks),
+        "--output_path",
+        output_dir,
+        "--log_samples",
+    ]
+    if cfg.apply_chat_template:
+        argv.append("--apply_chat_template")  # bare flag => const=True
+    if limit is not None:
+        argv += ["--limit", str(limit)]
+    if cfg.num_fewshot is not None:
+        argv += ["--num_fewshot", str(cfg.num_fewshot)]
+    if cfg.batch_size is not None:
+        argv += ["--batch_size", str(cfg.batch_size)]
+    if cfg.seed is not None:
+        # evalchemy/lm-eval accept a 4-tuple "python,numpy,torch,fewshot"; a single
+        # value sets all four (see eval/eval.py seed handling).
+        argv += ["--seed", str(cfg.seed)]
+    if cfg.gen_kwargs:
+        argv += ["--gen_kwargs", cfg.gen_kwargs]
+    argv += list(extra_args)  # verbatim eval.eval passthrough (last => can override)
+    return argv
+
+
+def run_eval(argv: List[str]) -> None:
     logger.info("running eval.eval:\n  %s", " ".join(argv))
     result = subprocess.run(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
     if result.returncode != 0:
@@ -75,7 +144,7 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 
 @click.command(context_settings={"show_default": True})
 @click.option("--provider", type=click.Choice(["marin-serve", "endpoint"]), default="marin-serve")
-@click.option("--config", "config_path", default=_DEFAULT_CONFIG, help="Path to e2e config yaml.")
+@click.option("--config", "config_path", default=_DEFAULT_CONFIG, help="Path to the run config yaml.")
 @click.option("--model", default=None, help="HF model id (or gs:// path) to serve/evaluate.")
 @click.option("--tokenizer", default=None, help="Tokenizer id for lm-eval (defaults to --model).")
 @click.option("--tasks", default=None, help="Comma-separated task list (overrides config).")
@@ -83,8 +152,7 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
     "--limit",
     type=int,
     default=None,
-    help="Per-task sample cap. Default: config 'limit' (200) -- a real-ish eval; CI passes 20 for a fast smoke. "
-    "Pass 0 (or negative) to run the FULL task.",
+    help="Per-task sample cap. Default: config 'limit'. Pass 0 (or negative) to run the FULL task.",
 )
 @click.option("--output-dir", default=None, help="Where eval.eval writes results (default: a stamped dir under runs/).")
 @click.option("--python", "python_bin", default=sys.executable, help="Python used to run eval.eval.")
@@ -185,8 +253,7 @@ def main(
 
     with prov as served:
         logger.info("served model: base_url=%s model=%s (auth=%s)", served.base_url, served.model, bool(served.api_key))
-        inv = build_invocation(cfg, served, output_dir, limit, extra_eval_args)
-        run_eval(inv, python_bin)
+        run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
 
     results_path = EvalResults.find_latest_path(output_dir)
     results = EvalResults.load(results_path)

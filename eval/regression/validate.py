@@ -18,8 +18,7 @@ from typing import List, Optional
 
 import click
 
-from eval.regression.gate import evaluate_gate
-from eval.regression.gatespec import GateSpec, MetricThreshold, SpecProvenance, TaskSpec
+from eval.regression.gate import GateSpec, MetricThreshold, SpecProvenance, TaskSpec, evaluate_gate
 from eval.serve_eval.results import EvalResults
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -44,6 +43,7 @@ def build_spec(
     tasks: List[str],
     margin: float,
     *,
+    tolerance: Optional[float] = None,
     model: Optional[str] = None,
     model_revision: Optional[str] = None,
     tokenizer: Optional[str] = None,
@@ -51,14 +51,14 @@ def build_spec(
     num_fewshot: Optional[int] = None,
     seed: Optional[int] = None,
 ) -> GateSpec:
-    """Build a floor-only smoke spec from a real run.
+    """Build a gate spec from a real run.
 
-    ``min = max(0.05, observed - margin)`` -- a wide "model isn't broken/empty" floor.
-    A tight reference+tolerance band false-fails on small-sample variance (gsm8k
-    strict-match swings ~3/20 at limit=20 even greedy), so the floor is what we emit;
-    the observed values are kept alongside it for provenance. Provenance is read from
-    the results file plus explicit overrides, as context for whoever reads the spec.
-    See README.
+    Every gated metric gets a wide "model isn't broken/empty" floor,
+    ``min = max(0.05, observed - margin)``. With ``tolerance`` set, it ALSO gets a tight
+    two-sided band ``reference = observed`` ± ``tolerance``, which is what actually
+    catches a serving regression -- use it once a run is reproducible enough (greedy +
+    ``num_concurrent=1``) that the band holds run-to-run. Provenance is read from the
+    results file plus explicit overrides, as context for whoever reads the spec.
     """
     task_specs = {}
     for task in tasks:
@@ -66,8 +66,13 @@ def build_spec(
         observed = {}
         for name, value in sorted(results.numeric_metrics(task).items()):
             if _is_gated_metric(name):
-                observed[name] = round(value, 4)
-                metrics[name] = MetricThreshold(min=round(max(0.05, value - margin), 4))
+                rounded = round(value, 4)
+                observed[name] = rounded
+                floor = round(max(0.05, value - margin), 4)
+                if tolerance is not None:
+                    metrics[name] = MetricThreshold(min=floor, reference=rounded, tolerance=tolerance)
+                else:
+                    metrics[name] = MetricThreshold(min=floor)
         task_specs[task] = TaskSpec(
             metrics=metrics,
             observed=observed,
@@ -131,6 +136,13 @@ def check(results_path: str, spec_path: str) -> None:
     default=0.25,
     help="Floor headroom: min = max(0.05, observed - margin). Wide by default to absorb small-sample variance.",
 )
+@click.option(
+    "--tolerance",
+    type=float,
+    default=None,
+    help="Also emit a tight two-sided band reference=observed ± tolerance (the real regression gate). "
+    "Set it to the run-to-run variance you measured; omit for a floor-only smoke spec.",
+)
 def record(
     results_path: str,
     spec_path: str,
@@ -142,6 +154,7 @@ def record(
     apply_chat_template: Optional[bool],
     tasks: Optional[str],
     margin: float,
+    tolerance: Optional[float],
 ) -> None:
     """Write a golden gate spec from a real run's results."""
     results = EvalResults.load_path_or_dir(results_path)
@@ -150,6 +163,7 @@ def record(
         results,
         task_list,
         margin,
+        tolerance=tolerance,
         model=model,
         model_revision=model_revision,
         tokenizer=tokenizer,

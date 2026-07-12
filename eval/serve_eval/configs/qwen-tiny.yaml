@@ -19,7 +19,11 @@ seed: 1234                    # pinned greedy decoding
 # Qwen3 emits <think> ... </think> before the answer; 256 (lm-eval default) truncates it.
 gen_kwargs: temperature=0,do_sample=false,max_gen_toks=1024
 extra_model_args:
-  num_concurrent: 8
+  # num_concurrent=1 sends one request at a time, so vLLM's batch composition is
+  # constant run-to-run. Greedy output then reproduces on the same slice type, which
+  # is what lets the gate use a tight reference+-tolerance band instead of a wide
+  # floor. It is slower; bump it for ad-hoc human runs that don't gate.
+  num_concurrent: 1
   timeout: 120
   max_retries: 3
 

@@ -31,8 +31,6 @@ import urllib.request
 from dataclasses import dataclass
 from typing import List, Optional
 
-from eval.serve_eval.eval_args import ServedModel
-
 logger = logging.getLogger("eval.serve_eval.providers")
 
 # In `--access link` (mint) mode, marin-serve prints, once vLLM is ready:
@@ -53,7 +51,22 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _CAPABILITY_API_KEY = "capability-url-carries-credential"
 
 
-def _api_root(base_url: str) -> str:
+@dataclass(frozen=True)
+class ServedModel:
+    """A model served behind an OpenAI-compatible endpoint.
+
+    ``base_url`` is the ``.../v1`` API root. ``api_key`` is sent by lm-eval as
+    ``Authorization: Bearer <api_key>`` (carries an IAP bearer for the Marin
+    controller proxy, or any server that wants a key).
+    """
+
+    base_url: str
+    model: str
+    api_key: Optional[str] = None
+    tokenizer: Optional[str] = None
+
+
+def api_root(base_url: str) -> str:
     """Normalize any OpenAI URL to its ``/v1`` root (drop a trailing adapter path)."""
     root = base_url.rstrip("/")
     for path in ("chat/completions", "completions"):
@@ -64,7 +77,7 @@ def _api_root(base_url: str) -> str:
 
 def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, interval_s: float = 3.0) -> None:
     """Poll ``<base_url>/models`` until it returns HTTP 200 or ``timeout_s`` elapses."""
-    url = _api_root(base_url) + "/models"
+    url = api_root(base_url) + "/models"
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     deadline = time.monotonic() + timeout_s
     last_err: Optional[str] = None
@@ -106,7 +119,7 @@ class EndpointProvider(Provider):
     wait_ready: bool = True
 
     def __enter__(self) -> ServedModel:
-        root = _api_root(self.base_url)
+        root = api_root(self.base_url)
         if self.wait_ready:
             wait_for_models(root, self.api_key, self.readiness_timeout_s)
         return ServedModel(
@@ -222,7 +235,7 @@ class MarinServeProvider(Provider):
         # link URLs carry the credential in the path -> poll without a header.
         wait_for_models(base_url, None if self.access == "link" else api_key, self.readiness_timeout_s)
         return ServedModel(
-            base_url=_api_root(base_url),
+            base_url=api_root(base_url),
             model=self.model,
             api_key=api_key,
             tokenizer=self.tokenizer or self.model,

@@ -36,8 +36,8 @@ on:
         description: "Comma-separated tasks"
         default: gsm8k
       limit:
-        description: "Per-task sample cap (must match the baseline's expected_samples to gate; re-record for other values)"
-        default: "20"
+        description: "Per-task sample cap (must match the spec's expected_samples to gate; re-record for other values)"
+        default: "100"
 
 concurrency:
   group: e2e-nightly
@@ -91,7 +91,7 @@ jobs:
             --region "${{ github.event.inputs.region || 'europe-west4' }}" \
             --marin-workspace "$GITHUB_WORKSPACE/marin" \
             --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
-            --limit "${{ github.event.inputs.limit || '20' }}" \
+            --limit "${{ github.event.inputs.limit || '100' }}" \
             --output-dir e2e-out
           uv run python -m eval.regression.validate check --results e2e-out \
             --spec eval/regression/specs/qwen3-0.6b.json

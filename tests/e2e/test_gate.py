@@ -14,8 +14,7 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from eval.regression.gate import evaluate_gate
-from eval.regression.gatespec import GateSpec, MetricThreshold
+from eval.regression.gate import GateSpec, MetricThreshold, evaluate_gate
 from eval.regression.validate import DEFAULT_SPEC, cli
 from eval.serve_eval.results import EvalResults
 
@@ -153,3 +152,20 @@ def test_validate_check_exits_nonzero_on_broken_run(tmp_path):
     spec = _write(tmp_path, "spec.json", _SPEC)
     result = CliRunner().invoke(cli, ["check", "--results", res, "--spec", spec])
     assert result.exit_code == 1
+
+
+def test_recorded_tolerance_band_catches_drift_a_floor_would_miss(tmp_path):
+    # The whole point of the tight gate: a serving change that moves the score
+    # (here 0.30 -> 0.40) must FAIL even though it clears the wide floor.
+    res = _write(tmp_path, "results_x.json", _RESULTS)  # strict 0.30, flexible 0.50
+    out = str(tmp_path / "spec.json")
+    rec = CliRunner().invoke(cli, ["record", "--results", res, "--spec", out, "--model", "m", "--tolerance", "0.02"])
+    assert rec.exit_code == 0, rec.output
+    assert CliRunner().invoke(cli, ["check", "--results", res, "--spec", out]).exit_code == 0  # its own run passes
+
+    drifted = dict(_RESULTS)
+    drifted["results"] = {
+        "gsm8k": {"exact_match,strict-match": 0.40, "exact_match,flexible-extract": 0.50, "sample_len": 20}
+    }
+    res2 = _write(tmp_path, "results_y.json", drifted)
+    assert CliRunner().invoke(cli, ["check", "--results", res2, "--spec", out]).exit_code == 1
