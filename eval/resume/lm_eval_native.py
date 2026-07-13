@@ -114,8 +114,31 @@ def _make_resume_caching_lm_cls():
         def loglikelihood_rolling(self, requests, *a, **k):
             return self.lm.loglikelihood_rolling(requests, *a, **k)
 
-        # pass any other attribute through to the underlying LM (chat_template,
-        # apply_chat_template, tokenizer, set_cache_hook, etc.).
+        # The chat-template protocol members below are DEFINED on the base `LM`
+        # class (`tokenizer_name` raises NotImplementedError; `chat_template` /
+        # `apply_chat_template` return inert defaults), so Python resolves them on
+        # the base class and `__getattr__` NEVER fires for them. Without these
+        # explicit forwards, an `--apply_chat_template` run against an API model
+        # (e.g. local-chat-completions) crashes on `wrapped.tokenizer_name` and
+        # silently logs the wrong (empty) chat template. Forward them to the real
+        # LM. `*args/**kwargs` keeps us resilient to lm-eval signature drift.
+        @property
+        def tokenizer_name(self):
+            return self.lm.tokenizer_name
+
+        def chat_template(self, *args, **kwargs):
+            return self.lm.chat_template(*args, **kwargs)
+
+        def apply_chat_template(self, *args, **kwargs):
+            return self.lm.apply_chat_template(*args, **kwargs)
+
+        def set_cache_hook(self, *args, **kwargs):
+            return self.lm.set_cache_hook(*args, **kwargs)
+
+        # pass any other attribute through to the underlying LM (tokenizer,
+        # eot_token_id, tok_encode, etc.). Note: this only fires for names NOT
+        # already defined on this class or the base `LM` (hence the explicit
+        # forwards above for base-class-defined members).
         def __getattr__(self, attr):
             # Only reached for attributes not found on self/the class; delegate to the
             # underlying LM. Guard the bootstrap window before `self.lm` is set so an

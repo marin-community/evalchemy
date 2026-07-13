@@ -649,7 +649,16 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "fewshot_seed": args.seed[3],
     }
 
-    if isinstance(lm, lm_eval.models.huggingface.HFLM):
+    # `import lm_eval.models` does NOT import the huggingface submodule (it is only
+    # registered lazily via the model registry), so `lm_eval.models.huggingface`
+    # raises AttributeError for a non-HF (e.g. API/endpoint) model -- which would
+    # crash this metadata step and discard an already-computed score. Resolve HFLM
+    # defensively; `isinstance(lm, ())` is a safe False on minimal installs.
+    try:
+        from lm_eval.models.huggingface import HFLM
+    except Exception:  # pragma: no cover - minimal installs may lack HF deps
+        HFLM = ()
+    if isinstance(lm, HFLM):
         results["config"].update(lm.get_model_info())
 
     results["git_hash"] = get_git_commit_hash()
