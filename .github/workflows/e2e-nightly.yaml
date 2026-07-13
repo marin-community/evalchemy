@@ -85,8 +85,10 @@ jobs:
         # uv tool env. uv symlinks marin-serve but NOT iris, so put the tool's bin
         # dir on PATH -- teardown (the provider's finally + the cleanup step below)
         # shells out to `iris job stop`, which otherwise wouldn't resolve.
+        # Floor = first nightly carrying the WIF IAP-auth fix (marin#7144); `>=`
+        # still floats to newer nightlies, it just won't resolve an older one.
         run: |
-          uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+          uv tool install --prerelease allow "marin-core>=0.2.45.dev202607130838"
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
