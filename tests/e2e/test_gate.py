@@ -14,8 +14,7 @@ import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
 
-from eval.regression.gate import GateSpec, MetricThreshold, evaluate_gate
-from eval.regression.validate import DEFAULT_SPEC, cli
+from eval.regression.validate import DEFAULT_SPEC, GateSpec, MetricThreshold, cli, evaluate_gate
 from eval.serve_eval.results import EvalResults
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

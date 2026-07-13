@@ -17,9 +17,9 @@ to `specs/qwen3-0.6b.json`.
 
 ## The gate
 
-The gate is a **connectivity + coarse-quality smoke check**. gsm8k `strict-match`
-swings a few samples run-to-run at `--limit 20` even greedy (vLLM/TPU batching varies),
-so `gate.py` checks two things that tolerate that noise:
+The gate is a connectivity + coarse-quality smoke check. gsm8k `strict-match` swings a
+few samples run-to-run at `--limit 20` even greedy (vLLM/TPU batching varies), so
+`validate.py` checks two things that tolerate that noise:
 
 1. the endpoint answered `expected_samples` queries (a low count means the endpoint
    dropped requests), and

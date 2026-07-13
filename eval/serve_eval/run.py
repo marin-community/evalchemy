@@ -82,9 +82,9 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
 def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit, extra_args, python: str) -> List[str]:
     """Build the ``python -m eval.eval`` argv for this run.
 
-    Uses the **bare** ``--apply_chat_template`` flag: that parser option is
-    ``nargs="?", const=True`` (eval/lm_eval_compat.py), so a value like ``True``
-    would be read as a chat-*template name*, not the boolean -- a real footgun.
+    Uses the bare ``--apply_chat_template`` flag: that parser option is
+    ``nargs="?", const=True`` (eval/lm_eval_compat.py), so a following value would be
+    read as a chat-template name, not the boolean.
     """
     if not cfg.tasks:
         raise ValueError("no tasks to run (--tasks or config 'tasks')")
