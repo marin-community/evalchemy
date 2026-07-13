@@ -61,10 +61,21 @@ jobs:
           path: marin-src
           fetch-depth: 1
 
-      - name: Materialize a clean marin workspace (tracked tree, no .git)
+      - name: Materialize a clean marin workspace (own git repo for correct bundling)
+        # marin-serve bundles this dir as the Iris job workspace, and iris's bundler
+        # enumerates files with `git ls-files --exclude-standard`. Nested under the
+        # evalchemy checkout with no .git of its own, git resolves to the EVALCHEMY
+        # repo and applies its stock `lib/` ignore rule -- which strips marin's lib/**
+        # packages (lib/marin, lib/iris, ...) from the bundle. The job then can't
+        # `uv sync` the lib/marin workspace member and dies at container build
+        # ("Distribution not found at: file:///app/lib/marin"). Give the extracted
+        # tree its own .git so the bundler resolves HERE and honors marin's ignore
+        # rules (which keep lib/). The bundler excludes .git, so it isn't shipped;
+        # the full tracked tree zips to ~20MB, under the 25MB bundle cap.
         run: |
           mkdir -p marin
           git -C marin-src archive HEAD | tar -x -C marin
+          git -C marin init -q
 
       - uses: astral-sh/setup-uv@v6
 
