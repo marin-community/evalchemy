@@ -123,9 +123,8 @@ jobs:
           gcloud projects describe hai-gcp-models --format='value(projectId)'
 
       - name: Install marin-serve / iris and expose iris on PATH
-        # Floor = first nightly with the WIF IAP-auth fix (marin#7144); `>=` floats forward.
         run: |
-          uv tool install --prerelease allow "marin-core>=0.2.45.dev202607130838"
+          uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Probe the marin Iris controller (read-only; best effort)
