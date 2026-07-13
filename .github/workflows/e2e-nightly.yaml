@@ -75,10 +75,14 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-      - name: Install marin-serve (isolated tool env)
+      - name: Install marin-serve / iris (isolated tool env)
         # marin-core can't co-resolve with evalchemy's deps, so it lives in its own
-        # uv tool env; only its marin-serve / iris console scripts go on PATH.
-        run: uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+        # uv tool env. uv symlinks marin-serve but NOT iris, so put the tool's bin
+        # dir on PATH -- teardown (the provider's finally + the cleanup step below)
+        # shells out to `iris job stop`, which otherwise wouldn't resolve.
+        run: |
+          uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+          echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
         run: uv sync --no-dev --python 3.11 --extra serve-eval
