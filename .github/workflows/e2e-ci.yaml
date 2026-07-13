@@ -128,8 +128,8 @@ jobs:
           uv tool install --prerelease allow "marin-core>=0.2.46.dev202607131620"
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
-      - name: Probe the marin Iris controller (read-only; best effort)
-        # Green means the SA can reach the controller the nightly submits jobs to. A red
-        # does not fail the job -- the gcloud checks above are the authoritative verdict.
-        continue-on-error: true
-        run: iris --config marin/lib/iris/config/marin.yaml job list
+      - name: Probe the marin Iris controller (authenticated read-only RPC)
+        # The end-to-end check: the SA authenticated through IAP and reached the
+        # controller the nightly submits jobs to. --state bounds the query; an
+        # unfiltered `job list` pages the whole cluster and trips MAX_LIST_JOBS_OFFSET.
+        run: iris --config marin/lib/iris/config/marin.yaml job list --state running
