@@ -13,10 +13,10 @@ name: E2E CI
 #                    (serve-attach -> eval -> results). It does NOT gate scores, so
 #                    it is not a required PR check.
 #   cluster-preflight -- on demand only (add the 'e2e-preflight' label to a PR, or
-#                    "Run workflow"). Checks the nightly's GCP credentials
-#                    (IRIS_CI_GCP_SA_KEY + GCP_PROJECT_ID) and Iris controller
-#                    reachability WITHOUT provisioning a TPU -- the cheap way to
-#                    confirm the secrets are wired before the real nightly run.
+#                    "Run workflow"). Exercises the nightly's keyless GCP auth (WIF ->
+#                    github-iris) and Iris controller reachability WITHOUT provisioning
+#                    a TPU -- the cheap way to confirm the federation and IAP access
+#                    work before the real nightly run.
 #
 # The nightly cluster run (provision a TPU via marin-serve, eval, then gate against
 # the checked-in spec) lives in e2e-nightly.yaml.
@@ -83,6 +83,9 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'e2e-preflight')
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write   # mint the GitHub OIDC token that WIF exchanges for github-iris
     steps:
       - name: Check out evalchemy
         uses: actions/checkout@v4
@@ -102,20 +105,22 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Authenticate to Google Cloud
-        # Fails here if IRIS_CI_GCP_SA_KEY is unset or malformed -- the core key check.
+        # Fails here if the WIF binding is missing -- the core federation check.
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.IRIS_CI_GCP_SA_KEY }}
+          project_id: hai-gcp-models
+          workload_identity_provider: projects/748532799086/locations/global/workloadIdentityPools/github-pool/providers/github-oidc
+          service_account: github-iris@hai-gcp-models.iam.gserviceaccount.com
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          project_id: hai-gcp-models
 
-      - name: Verify the service account resolves the project
+      - name: Verify the federated identity resolves the project
         run: |
-          gcloud auth list
-          gcloud projects describe "${{ secrets.GCP_PROJECT_ID }}" --format='value(projectId)'
+          gcloud auth list   # should show github-iris@hai-gcp-models
+          gcloud projects describe hai-gcp-models --format='value(projectId)'
 
       - name: Install marin-serve / iris and expose iris on PATH
         run: |

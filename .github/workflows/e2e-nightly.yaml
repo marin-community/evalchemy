@@ -5,11 +5,11 @@ name: E2E Nightly
 # and gate the scores against eval/regression/specs/qwen3-0.6b.json (the eval/regression
 # gate). This is the real e2e test. Scheduled + manual dispatch only.
 #
-# Runs on a hosted runner and reaches the cluster over GCP, mirroring marin's own
-# iris-smoke-gcp workflow. Required repository/organization secrets:
-#   IRIS_CI_GCP_SA_KEY -- JSON key for a GCP service account that can submit jobs
-#                         to the marin Iris cluster (used by google-github-actions/auth).
-#   GCP_PROJECT_ID     -- the GCP project the service account belongs to.
+# Runs on a hosted runner and reaches the cluster over GCP. Auth is keyless via
+# Workload Identity Federation: the job's GitHub OIDC token (permissions.id-token:
+# write) is exchanged to impersonate github-iris@hai-gcp-models -- no stored SA key.
+# Provision the pool/provider/binding with scripts/ci/setup-github-wif.sh; github-iris
+# also needs the controller's IAP access (roles/iap.httpsResourceAccessor + submit ACL).
 # Qwen3-0.6B is a public model, so no HF token is required; add HF_TOKEN and forward
 # it to marin-serve if you switch to a gated model.
 #
@@ -47,6 +47,9 @@ jobs:
   marin-serve:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write   # mint the GitHub OIDC token that WIF exchanges for github-iris
     steps:
       - name: Check out evalchemy
         uses: actions/checkout@v4
@@ -68,12 +71,14 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v3
         with:
-          credentials_json: ${{ secrets.IRIS_CI_GCP_SA_KEY }}
+          project_id: hai-gcp-models
+          workload_identity_provider: projects/748532799086/locations/global/workloadIdentityPools/github-pool/providers/github-oidc
+          service_account: github-iris@hai-gcp-models.iam.gserviceaccount.com
 
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v3
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          project_id: hai-gcp-models
 
       - name: Install marin-serve / iris (isolated tool env)
         # marin-core can't co-resolve with evalchemy's deps, so it lives in its own
