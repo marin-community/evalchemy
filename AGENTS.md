@@ -53,14 +53,12 @@ infra/pre-commit.py --all-files --fix    # the required entry point
 infra/pre-commit.py --review             # lint-review pass; run before opening a PR
 ```
 
-This shim runs the pinned `marin-style` checks — ruff lint and black — and per the fork
-policy it is scoped to the Marin-owned directories (see `[tool.marin-style]` in
-`pyproject.toml`). It does not touch upstream code.
-
-It runs black at **23.1.0**, the version upstream's commit hook pins
-(`.pre-commit-config.yaml`), not the kit's newer default. The hook formats on commit and
-the shim checks in CI, over the same Marin-owned files: if the two versions drift apart
-they will each undo the other's work, so bump them together or not at all.
+This shim runs the pinned `marin-style` checks. Per the fork policy it is scoped to the
+Marin-owned directories (see `[tool.marin-style]` in `pyproject.toml`) and runs
+`ruff-check` only — no formatter. Formatting stays with upstream's black hook, installed
+by `make install` and run on commit (`.pre-commit-config.yaml`); it is not a CI gate.
+Enabling a kit formatter would fight that hook over the same files, so if you ever do,
+keep `black_version` matched to the hook's black rather than the kit's newer default.
 
 ## Serve-and-eval and the regression gate
 
