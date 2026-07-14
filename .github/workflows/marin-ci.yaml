@@ -1,0 +1,50 @@
+name: Marin CI
+
+# PR-level Marin coding-standards checks. CPU-only, no cluster, no accelerators --
+# both jobs finish in well under a minute.
+#
+#   marin-precommit -- the pinned marin-style checks (infra/pre-commit.py). Scoped by
+#                      the `include` allowlist in [tool.marin-style] to the Marin-owned
+#                      directories, so it never reformats upstream evalchemy code.
+#   marin-style-sync -- fails if the vendored .agents/ tree has drifted from the pinned
+#                      marin-style revision (i.e. someone hand-edited it, or the pin in
+#                      infra/pre-commit.py moved without a re-vendor).
+#
+# The CPU unit tests for the Marin-owned code live in the `harness` job of e2e-ci.yaml;
+# upstream's formatter lives in black.yaml. Neither is duplicated here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: marin-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  marin-precommit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run the marin-style checks
+        # --all-files is cheap here: the include allowlist narrows the tree to the
+        # Marin-owned dirs. No --fix -- CI reports, the author fixes.
+        run: uv run infra/pre-commit.py --all-files
+
+  marin-style-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check the vendored .agents/ tree is in sync
+        run: >-
+          uvx --from git+https://github.com/marin-community/marin-style@4469660ef1ba6ecd4c8d81bdbb17091bc501a682
+          marin-style sync --check
