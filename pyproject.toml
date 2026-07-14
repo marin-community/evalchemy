@@ -242,6 +242,30 @@ allow-direct-references = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
+# Marin coding standards (https://github.com/marin-community/marin-style), run via
+# `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so the checks
+# are deliberately scoped:
+#
+#   checks  -- `ruff-check` only (lint), no formatter. Formatting stays with upstream's
+#              black hook (.pre-commit-config.yaml, [tool.black] below), which runs on
+#              commit. Enabling ruff-format here would fight that hook over the same
+#              files, and would reformat upstream-owned code into a merge-conflict
+#              minefield. ruff-check has no formatting opinions, so the two coexist.
+#   include -- an allowlist of the Marin-owned directories. Upstream code (the rest of
+#              eval/, database/, configs/, scripts/) is left alone; widen this only when
+#              a directory becomes Marin-owned.
+#
+# See AGENTS.md ("Fork policy") for what "Marin-owned" means here.
+[tool.marin-style]
+checks = ["ruff-check"]
+include = [
+    "eval/serve_eval/**",
+    "eval/regression/**",
+    "tests/e2e/**",
+    "scripts/ci/**",
+    "infra/**",
+]
+
 [tool.black]
 line-length = 120
 
