@@ -229,3 +229,5 @@ results/
 
 # e2e harness run outputs (results_*.json land here by default)
 eval/serve_eval/runs/
+# Claude Code local session settings (the .claude/skills symlink IS tracked)
+.claude/settings.local.json
