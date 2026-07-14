@@ -242,6 +242,38 @@ allow-direct-references = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
+# Marin coding standards (https://github.com/marin-community/marin-style), run via
+# `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so this is
+# deliberately scoped:
+#
+#   include -- an allowlist of the Marin-owned directories. Upstream code (the rest of
+#              eval/, database/, configs/, scripts/) is left alone, so the standards
+#              never reformat it into a merge-conflict minefield. Widen this only when a
+#              directory becomes Marin-owned.
+#   checks  -- `ruff-check` only (lint), no formatter. Formatting stays with upstream's
+#              black hook (.pre-commit-config.yaml, [tool.black] below), which runs on
+#              commit. A kit formatter here would fight that hook over the same files:
+#              each would undo the other's work. ruff-check has no formatting opinions,
+#              so the two coexist.
+#   black_version -- inert while no formatter is enabled above, and set purely as a
+#              guard: it pins the black the commit hook already uses (23.1.0) rather
+#              than the kit's newer default (25.9.0), so that turning the `black` check
+#              on later cannot silently introduce a version skew against the hook.
+#              `ruff_version` is left at the kit default -- this repo pins no ruff
+#              release, so there is nothing to match it to.
+#
+# See AGENTS.md ("Fork policy") for what "Marin-owned" means here.
+[tool.marin-style]
+checks = ["ruff-check"]
+black_version = "23.1.0"
+include = [
+    "eval/serve_eval/**",
+    "eval/regression/**",
+    "tests/e2e/**",
+    "scripts/ci/**",
+    "infra/**",
+]
+
 [tool.black]
 line-length = 120
 
