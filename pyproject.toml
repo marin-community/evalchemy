@@ -243,21 +243,29 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 # Marin coding standards (https://github.com/marin-community/marin-style), run via
-# `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so the checks
-# are deliberately scoped:
+# `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so this is
+# deliberately scoped:
 #
-#   checks  -- `ruff-check` only (lint), no formatter. Formatting stays with upstream's
-#              black hook (.pre-commit-config.yaml, [tool.black] below), which runs on
-#              commit. Enabling ruff-format here would fight that hook over the same
-#              files, and would reformat upstream-owned code into a merge-conflict
-#              minefield. ruff-check has no formatting opinions, so the two coexist.
 #   include -- an allowlist of the Marin-owned directories. Upstream code (the rest of
-#              eval/, database/, configs/, scripts/) is left alone; widen this only when
-#              a directory becomes Marin-owned.
+#              eval/, database/, configs/, scripts/) is left alone, so the standards
+#              never reformat it into a merge-conflict minefield. Widen this only when a
+#              directory becomes Marin-owned.
+#   checks  -- lint (ruff-check) plus black, which is the formatter this repo already
+#              uses. `ruff-format` is deliberately absent: it and black would each undo
+#              the other's work on the same files.
+#   black_version -- matched to the black that upstream's commit hook pins
+#              (.pre-commit-config.yaml: 23.1.0), NOT the kit's default (25.9.0). Both
+#              formatters run over the same Marin-owned files -- the hook on commit, the
+#              kit in CI -- so a skew between them would put a contributor in a loop,
+#              each tool reverting the other. Bump the two together or not at all.
+#              Line length comes from [tool.black] below, which both also read.
+#              `ruff_version` is left at the kit default: this repo pins no ruff release,
+#              so there is nothing to match it to.
 #
 # See AGENTS.md ("Fork policy") for what "Marin-owned" means here.
 [tool.marin-style]
-checks = ["ruff-check"]
+checks = ["ruff-check", "black"]
+black_version = "23.1.0"
 include = [
     "eval/serve_eval/**",
     "eval/regression/**",

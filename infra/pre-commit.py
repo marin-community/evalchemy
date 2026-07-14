@@ -4,7 +4,7 @@
 # dependencies = [
 #     # Pin to an exact marin-style revision so every contributor and CI run
 #     # uses the same checks. Bump <REV> to adopt a new version.
-#     "marin-style @ git+https://github.com/marin-community/marin-style@4469660ef1ba6ecd4c8d81bdbb17091bc501a682",
+#     "marin-style @ git+https://github.com/marin-community/marin-style@999ea41d48c05db6f78552ddfa8d3cc6d49cd37f",
 # ]
 # ///
 """Consumer-repo pre-commit shim. Delegates to the shared marin-style checks.
