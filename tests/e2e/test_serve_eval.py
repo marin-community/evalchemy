@@ -227,3 +227,46 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
         prov._proc.kill()
         prov._proc.wait()
         os.close(master)
+
+
+def _fake_iris(tmp_path, list_output: str):
+    """A stand-in iris binary that logs every argv line and answers `job list`."""
+    log = tmp_path / "iris-calls.log"
+    script = tmp_path / "iris"
+    script.write_text(
+        "#!/bin/sh\n"
+        f'echo "$@" >> "{log}"\n'
+        'case "$*" in *"job list"*) cat <<"OUT"\n'
+        f"{list_output}\n"
+        "OUT\n"
+        ";; esac\n"
+    )
+    script.chmod(0o755)
+    return str(script), log
+
+
+def test_exit_stops_by_canonical_id_resolved_from_job_list(tmp_path):
+    # Regression: `iris job stop` rejects bare names, so when the job line was never
+    # parsed, teardown must resolve /<user>/<job> from `job list` -- not pass the name.
+    iris_bin, log = _fake_iris(tmp_path, "  job   /ci-user/evalchemy-e2e-qwen3-0-6b   RUNNING")
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
+    prov.__exit__(None, None, None)
+    calls = log.read_text().splitlines()
+    stop_calls = [c for c in calls if "job stop" in c]
+    assert stop_calls == ["--cluster marin job stop /ci-user/evalchemy-e2e-qwen3-0-6b"]
+
+
+def test_exit_without_resolvable_id_never_calls_stop(tmp_path):
+    iris_bin, log = _fake_iris(tmp_path, "no jobs")
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
+    prov.__exit__(None, None, None)
+    calls = log.read_text().splitlines() if log.exists() else []
+    assert not [c for c in calls if "job stop" in c]
+
+
+def test_match_line_exports_job_id_to_github_env(tmp_path, monkeypatch):
+    env_file = tmp_path / "github_env"
+    monkeypatch.setenv("GITHUB_ENV", str(env_file))
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B")
+    prov._match_line("  job          /app/evalchemy-e2e-test", want_capability=True)
+    assert env_file.read_text() == "IRIS_JOB_ID=/app/evalchemy-e2e-test\n"

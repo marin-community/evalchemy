@@ -252,6 +252,12 @@ class MarinServeProvider(Provider):
         job_match = _JOB_LINE.match(line)
         if job_match:
             self._job_id = job_match.group("job")
+            # Hand the canonical id to later workflow steps: `iris job stop` rejects
+            # bare names, so an external cleanup step needs this exact id.
+            github_env = os.environ.get("GITHUB_ENV")
+            if github_env:
+                with open(github_env, "a", encoding="utf-8") as f:
+                    f.write(f"IRIS_JOB_ID={self._job_id}\n")
         openai_match = _OPENAI_LINE.search(line)
         if openai_match:
             self._openai_root = openai_match.group("url")
@@ -322,7 +328,20 @@ class MarinServeProvider(Provider):
             except OSError:
                 pass
             self._master_fd = None
-        job_id = self._job_id or self.name or self.default_job_name(self.model)
+        # `iris job stop` accepts only canonical /<user>/<job> ids; a bare name makes
+        # it raise, which check=False would swallow -- resolve one before stopping.
+        job_id = self._job_id or self._resolve_job_id()
+        if job_id is None:
+            name = self.name or self.default_job_name(self.model)
+            logger.warning(
+                "no canonical iris job id (marin-serve never printed one and `job list` shows no '%s'); "
+                "if a slice is still up, stop it manually: %s --cluster %s job stop /<user>/%s",
+                name,
+                self.iris_bin,
+                self.cluster,
+                name,
+            )
+            return False
         # NB: --cluster is a TOP-LEVEL iris flag (`iris --cluster X job stop <id>`),
         # not a `job stop` option.
         stop = [self.iris_bin, "--cluster", self.cluster, "job", "stop", job_id]
@@ -332,6 +351,22 @@ class MarinServeProvider(Provider):
         except (OSError, subprocess.SubprocessError) as e:
             logger.warning("iris job stop failed (%s); stop it manually: %s", e, " ".join(stop))
         return False
+
+    def _resolve_job_id(self) -> Optional[str]:
+        """Find this run's canonical /<user>/<job> id via `iris job list`.
+
+        Covers the case where marin-serve died before printing its job line --
+        exactly when teardown matters most.
+        """
+        name = self.name or self.default_job_name(self.model)
+        cmd = [self.iris_bin, "--cluster", self.cluster, "job", "list"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.warning("iris job list failed (%s)", e)
+            return None
+        match = re.search(rf"(/\S+/{re.escape(name)})\b", result.stdout)
+        return match.group(1) if match else None
 
 
 def build_provider(
