@@ -1,8 +1,8 @@
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional  # noqa: F401
 
-import lm_eval.models
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
@@ -24,7 +24,7 @@ class MATH500Benchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = "eval/chat_benchmarks/MATH500/data/math500.jsonl",
+        data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "math500.jsonl"),
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 32768,
@@ -75,12 +75,6 @@ class MATH500Benchmark(BaseBenchmark):
 
         # Prepare instances for model
         all_instances = []
-        if isinstance(model, lm_eval.models.huggingface.HFLM):
-            model_name = model.pretrained
-        elif isinstance(model, lm_eval.models.openai_completions.OpenAIChatCompletion):
-            model_name = str(f"openai/{model.model}")
-        else:
-            model_name = model.model_args["model"]
         for idx, example in enumerate(examples):
             messages = [
                 {"role": "user", "content": PROMPT.format(problem=example["problem"])},

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -24,7 +25,7 @@ class AIME24Benchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = "eval/chat_benchmarks/AIME24/data/aime24.json",
+        data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "aime24.json"),
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 32768,

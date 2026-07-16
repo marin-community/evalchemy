@@ -3,7 +3,6 @@ import os
 import random
 from typing import Any, Dict, List, Optional
 
-import lm_eval.models
 import numpy as np
 from datasets import load_dataset
 from lm_eval.api.instance import Instance
@@ -69,13 +68,6 @@ class GPQADiamondBenchmark(BaseBenchmark):
             multiple_choice_string, correct_answer = self.generate_multiple_choice_answers(example)
             example["multiple_choice_string"] = multiple_choice_string
             example["answer"] = correct_answer
-
-        if isinstance(model, lm_eval.models.huggingface.HFLM):
-            model_name = model.pretrained
-        elif isinstance(model, lm_eval.models.openai_completions.OpenAIChatCompletion):
-            model_name = str(f"openai/{model.model}")
-        else:
-            model_name = model.model_args["model"]
 
         all_outputs = []
 

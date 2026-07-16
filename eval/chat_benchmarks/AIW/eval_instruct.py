@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import numpy as np
 import re
 from typing import Any, Dict, List, Optional
@@ -20,7 +21,7 @@ class AIWBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = "eval/chat_benchmarks/AIW/data/aiw_data.json",
+        data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "aiw_data.json"),
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 32768,

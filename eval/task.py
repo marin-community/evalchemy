@@ -10,8 +10,25 @@ from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
-import torch
-import torch.distributed as dist
+
+try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run torch-free
+    import torch
+    import torch.distributed as dist
+except ModuleNotFoundError:
+    torch = None
+    dist = None
+
+# The vLLM model class is only importable with the [vllm] extra. Resolve it defensively so
+# the endpoint path (local-completions / curator, no vllm) does not AttributeError on the
+# `isinstance(model, VLLM)` checks below; isinstance(x, ()) is always False.
+try:
+    from lm_eval.models.vllm_causallms import VLLM as _VLLM
+except Exception:
+    _VLLM = ()
+# Force-import the OpenAI-completions submodule so `lm_eval_models.openai_completions.*` in
+# `_normalize_model_args` resolves regardless of which model registered: `local-completions`
+# imports it as a side effect, `curator` does not. Base lm-eval ([api]); no extra required.
+import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
@@ -224,14 +241,15 @@ class BaseBenchmark(ABC):
 
                 random.seed(seeds[0])
                 np.random.seed(seeds[1])
-                torch.manual_seed(seeds[2])
+                if torch is not None:
+                    torch.manual_seed(seeds[2])
 
                 if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
                     model, lm_eval_models.openai_completions.OpenAICompletionsAPI
                 ):
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 elif (
-                    isinstance(model, lm_eval_models.vllm_causallms.VLLM)
+                    isinstance(model, _VLLM)
                     or "UploadInstancesToHF" in model.__class__.__name__
                 ):
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
@@ -245,7 +263,7 @@ class BaseBenchmark(ABC):
                     instance.args[1]["max_tokens"] = max_new_tokens
                     if "4o" in model.model:
                         instance.args[1]["max_tokens"] = min(max_new_tokens, 16384)
-                elif isinstance(model, lm_eval_models.vllm_causallms.VLLM):
+                elif isinstance(model, _VLLM):
                     instance.args[1]["max_gen_toks"] = max_new_tokens
                 else:  # Huggingface
                     instance.args[1]["max_new_tokens"] = max_new_tokens

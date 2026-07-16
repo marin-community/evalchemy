@@ -44,7 +44,9 @@ class WildBenchConfig:
 
     # Evaluation configuration
     model: str = None
-    eval_template: str = "eval/chat_benchmarks/WildBench/evaluation/eval_template.score.v2.md"
+    eval_template: str = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "evaluation", "eval_template.score.v2.md"
+    )
     model: str = "gpt-4o-mini-2024-07-18"
     mode: str = "score"
     batch_mode: bool = True

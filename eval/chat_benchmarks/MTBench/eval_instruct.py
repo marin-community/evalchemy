@@ -50,7 +50,9 @@ class MTBenchConfig:
     max_gpu_memory: Optional[str] = None
     dtype: Optional[str] = None
     revision: str = "main"
-    judge_file: str = "eval/chat_benchmarks/MTBench/fastchat/llm_judge/data/judge_prompts.jsonl"
+    judge_file: str = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fastchat", "llm_judge", "data", "judge_prompts.jsonl"
+    )
     judge_model: str = "gpt-4o-mini-2024-07-18"
     baseline_model: str = "gpt-3.5-turbo"
     mode: str = "single"
@@ -67,7 +69,7 @@ class MTBenchBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        base_path: str = "eval/chat_benchmarks/MTBench",
+        base_path: str = os.path.dirname(os.path.abspath(__file__)),
         config: Optional[MTBenchConfig] = None,
         debug: bool = False,
         annotator_model: str = "gpt-4o-mini-2024-07-18",

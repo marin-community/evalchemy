@@ -1,8 +1,8 @@
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
-import lm_eval.models
 import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
@@ -26,7 +26,7 @@ class AMC23Benchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = "eval/chat_benchmarks/AMC23/data/amc23.json",
+        data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "amc23.json"),
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 32768,
@@ -65,12 +65,6 @@ class AMC23Benchmark(BaseBenchmark):
 
         # Prepare instances for model
         all_instances = []
-        if isinstance(model, lm_eval.models.huggingface.HFLM):
-            model_name = model.pretrained
-        elif isinstance(model, lm_eval.models.openai_completions.OpenAIChatCompletion):
-            model_name = str(f"openai/{model.model}")
-        else:
-            model_name = model.model_args["model"]
 
         all_outputs = []
         for i in range(self.n_repeat):

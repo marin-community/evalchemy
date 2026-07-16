@@ -231,3 +231,6 @@ results/
 eval/serve_eval/runs/
 # Claude Code local session settings (the .claude/skills symlink IS tracked)
 .claude/settings.local.json
+
+# Per-extra venvs built by scripts/ci/check_benchmark_extras.py
+.benchmark-extra-venvs/

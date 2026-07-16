@@ -34,7 +34,7 @@ import torch
 
 warnings.filterwarnings("ignore")
 
-CruxEval_PATH = "eval/chat_benchmarks/CruxEval/data"
+CruxEval_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def cleanup_resources():

@@ -12,7 +12,11 @@ import lm_eval.api.metrics
 import lm_eval.api.registry
 import lm_eval.api.task
 import lm_eval.models
-import torch.distributed as dist
+
+try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run torch-free
+    import torch.distributed as dist
+except ModuleNotFoundError:
+    dist = None
 import yaml
 from lm_eval import evaluator as pretrain_evaluator
 from lm_eval import utils
@@ -533,7 +537,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         add_results_metadata(results, batch_sizes_list, args, lm)
         handle_evaluation_output(results, args, evaluation_tracker, wandb_logger)
 
-    if dist.is_initialized():
+    if dist is not None and dist.is_initialized():
         dist.destroy_process_group()
 
 
