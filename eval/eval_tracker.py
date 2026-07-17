@@ -10,7 +10,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-import torch
+try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run torch-free
+    import torch
+except ModuleNotFoundError:
+    torch = None
 from huggingface_hub import model_info
 from lm_eval.loggers.evaluation_tracker import GeneralConfigTracker
 from lm_eval.utils import handle_non_serializable, hash_string, simple_parse_args_string
@@ -297,7 +300,10 @@ class DCEvaluationTracker:
         Returns:
             Processed configuration dictionary with serializable values
         """
-        return {key: str(value) if isinstance(value, torch.dtype) else value for key, value in config.items()}
+        return {
+            key: str(value) if torch is not None and isinstance(value, torch.dtype) else value
+            for key, value in config.items()
+        }
 
     def insert_eval_results(
         self,

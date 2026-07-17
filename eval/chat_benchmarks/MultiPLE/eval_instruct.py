@@ -82,7 +82,7 @@ LANGUAGE_MAP = {
     "v": "vlang",
 }
 
-DATA_DIR = "eval/chat_benchmarks/MultiPLE/data"
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 class MultipleBenchmark(BaseBenchmark):

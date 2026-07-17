@@ -21,7 +21,7 @@ class HumanEvalBenchmark(BaseBenchmark):
     def __init__(
         self,
         languages: List[str] = ["python", "sh"],
-        data_dir: str = "eval/chat_benchmarks/HumanEval/data",
+        data_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
         max_tokens: int = 1024,
         num_workers: int = 8,
         timeout: float = 3.0,

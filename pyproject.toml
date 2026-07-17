@@ -21,139 +21,11 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core ML and Deep Learning
-    "torch",
-    "torchvision",
-    "transformers",
-    "accelerate",
-    "peft",
-    "trl",
-    "bitsandbytes",
-    "sentencepiece",
-    "sentence-transformers>=2.2.2",
-    "optimum==1.12.0",
-    
-    # Machine Learning and Scientific Computing
-    "numpy",
-    "pandas",
-    "scipy",
-    "scikit-learn",
-    "faiss-cpu==1.7.4",
-    
-    # ML Experiment Tracking & Visualization
-    "wandb",
-    "tensorboard",
-    "evaluate",
-    
-    # NLP & Text Processing
-    "nltk",
-    "fasttext-wheel",
-    "codebleu",
-    "sacrebleu",
-    "langdetect",
-    "fuzzywuzzy",
-    "python-Levenshtein",
-    
-    # Data Processing & Parsing
-    "datasets",
-    "protobuf",
-    "bs4",
-    "lxml",
-    "fastavro",
-    "jsonpickle",
-    "hjson",
-    "msgpack",
-    
-    # AI Service Providers
-    "openai",
-    "anthropic",
-    "cohere",
-    "google-generativeai",
-    "mistralai",
-    "reka-api",
-    "together",
-    "dashscope",
-    "fschat",  # local vendored copy; path resolved via [tool.uv.sources] below
-    
-    # Cloud & Storage
-    "gcsfs",
-    "google-cloud-aiplatform",
-    "google-auth==2.25.1",
-    "boto3",
-    "botocore",
-    "sagemaker",
-    # Relaxed from ==2024.6.1: an exact pin conflicts with anything needing a
-    # newer fsspec (e.g. marin-core, the [iris] extra, wants >=2025.3.0). `datasets`
-    # already floors fsspec; keep a floor here, not a hard pin, so the two coexist.
-    "fsspec>=2024.6.1",
-    "hf-transfer",
-    "huggingface_hub[cli]",
-    
-    # Code Analysis & Development
-    "black",
-    "tree-sitter-python",
-    "tree-sitter-java",
-    "tree_sitter",
-    "asttokens",
-    "mypy_extensions",
-    "pyext @ git+https://github.com/penfever/PyExt",
-    
-    # Web & API
-    "fastapi>=0.101.0",
-    "uvicorn>=0.23.0",
-    "aiohttp[speedups]>=3.8",
-    "httpx",
-    "httpx-sse",
-    "requests>=2.28",
-    "websocket",
-    "aiofiles",
-    "bespokelabs-curator>=0.1.16.0",
-    
-    # Database
-    "sqlalchemy",
-    "psycopg[binary]",
-    "psycopg2-binary",
-    "sqlitedict",
-    
-    # Utilities
-    "tqdm",
-    "pqdm",
-    "python-box",
-    "fire",
-    "tiktoken",
-    "ray[default]",
-    "backoff>=2.2",
-    "docker-pycreds",
-    "sentry-sdk",
-    "loguru>=0.7",
-    "python-dotenv",
-    "shortuuid",
-    "tenacity",
-    "prettytable",
-    "portalocker",
-    "tabulate",
-    "colorama",
-    "termcolor",
-    "distro",
-    "typing_inspect",
-    "py-cpuinfo",
-    "jiter",
-    "patsy",
-    "joblib",
-    "threadpoolctl",
-    "jmespath",
-    "immutabledict",
-
-    # BigCodeBench
-    "appdirs>=1.4.4",
-    "multipledispatch>=0.6.0",
-    "pqdm>=0.2.0",
-    "tempdir>=0.7.1",
-    "tree_sitter_languages>=1.10.2",
-    "wget>=3.2",
-
-    # SWE-bench
-    "swebench>=3.0.4",
+    # Lean core: everything `python -m eval.eval` needs to evaluate a *served*
+    # OpenAI-compatible endpoint (--model local-completions / curator) and grade the
+    # requested benchmarks. Per-benchmark and GPU/accelerator deps live in the extras
+    # below; nothing here pulls torch (its imports on the core path are guarded, so the
+    # endpoint flow runs torch-free -- see eval/eval.py, eval/task.py, eval/eval_tracker.py).
 
     # LM Eval -- pinned to the latest stable upstream EleutherAI release (v0.4.12).
     # Previously a fork (EtashGuha/lm-evaluation-harness@etashg/tokenize_fix); verified
@@ -163,17 +35,54 @@ dependencies = [
     # by postprocess_generated_text + stop-sequence handling). The removed lm_eval CLI/logging
     # symbols are reprovided via eval/lm_eval_compat.py.
     #
-    # NB: the local-vLLM engine is an OPTIONAL extra (`.[vllm]`), not a base dep.
-    # It is a large, GPU/accelerator-oriented package and is unnecessary when
-    # evaluating against a *served* OpenAI-compatible endpoint (the marin-serve /
-    # e2e path) -- the server owns inference. Keeping it out of the base install
-    # lets evalchemy install on a CPU box for endpoint-dispatch eval.
-    "lm-eval @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+    # [api]  -- the OpenAI-compatible / local-completions client (requests, aiohttp,
+    #           tenacity, tiktoken). [math] -- the boxed-answer math grader that AIME/AMC/
+    #           MATH500 grade against (sympy, antlr4-python3-runtime, math_verify).
+    # NB: the local-vLLM engine is an OPTIONAL extra (`.[vllm]`), not a base dep. It is a
+    # large, GPU/accelerator-oriented package and is unnecessary when evaluating against a
+    # *served* endpoint (the marin-serve / e2e path) -- the server owns inference. Keeping
+    # it out of the base install lets evalchemy install on a CPU box for endpoint-dispatch eval.
+    "lm-eval[api,math] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+
+    # curator registers the `curator` model at eval.eval import; also brings
+    # litellm / instructor / nest-asyncio / openai / pandas transitively.
+    "bespokelabs-curator>=0.1.16.0",
+
+    # Runtime tokenizer / chat-template for API models. lm-eval 0.4.x imports symbols
+    # transformers 5 removed, so cap below it.
+    "transformers<5",
+    # Slow-tokenizer backends for common models.
+    "sentencepiece",
+    "protobuf",
+
+    # Imported at module load on the core eval path (curator_lm / precomputed_hf_lm /
+    # upload_to_hf_lm register their models at import; database/utils is imported by
+    # eval_tracker; task.py imports numpy).
+    "datasets",
+    "huggingface_hub",
+    "openai",
+    "numpy",
+    "pyyaml",
+    # HMMT grades via the vendored `matharena`, which imports loguru at module load;
+    # kept in core so the math benchmarks (AIME/AMC/MATH500/HMMT) all import lean.
+    "loguru",
+
+    # eval.eval_tracker imports database/ at module load (config.py runs load_dotenv();
+    # utils.py builds a SQLAlchemy engine). The postgres DRIVER is only needed for
+    # --use_database, so it lives in the `database` extra.
+    "sqlalchemy",
+    "python-dotenv",
 ]
 
 [project.urls]
 Homepage = "https://github.com/mlfoundations/evalchemy"
 Repository = "https://github.com/mlfoundations/evalchemy.git"
+
+# Console entry points for the eval CLI (two aliases, as upstream lm-eval ships).
+# `uvx --from git+https://github.com/marin-community/evalchemy eval ...` runs this.
+[project.scripts]
+eval = "eval.eval:cli_evaluate"
+evalchemy = "eval.eval:cli_evaluate"
 
 [project.optional-dependencies]
 dev = [
@@ -194,6 +103,95 @@ serve-eval = [
     "pydantic>=2",
     "pydantic-settings>=2",
     "pyyaml",
+]
+
+# Postgres driver for the --use_database result-tracking path only. DATABASE_URL
+# (database/config.py) uses the plain `postgresql://` dialect, for which SQLAlchemy
+# loads the psycopg2 DBAPI. Base evalchemy writes results to JSON and never opens the DB,
+# so this stays out of the core install.
+database = [
+    "psycopg2-binary",
+]
+
+# --- Per-benchmark extras (one per eval/chat_benchmarks dir) --------------------
+#
+# Contract: extra `<x>` installs exactly the module-level deps that benchmark dir X
+# needs BEYOND the lean base. eval/task.py execs a benchmark's eval_instruct.py by file
+# path, and only when the dir name is in --tasks, so `evalchemy[mtbench]` pulls just
+# MTBench's deps -- you compose the support you want (`evalchemy[mbpp,ifeval,repobench]`),
+# the way lm-eval composes per-task extras under its `tasks` union.
+#
+# The extra name is the PEP-685-normalized dir name (lowercase, `_`/`.`->`-`): MTBench ->
+# `mtbench`, alpaca_eval -> `alpaca-eval`, LiveCodeBenchv5_official -> `livecodebenchv5-official`.
+# Benchmarks the lean base already covers get an EMPTY extra (see the block further down),
+# so `evalchemy[<any benchmark dir>]` is uniformly valid. `benchmarks` is the union of them
+# all. Each non-empty extra is verified in ISOLATION (base + that one extra, nothing else)
+# by scripts/ci/check_benchmark_extras.py -- a dep that goes missing fails there, in CI,
+# not at eval time. torch lands here (not base) because it is a module-level import of a
+# handful of benchmarks only (MTBench/MixEval/alpaca_eval/CruxEval/BigCodeBench/LiveBench).
+# `fschat`/`alpaca-eval` resolve from the vendored copies via [tool.uv.sources] for a
+# workspace `uv sync`; a git/uvx install falls back to the PyPI packages.
+bigcodebench = ["torch", "fire", "regex", "tree_sitter", "tree-sitter-python", "pqdm"]
+cruxeval = ["torch"]
+humaneval = ["fire"]
+humanevalplus = ["fire"]
+ifeval = ["nltk", "langdetect", "absl-py", "immutabledict"]
+# LiveBench loads fastchat's model adapter (torch, psutil, accelerate via fschat), a
+# vendored IFEval judge (langdetect, immutabledict, nltk), and its vendored lcb_runner
+# code-exec grader imports pyext at module load; the penfever py3 fork is the only pyext
+# that imports under Python 3.
+livebench = [
+    "torch",
+    "psutil",
+    "accelerate",
+    "fschat",
+    "shortuuid",
+    "nltk",
+    "langdetect",
+    "immutabledict",
+    "prettytable",
+    "lark",
+    "pyext @ git+https://github.com/penfever/PyExt",
+]
+mbpp = ["fire"]
+mbppplus = ["fire"]
+# fschat's llm_judge/model adapter imports anthropic, psutil and accelerate at module load.
+mtbench = ["torch", "fschat", "accelerate", "anthropic", "psutil", "shortuuid"]
+mixeval = ["torch", "nltk", "prettytable"]
+multiple = ["fire", "regex", "tree_sitter"]
+repobench = ["fuzzywuzzy", "codebleu"]
+swebench = ["swebench>=3.0.4"]
+wildbench = ["jsonlines", "cohere", "anthropic", "reka-api", "together"]
+alpaca-eval = ["torch", "alpaca-eval", "patsy"]
+zeroeval = ["google-generativeai", "cohere", "anthropic", "reka-api", "together"]
+
+# Empty extras: these benchmark dirs import nothing beyond the lean base (their graders
+# ride on lm-eval[math]/[api], datasets, numpy, transformers, loguru -- all in base), so
+# `uv sync --extra <x>` here resolves to the base install. They exist so every benchmark
+# dir has a valid extra name and the `benchmarks` union can list them uniformly; the
+# lean-install check (scripts/ci/check_lean_install.py) already guards that these import
+# torch-free, so check_benchmark_extras.py skips them unless run with --all.
+aime24 = []
+aime25 = []
+aiw = []
+amc23 = []
+codeelo = []
+codeforces = []
+gpqadiamond = []
+hle = []
+hmmt = []
+jeebench = []
+livecodebench = []
+livecodebenchv5 = []
+livecodebenchv5-official = []
+math500 = []
+mmlupro = []
+
+# Every benchmark under eval/chat_benchmarks, as a single install. Self-referential union
+# (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
+# ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
+benchmarks = [
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
@@ -226,14 +224,22 @@ vllm = [
 ]
 
 [tool.uv.sources]
-# Resolve the vendored FastChat copy from a local path. Using an absolute-at-
-# resolve-time path source avoids baking a relative `file:` URL into the built
-# wheel metadata (which uv cannot re-parse: "relative path without a working
-# directory").
+# Resolve the vendored FastChat / alpaca_eval copies from local paths -- they serve the
+# `mtbench` (fschat) and `alpaca-eval` extras. Using an absolute-at-resolve-time path
+# source avoids baking a relative `file:` URL into the built wheel metadata (which uv
+# cannot re-parse: "relative path without a working directory"). These apply to a
+# workspace `uv sync`; a git/uvx install of those extras falls back to the PyPI packages.
 fschat = { path = "eval/chat_benchmarks/MTBench" }
+alpaca-eval = { path = "eval/chat_benchmarks/alpaca_eval" }
 
 [tool.hatch.build.targets.wheel]
-packages = ["evalchemy", "database"]
+# Ship the eval driver and the benchmark tree (chat_benchmarks dirs have no __init__.py
+# and carry data files: eval/task.py execs each eval_instruct.py by path and loads its
+# data at runtime) plus the DB models. force-include copies the trees verbatim so the
+# data files and the __init__-less benchmark dirs land in the wheel.
+[tool.hatch.build.targets.wheel.force-include]
+"eval" = "eval"
+"database" = "database"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -280,9 +286,3 @@ line-length = 120
 [tool.isort]
 profile = "black"
 multi_line_output = 3
-
-[tool.setuptools]
-packages = ["evalchemy"]
-
-[tool.setuptools.package-dir]
-evalchemy = "evalchemy"

@@ -45,7 +45,7 @@ class MixEvalBenchmark(BaseBenchmark):
         version: str = "2024-06-01",
         batch_size: int = 8,
         max_gpu_memory: str = "60GB",
-        data_path: str = "eval/chat_benchmarks/MixEval/mix_eval/data/",
+        data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mix_eval", "data"),
         api_parallel_num: int = 32,
         annotator_model: str = "gpt-4o-mini-2024-07-18",
         verbose: bool = False,

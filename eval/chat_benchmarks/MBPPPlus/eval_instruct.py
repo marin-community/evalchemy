@@ -21,7 +21,7 @@ class MBPPPlusBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_dir: str = "eval/chat_benchmarks/MBPPPlus/data",
+        data_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
         num_workers: int = 8,
         timeout: float = 3.0,
         debug: bool = False,
