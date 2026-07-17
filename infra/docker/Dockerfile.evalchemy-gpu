@@ -1,0 +1,103 @@
+# syntax=docker/dockerfile:1
+#
+# evalchemy — :evalchemy-gpu image: the STABLE, BAKED, reconciled dependency
+# environment for evaluating GPU-served models against an OpenAI-compatible vLLM
+# endpoint (MATH500 / AIME24 / gsm8k / minerva / the evalchemy suite via
+# `python -m eval.serve_eval.run --provider endpoint` -> `python -m eval.eval
+# --model local-completions`).
+#
+# It REPLACES the runtime `uv run --isolated --with lm-eval[api]==0.4.9.1 --with
+# transformers<5 ...` band-aid: the dependency set is the fork's COMMITTED uv.lock,
+# installed with `uv sync --frozen` (zero runtime --with / --constraint / pip hacks),
+# so `uv sync` is the single source of truth (dependency-ground-truth-uv) and any
+# teammate can reproduce this image bit-for-bit.
+#
+# What the lock reconciles (the three dependency failures this image exists to kill):
+#   1. transformers -- pinned <5 (4.57.6 in the lock). lm-eval 0.4.x imports symbols
+#      transformers 5 removed, so the harness needs <5; and a marin export tokenizer
+#      loads fine at 4.57.x ONCE its tokenizer_config.json is sanitized to
+#      `PreTrainedTokenizerFast` (the marin wrapper name `TokenizersBackend` is not a
+#      real transformers class at ANY version). No transformers-5 bump is needed.
+#   2. math grader -- `lm-eval[api,math]@v0.4.12` pulls math_verify (0.9.0) + sympy +
+#      antlr, so minerva / the AIME/AMC/MATH500 boxed grader import and grade.
+#   3. lm-eval async batch -- v0.4.12 fixed the `UnboundLocalError: outputs` MASKING;
+#      the residual "one request error aborts the whole async batch" is patched by the
+#      marin-owned `eval/robust_api.py` (a single failed request scores as a MISS, not a
+#      batch abort). The build-time assert below proves that patch is live in the bake.
+#
+# Lean by design (mirrors the fork's PR #17 lean-core split): the base install is
+# torch-free -- evaluating a *served* endpoint needs no local inference engine (the vLLM
+# server owns inference; for Grug that is the marin vLLM fork in a SEPARATE env). Add
+# `--extra vllm` ONLY if you want local `--model vllm` serving in-image; that pulls
+# torch 2.11 + the CUDA/nvidia wheels and must be built SINGLE_SNAPSHOT=0 with the
+# torch/nvidia install split so no single layer exceeds ~8 GB (the un-pullable-blob
+# trap on the CoreWeave->ghcr egress -- see coreweave_gpu_ops.md). The default lean
+# image needs none of that and pulls clean.
+#
+# Build (in-cluster, kaniko on iris -- the Mac cannot build linux/amd64):
+#   infra/docker/build_evalchemy_gpu_kaniko.sh   (see that script + build-tpu-image-iris)
+#
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --upgrade pip uv
+
+ENV UV_HTTP_TIMEOUT=300
+ENV UV_RETRIES=5
+
+WORKDIR /opt/eval
+
+# Clone the fork at an IMMUTABLE commit (mirrors :evalchemy-tpu) rather than COPYing a
+# bundle -- the iris kaniko context is then tiny (just this Dockerfile), and the image
+# pins an exact, reproducible source. EVALCHEMY_COMMIT is passed as a --build-arg by
+# build_evalchemy_gpu_kaniko.sh (defaults to origin/main). Public repo -> no auth.
+ARG EVALCHEMY_REPO=https://github.com/marin-community/evalchemy.git
+ARG EVALCHEMY_COMMIT=main
+RUN git clone "${EVALCHEMY_REPO}" evalchemy && \
+    cd evalchemy && git checkout "${EVALCHEMY_COMMIT}" && \
+    echo "pinned evalchemy commit: $(git rev-parse HEAD)"
+
+WORKDIR /opt/eval/evalchemy
+
+# Reproducible install from the COMMITTED lock. --frozen makes the lock ground truth
+# (fails rather than re-resolving), so the baked env == `uv.lock` exactly. `serve-eval`
+# adds the endpoint runner (eval/serve_eval/); the lean base already carries
+# lm-eval[api,math] + transformers<5 + the graders.
+RUN uv sync --frozen --extra serve-eval
+
+ENV VIRTUAL_ENV=/opt/eval/evalchemy/.venv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Writable runtime caches (mirror :evalchemy-tpu).
+ENV HF_HOME=/opt/eval/.cache/hf \
+    TRITON_CACHE_DIR=/opt/eval/.cache/triton \
+    VLLM_CACHE_ROOT=/opt/eval/.cache/vllm \
+    XDG_CACHE_HOME=/opt/eval/.cache/xdg
+RUN mkdir -p /opt/eval/.cache/hf /opt/eval/.cache/triton /opt/eval/.cache/vllm /opt/eval/.cache/xdg
+
+# Build-time assert -- the whole point of the image: prove the reconciled deps import
+# AND the async-batch resilience patch is live in the baked venv (never trust a build
+# log; this fails the build if the bake regresses).
+RUN . "$VIRTUAL_ENV/bin/activate" && python -c "\
+import importlib.metadata as m; \
+import lm_eval, transformers, math_verify; \
+assert transformers.__version__.split('.')[0] == '4', ('transformers must be <5, got ' + transformers.__version__); \
+from eval import robust_api; \
+assert robust_api._APPLIED, 'robust_api resilience patch did NOT apply'; \
+from lm_eval.models.api_models import TemplateAPI; \
+assert getattr(TemplateAPI, '_marin_resilient_batch_patched', False), 'get_batched_requests NOT patched'; \
+print('baked lm-eval', m.version('lm-eval')); \
+print('baked transformers', m.version('transformers')); \
+print('baked math-verify', m.version('math-verify')); \
+print('robust_api async-batch patch: ACTIVE')"
+
+RUN echo "ulimit -n 65535" >> /etc/profile.d/openthoughts-ulimit.sh
+
+CMD ["bash"]

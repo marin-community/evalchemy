@@ -38,6 +38,7 @@ from lm_eval.tasks import TaskManager as PretrainTaskManager
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from lm_eval.utils import handle_non_serializable as _orig_handle
 
+from eval import robust_api  # noqa: F401  # patch lm-eval async batch: a single request error scores as a miss, not a whole-batch abort
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register upload_to_hf model
