@@ -147,7 +147,7 @@ jobs:
 
   # Failure reporting: file or update the [nightly-e2e] tracking issue, ask
   # weaverbot to triage (launches a weaver session), and ping Slack. The trigger
-  # and Slack channels each skip with a notice until the WEAVERBOT_GH_TOKEN /
+  # and Slack channels each skip with a notice until the LOOM_TRIGGER_GH_TOKEN /
   # SLACK_WEBHOOK_URL org secrets are provisioned; the issue trail accrues either way.
   report-failure:
     needs: [marin-serve]
@@ -161,10 +161,10 @@ jobs:
       actions: read    # pull failed-job logs for the excerpt
       contents: read
     steps:
-      - uses: marin-community/marin-style/actions/report-failure@4e5736a7054318af49b0245fadee197f534519d7
+      - uses: marin-community/marin-style/actions/report-failure@744dcf9e081f118ea52e9c43b9bf52f67c33d29d
         with:
           lane: e2e
-          trigger-token: ${{ secrets.WEAVERBOT_GH_TOKEN }}
+          trigger-token: ${{ secrets.LOOM_TRIGGER_GH_TOKEN }}
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           triage-notes: >-
             The nightly serves Qwen3-0.6B on a Marin TPU via marin-serve/Iris and gates
