@@ -98,11 +98,19 @@ dev = [
 # pydantic-settings. An optional extra, not base deps -- base evalchemy evaluates fine
 # without the runner, and this keeps a plain `uv sync` lean. The regression gate
 # (eval/regression/) reuses these same deps.
+#
+# s3fs gives fsspec an s3:// backend so an endpoint-eval job can route its result
+# artifacts (results JSON + per-sample --output_path tree) to durable S3/R2 object
+# storage instead of a pod-local path that is garbage-collected when the pod ends.
+# The eval pod inherits AWS creds + FSSPEC_S3 (endpoint + virtual-host addressing) from
+# its runtime env, so bare `fsspec.core.url_to_fs("s3://...")` authenticates with no extra
+# config -- it just needs the s3 filesystem installed, which the lean base omits.
 serve-eval = [
     "click>=8",
     "pydantic>=2",
     "pydantic-settings>=2",
     "pyyaml",
+    "s3fs",
 ]
 
 # Postgres driver for the --use_database result-tracking path only. DATABASE_URL
