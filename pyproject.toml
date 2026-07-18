@@ -194,12 +194,15 @@ livecodebenchv5 = []
 livecodebenchv5-official = []
 math500 = []
 mmlupro = []
+# OlympiadBench grades via lm-eval's hendrycks_math boxed-answer utils (in the lean base
+# via lm-eval[math]) and reads its local JSONL fallback, so it needs no extra deps.
+olympiadbench = []
 
 # Every benchmark under eval/chat_benchmarks, as a single install. Self-referential union
 # (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
 # ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
 benchmarks = [
-    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
