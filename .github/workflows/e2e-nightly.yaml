@@ -144,3 +144,30 @@ jobs:
           name: e2e-nightly-results
           path: e2e-out/**
           if-no-files-found: ignore
+
+  # Failure reporting: file or update the [nightly-e2e] tracking issue, ask
+  # weaverbot to triage (launches a weaver session), and ping Slack. The trigger
+  # and Slack channels each skip with a notice until the LOOM_TRIGGER_GH_TOKEN /
+  # SLACK_WEBHOOK_URL org secrets are provisioned; the issue trail accrues either way.
+  report-failure:
+    needs: [marin-serve]
+    # cancelled matters: a job that hits its timeout-minutes reports cancelled, not failure
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write    # file/update the tracking issue
+      actions: read    # pull failed-job logs for the excerpt
+      contents: read
+    steps:
+      - uses: marin-community/marin-style/actions/report-failure@ae742ca9a6d62ab7639355ddc1d8419b390dfff6  # v0.2.1
+        with:
+          lane: e2e
+          trigger-token: ${{ secrets.LOOM_TRIGGER_GH_TOKEN }}
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          triage-notes: >-
+            The nightly serves Qwen3-0.6B on a Marin TPU via marin-serve/Iris and gates
+            scores with eval/regression. Separate cluster-side failures (Iris scheduling,
+            marin-serve, IAP auth) from evalchemy regressions, and check whether a leftover
+            Iris job needs stopping.
