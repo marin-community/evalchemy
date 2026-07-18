@@ -98,8 +98,14 @@ jobs:
         # shells out to `iris job stop`, which otherwise wouldn't resolve.
         # Floor = first nightly carrying the WIF IAP-auth fix (marin#7144); `>=`
         # still floats to newer nightlies, it just won't resolve a pre-fix build.
+        # `--with GitPython`: levanter.tracker.helpers imports `git` (GitPython) at
+        # module load but marin-levanter doesn't declare it, so a fresh tool env only
+        # has it when some other dep drags it in. The 0.2.50.dev202607170746 build
+        # dropped that incidental transitive copy and marin-serve stopped importing
+        # (marin#7370); inject it explicitly to keep the e2e signal alive. Drop this
+        # once marin-levanter declares GitPython.
         run: |
-          uv tool install --prerelease allow "marin-core>=0.2.46.dev202607131620"
+          uv tool install --prerelease allow "marin-core>=0.2.46.dev202607131620" --with GitPython
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
