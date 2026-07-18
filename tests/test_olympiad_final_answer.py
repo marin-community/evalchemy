@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("torch")
 pytest.importorskip("lm_eval")
 
 from lm_eval.api.instance import Instance
