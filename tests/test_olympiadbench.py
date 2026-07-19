@@ -173,6 +173,7 @@ def test_generate_and_evaluate_reports_subject_accuracy(monkeypatch):
                     question="What is 2 + 2?",
                     context="Use SI units.",
                     final_answer=["4"],
+                    unit="m/s",
                 )
             ],
         },
@@ -192,10 +193,12 @@ def test_generate_and_evaluate_reports_subject_accuracy(monkeypatch):
     assert scored["accuracy_subject_Math"] == 1.0
     assert scored["accuracy_subject_Physics"] == 0.0
     assert "SECRET_SOLUTION" not in model.messages[0][0]["content"]
-    assert "Context: Answer as an integer.\n\nProblem:" in model.messages[0][0]["content"]
-    assert "international mathematics competition" in model.messages[0][0]["content"]
-    assert "The answer should be Numerical." in model.messages[0][0]["content"]
-    assert r"So the final answer is \boxed{answer}." in model.messages[0][0]["content"]
+    assert "Answer as an integer.\nWhat is 40 + 2?" in model.messages[0][0]["content"]
+    assert "International Math competition" in model.messages[0][0]["content"]
+    assert "The answer of The problem should be a numerical value." in model.messages[0][0]["content"]
+    assert r'So the final answer is \boxed{answer}."' in model.messages[0][0]["content"]
+    assert r'So the final answer is \boxed{answer}(unit)."' in model.messages[1][0]["content"]
+    assert r"the unit of the answer should not be included in \boxed{}" in model.messages[1][0]["content"]
     assert model.calls[0][0].args[1]["temperature"] == 0.0
     assert model.calls[0][0].args[1]["do_sample"] is False
     assert model.calls[0][0].metadata["expected_answers"] == ["42"]
@@ -273,7 +276,7 @@ def test_pass_at_k_scores_raw_samples_and_reports_subject_metrics(monkeypatch):
     assert scored["pass@2"] == 1.0
     assert scored["pass@1_subject_Math"] == 0.5
     assert scored["pass@1_subject_Physics"] == 0.5
-    assert "answers in order being Equation, Numerical" in model.messages[1][0]["content"]
+    assert "answers in order being an equation, a numerical value" in model.messages[1][0]["content"]
     assert "multiple answers connected with commas" in model.messages[1][0]["content"]
     assert all(
         instance.args[1]["temperature"] == 0.7 and instance.args[1]["do_sample"] is True

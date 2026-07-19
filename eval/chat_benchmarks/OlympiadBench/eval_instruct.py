@@ -18,14 +18,10 @@ except ImportError:  # TaskManager executes this module with the benchmark direc
     from auto_scoring_judge import AutoScoringJudge
 
 
-PROMPT = """The following is a question from an international {subject} competition.
-{answer_requirement}
-
-{context_block}Problem: {question}
-
-Please calculate the answer from the information provided and show your reasoning using LaTeX for variables and formulas.
-End your solution with "{answer_format}" and give the result explicitly.
-Answer:"""
+# Adapted from the official English open-ended prompt at:
+# https://github.com/OpenBMB/OlympiadBench/blob/ba5b26a7e2849940b598a9159c1190daa2b9175f/inference/code/evaluators/evaluator.py#L29-L101
+PROMPT = """The following is an open-ended problem from an International {subject} competition. {answer_requirement}Please calculate the answer according to the given requirements and the information provided. Please use LaTeX format to represent the variables and formulas used in the solution process and results. Please end your solution with "So the final answer is {answer_format}." and give the result explicitly{unit_instruction}.
+{question_content}"""
 
 DEFAULT_DATASET = "Hothan/OlympiadBench"
 DEFAULT_DATASET_REVISION = "91184b52131e7fc9455fef848035173aea8cc01a"
@@ -37,6 +33,13 @@ DEFAULT_PRECISION = 1e-8
 ENGLISH_TEXT_SUBSETS: Dict[str, Tuple[str, int]] = {
     "OE_TO_maths_en_COMP": ("Math", 674),
     "OE_TO_physics_en_COMP": ("Physics", 236),
+}
+
+ENGLISH_ANSWER_TYPE_TEXT = {
+    "Numerical": "a numerical value",
+    "Expression": "an expression",
+    "Equation": "an equation",
+    "Interval": "an interval",
 }
 
 
@@ -300,27 +303,42 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
     def _build_prompt(self, example: Dict[str, Any]) -> str:
         context = example.get("context", "")
-        context_block = f"Context: {context}\n\n" if context else ""
         answer_types = [item.strip() for item in example["answer_type"].split(",") if item.strip()]
+        answer_type_texts = [self._answer_type_text(item) for item in answer_types]
         if not example["is_multiple_answer"]:
-            answer_requirement = f"The answer should be {answer_types[0]}."
-            answer_format = r"So the final answer is \boxed{answer}."
+            answer_requirement = f"The answer of The problem should be {answer_type_texts[0]}. "
+            answer_format = r"\boxed{answer}"
         else:
-            answer_format = r"So the final answer is \boxed{multiple answers connected with commas}."
-            if len(answer_types) == 1:
-                answer_requirement = f"The question has multiple answers, each of them should be {answer_types[0]}."
-            else:
-                answer_type_list = ", ".join(answer_types)
+            answer_format = r"\boxed{multiple answers connected with commas}"
+            if len(set(answer_type_texts)) == 1:
                 answer_requirement = (
-                    f"The question has multiple answers, with the answers in order being {answer_type_list}."
+                    f"The problem has multiple answers, each of them should be {answer_type_texts[0]}. "
                 )
+            else:
+                answer_type_list = ", ".join(answer_type_texts)
+                answer_requirement = (
+                    f"The problem has multiple answers, with the answers in order being {answer_type_list}. "
+                )
+
+        unit_instruction = ""
+        if example["unit"]:
+            answer_format += "(unit)"
+            unit_instruction = r", note that the unit of the answer should not be included in \boxed{}"
+
+        question_content = f"{context}\n{example['question']}" if context else example["question"]
         return PROMPT.format(
-            subject="mathematics" if example["subject"] == "Math" else "physics",
+            subject=example["subject"],
             answer_requirement=answer_requirement,
             answer_format=answer_format,
-            context_block=context_block,
-            question=example["question"],
+            unit_instruction=unit_instruction,
+            question_content=question_content,
         )
+
+    def _answer_type_text(self, answer_type: str) -> str:
+        for name, text in ENGLISH_ANSWER_TYPE_TEXT.items():
+            if name in answer_type:
+                return text
+        raise ValueError(f"Unsupported OlympiadBench answer type: {answer_type!r}.")
 
     def _sample_prompt(self, example: Dict[str, Any]) -> str:
         return self._build_prompt(example)
