@@ -245,11 +245,15 @@ class BaseBenchmark(ABC):
                     torch.manual_seed(seeds[2])
 
                 if instance.args[1].get("do_sample", True) is False:
-                    # Greedy decoding ignores the request seed, and some OpenAI-compatible
-                    # servers reject any request that carries one (the JAX/TPU vLLM backend
-                    # 400s with "JAX does not support per-request seed"), so drop it rather
-                    # than fail every greedy request against such a server.
+                    # do_sample=False means greedy decoding. API models have no do_sample
+                    # knob, so express the intent as temperature 0 -- otherwise a leftover
+                    # sampling temperature makes OpenAI-compatible servers sample, and a
+                    # temperature>0 request that carries a seed (lm-eval injects its own
+                    # into every payload) is rejected outright by the JAX/TPU vLLM backend
+                    # ("JAX does not support per-request seed"). The per-instance seed list
+                    # is likewise not a valid API request seed, so drop it.
                     del instance.args[1]["seed"]
+                    instance.args[1]["temperature"] = 0.0
                 elif isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
                     model, lm_eval_models.openai_completions.OpenAICompletionsAPI
                 ):
