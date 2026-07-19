@@ -181,7 +181,11 @@ class MATH500Benchmark(BaseBenchmark):
             )
             return results
 
-        solved = sum(is_equiv(str(example["answer"]), example["model_answer"]) for example in examples)
+        solved = 0
+        for example in examples:
+            # Annotated per example so to_samples can emit a per-sample accuracy alongside the aggregate.
+            example["correct"] = bool(is_equiv(str(example["answer"]), example["model_answer"]))
+            solved += example["correct"]
 
         results.update(
             {

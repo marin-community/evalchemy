@@ -472,6 +472,9 @@ class BaseBenchmark(ABC):
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
+                    # Per-sample twin of the aggregate accuracy metric, for benchmarks whose
+                    # evaluate_responses annotates example["correct"] -- sample viewers filter on it.
+                    **({"accuracy": float(example["correct"])} if "correct" in example else {}),
                 }
             )
         return samples
