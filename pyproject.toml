@@ -144,6 +144,7 @@ cruxeval = []
 humaneval = ["fire"]
 humanevalplus = ["fire"]
 ifeval = ["nltk", "langdetect", "absl-py", "immutabledict"]
+ifbench = ["nltk", "emoji", "syllapy"]
 # LiveBench's FastChat adapter registry selects conversation templates without importing
 # its torch-backed local model loaders. Its vendored IFEval judge needs
 # langdetect/immutabledict/nltk, and the lcb_runner code-exec grader imports pyext at
@@ -205,7 +206,7 @@ olympiadbench = []
 # (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
 # ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
 benchmarks = [
-    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,financebench,gpqadiamond,gsm8kperturbed,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,financebench,gpqadiamond,gsm8kperturbed,hle,hmmt,humaneval,humanevalplus,ifbench,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
