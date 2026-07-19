@@ -336,6 +336,13 @@ def evaluate(
                 )
                 if pretrain_results is not None:
                     results["results"].update(pretrain_results.get("results", {}))
+                    # Carry configs and (under --log_samples) the per-doc sample bodies
+                    # through the merge: the persist loop at the end of cli_evaluate walks
+                    # results["configs"] and reads results["samples"], so dropping them here
+                    # silently discards every lm-eval-native task's samples.
+                    results.setdefault("configs", {}).update(pretrain_results.get("configs", {}))
+                    if getattr(args, "log_samples", False):
+                        results.setdefault("samples", {}).update(pretrain_results.get("samples", {}))
         except Exception as e:
             eval_logger.error(f"Error in pretrain evaluation: {str(e)}")
 
