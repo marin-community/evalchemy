@@ -329,6 +329,7 @@ def evaluate(
                     task_manager=pretrain_task_manager,
                     verbosity=args.verbosity,
                     predict_only=args.predict_only,
+                    confirm_run_unsafe_code=args.confirm_run_unsafe_code,
                     random_seed=args.seed[0] if hasattr(args, "seed") else None,
                     numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
                     torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
