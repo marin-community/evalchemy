@@ -11,24 +11,18 @@ from eval.task import BaseBenchmark
 
 from .judge import judge_all
 
-# Prompt shown when no document context is available for the question -- the model must
-# answer from parametric knowledge. Mirrors the canonical FinanceBench instruction: a
-# direct, concise answer with no chain-of-thought.
-PROMPT = (
-    "Based on the financial document context below, answer the question.\n\n"
-    "Question: {question}\n\n"
-    "Answer concisely:"
-)
+# Document-grounded prompt: the question is unanswerable without the supporting
+# passage, so the full-page evidence from the source filing is rendered ahead of
+# the question. The instruction mirrors the canonical FinanceBench framing -- a
+# direct, concise answer grounded in the supplied document excerpt.
+PROMPT = """Based on the following financial document excerpt, answer the question.
 
-# When document context IS available (it is for every item in the shipped data file), the
-# supporting evidence is presented ahead of the question so the answer is grounded in the
-# source passage rather than recalled from parametric memory.
-PROMPT_WITH_CONTEXT = (
-    "Based on the financial document context below, answer the question.\n\n"
-    "Context:\n{context}\n\n"
-    "Question: {question}\n\n"
-    "Answer concisely:"
-)
+Document:
+{evidence_text}
+
+Question: {question}
+
+Provide a direct, concise answer."""
 
 # Default judge model when neither ``annotator_model`` nor ``$JUDGE_MODEL`` is supplied.
 # ``gpt-4o-mini`` is the standard cheap-and-fast judge across the evalchemy LLM-judged
@@ -44,11 +38,16 @@ class FinanceBenchBenchmark(BaseBenchmark):
     require reading and reasoning over financial documents -- 10-K / 10-Q filings and
     earnings-call transcripts -- spanning numerical, boolean, and summary question types.
 
+    Each question is shipped with the supporting passage from the source filing, which is
+    injected into the prompt as document context so the answer is grounded in the text
+    rather than recalled from parametric memory. Without that context the benchmark is
+    unsolvable: the questions are about specific line items in specific filings.
+
     Grading is LLM-as-judge (SimpleQA-style correct / incorrect / not_attempted) rather
     than exact match, because financial answers frequently differ from the gold only in
     formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). See ``judge.py``.
 
-    Link: https://huggingface.co/datasets/PatronusAI/financebench
+    Link: https://github.com/patronus-ai/financebench
     """
 
     # FinanceBench's judge is an OpenAI chat model, so this benchmark is skipped at load
@@ -72,7 +71,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
         Args:
             data_file: JSONL file of FinanceBench items
-                (id, question, answer, doc_name, question_type, [context]).
+                (id, question, answer, evidence_text, doc_name, company, question_type).
             debug: If set, only evaluate on 2 examples.
             seed: Random seed for reproducibility (deterministic at temperature 0).
             max_tokens: Max generation tokens. 4096 by default -- factual Q&A answers
@@ -107,7 +106,10 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
         all_instances = []
         for idx, example in enumerate(examples):
-            content = self._build_prompt(example)
+            content = PROMPT.format(
+                question=example["question"],
+                evidence_text=example["evidence_text"],
+            )
             messages = [{"role": "user", "content": content}]
             templated_messages = self._prepare_messages(messages, model)
 
@@ -186,9 +188,11 @@ class FinanceBenchBenchmark(BaseBenchmark):
     def load_questions(self) -> List[Dict[str, Any]]:
         """Load FinanceBench questions from the local data file.
 
-        The shipped ``data/financebench.jsonl`` is a 50-item sample of
-        ``PatronusAI/financebench`` (deterministic; see the sample script), so the
-        benchmark runs offline the same way MATH500 / AIME24 do.
+        The shipped ``data/financebench.jsonl`` is a 50-item deterministic sample of the
+        open-source slice of ``patronus-ai/financebench``
+        (``data/financebench_open_source.jsonl``, 150 rows). Each item carries the
+        ``evidence_text`` -- the full page of the source filing the question is grounded
+        in -- so the benchmark runs offline the same way MATH500 / AIME24 do.
         """
         with open(self.data_file, "r") as f:
             questions = [json.loads(line) for line in f if line.strip()]
@@ -201,12 +205,3 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
-
-    def _build_prompt(self, example: Dict[str, Any]) -> str:
-        """Render the prompt, inserting document context when the item carries it."""
-        context = (example.get("context") or "").strip()
-        if context:
-            return PROMPT_WITH_CONTEXT.format(
-                question=example["question"], context=context
-            )
-        return PROMPT.format(question=example["question"])

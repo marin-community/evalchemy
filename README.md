@@ -127,7 +127,7 @@ uv run huggingface-cli login
   - **LiveBench**: [A benchmark for LLMs designed with test set contamination and objective evaluation in mind](https://livebench.ai/#/)
   - **GPQA Diamond**: [A Graduate-Level Google-Proof Q&A Benchmark](https://huggingface.co/datasets/Idavidrein/gpqa)
   - **Alice in Wonderland**: [Simple Tasks Showing Complete Reasoning Breakdown in LLMs](https://arxiv.org/abs/2406.02061)
-  - **FinanceBench**: [Financial document Q&A (10-K, 10-Q, earnings calls)](https://huggingface.co/datasets/PatronusAI/financebench), graded with an LLM-as-judge (SimpleQA-style correct/incorrect/not_attempted).
+  - **FinanceBench**: [Financial document Q&A (10-K, 10-Q, earnings calls)](https://github.com/patronus-ai/financebench), graded with an LLM-as-judge (SimpleQA-style correct/incorrect/not_attempted). Each question ships with the supporting passage from the source filing as in-prompt document context.
   - **Arena-Hard-Auto** (Coming soon): [Automatic evaluation tool for instruction-tuned LLMs](https://github.com/lmarena/arena-hard-auto)
   - **SWE-Bench** (Coming soon): [Evaluating large language models on real-world software issues](https://github.com/princeton-nlp/SWE-bench)
   - **SafetyBench** (Coming soon): [Evaluating the safety of LLMs](https://github.com/thu-coai/SafetyBench)
