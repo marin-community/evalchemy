@@ -244,7 +244,13 @@ class BaseBenchmark(ABC):
                 if torch is not None:
                     torch.manual_seed(seeds[2])
 
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
+                if instance.args[1].get("do_sample", True) is False:
+                    # Greedy decoding ignores the request seed, and some OpenAI-compatible
+                    # servers reject any request that carries one (the JAX/TPU vLLM backend
+                    # 400s with "JAX does not support per-request seed"), so drop it rather
+                    # than fail every greedy request against such a server.
+                    del instance.args[1]["seed"]
+                elif isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
                     model, lm_eval_models.openai_completions.OpenAICompletionsAPI
                 ):
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
