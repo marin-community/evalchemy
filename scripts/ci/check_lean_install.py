@@ -27,6 +27,7 @@ CORE_BENCHMARKS = (
     "MATH500",
     "HMMT",
     "OlympiadBench",
+    "OlympiadBench_official",
     "GPQADiamond",
     "LiveCodeBench",
     "MMLUPro",

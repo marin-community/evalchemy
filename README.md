@@ -123,7 +123,7 @@ uv run huggingface-cli login
   - **AIME25**: [Math Reasoning Dataset](https://huggingface.co/datasets/TIGER-Lab/AIME25)
   - **AMC23**: [Math Reasoning Dataset](https://huggingface.co/datasets/AI-MO/aimo-validation-amc)
   - **MATH500**: [Math Reasoning Dataset](https://huggingface.co/datasets/HuggingFaceH4/MATH-500) split from [Let's Verify Step by Step](https://github.com/openai/prm800k/tree/main?tab=readme-ov-file#math-splits)
-  - **OlympiadBench**: [Olympiad-level math and physics benchmark](https://huggingface.co/datasets/Hothan/OlympiadBench). Evalchemy evaluates the 910 English open-ended text-only problems.
+  - **OlympiadBench / OlympiadBench_official**: [Olympiad-level math and physics benchmark](https://huggingface.co/datasets/Hothan/OlympiadBench). The original task is retained for compatibility; `OlympiadBench_official` evaluates the 910 English open-ended text-only problems with the benchmark authors' prompt and scorer.
   - **LiveCodeBench**: [Benchmark of LLMs for code](https://livecodebench.github.io/)
   - **LiveBench**: [A benchmark for LLMs designed with test set contamination and objective evaluation in mind](https://livebench.ai/#/)
   - **GPQA Diamond**: [A Graduate-Level Google-Proof Q&A Benchmark](https://huggingface.co/datasets/Idavidrein/gpqa)

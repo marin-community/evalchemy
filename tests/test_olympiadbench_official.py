@@ -1,7 +1,7 @@
 import pytest
 
-from eval.chat_benchmarks.OlympiadBench import eval_instruct as olympiad
-from eval.chat_benchmarks.OlympiadBench.auto_scoring_judge import AutoScoringJudge
+from eval.chat_benchmarks.OlympiadBench_official import eval_instruct as olympiad
+from eval.chat_benchmarks.OlympiadBench_official.auto_scoring_judge import AutoScoringJudge
 
 
 def _row(**overrides):
@@ -100,7 +100,7 @@ def test_load_questions_uses_pinned_english_text_subsets(monkeypatch):
     }
     calls = _install_dataset(monkeypatch, rows_by_subset)
 
-    questions = olympiad.OlympiadBenchBenchmark(debug=True).load_questions()
+    questions = olympiad.OlympiadBenchOfficialBenchmark(debug=True).load_questions()
 
     assert [question["subset"] for question in questions] == [
         "OE_TO_maths_en_COMP",
@@ -145,7 +145,7 @@ def test_load_questions_rejects_rows_outside_english_text_scope(monkeypatch, inv
     )
 
     with pytest.raises(ValueError):
-        olympiad.OlympiadBenchBenchmark(debug=True).load_questions()
+        olympiad.OlympiadBenchOfficialBenchmark(debug=True).load_questions()
 
 
 def test_load_questions_fails_when_pinned_dataset_count_drifts(monkeypatch):
@@ -158,7 +158,7 @@ def test_load_questions_fails_when_pinned_dataset_count_drifts(monkeypatch):
     )
 
     with pytest.raises(ValueError, match="Expected 674 rows"):
-        olympiad.OlympiadBenchBenchmark().load_questions()
+        olympiad.OlympiadBenchOfficialBenchmark().load_questions()
 
 
 def test_generate_and_evaluate_reports_subject_accuracy(monkeypatch):
@@ -179,13 +179,15 @@ def test_generate_and_evaluate_reports_subject_accuracy(monkeypatch):
         },
     )
     model = _RecordingLM([["Reasoning. \\boxed{42}", "Incorrect. \\boxed{5}"]])
-    benchmark = olympiad.OlympiadBenchBenchmark(debug=True)
+    benchmark = olympiad.OlympiadBenchOfficialBenchmark(debug=True)
 
     generated = benchmark.generate_responses(model)
     scored = benchmark.evaluate_responses(generated)
     samples = benchmark.to_samples(scored)
 
     assert scored["benchmark_scope"] == "english_open_ended_text_only"
+    assert scored["benchmark_protocol"] == "openbmb_english_oe_to_v1"
+    assert scored["reference_implementation_revision"] == olympiad.REFERENCE_IMPLEMENTATION_REVISION
     assert scored["dataset_revision"] == olympiad.DEFAULT_DATASET_REVISION
     assert scored["num_total"] == 2
     assert scored["num_solved"] == 1
@@ -206,7 +208,7 @@ def test_generate_and_evaluate_reports_subject_accuracy(monkeypatch):
 
 
 def test_evaluate_responses_requires_complete_candidate_and_applies_precision():
-    benchmark = olympiad.OlympiadBenchBenchmark()
+    benchmark = olympiad.OlympiadBenchOfficialBenchmark()
     results = {
         "examples": [
             {
@@ -263,7 +265,7 @@ def test_pass_at_k_scores_raw_samples_and_reports_subject_metrics(monkeypatch):
             ["\\boxed{0}", "\\boxed{1}\n\\boxed{2}"],
         ]
     )
-    benchmark = olympiad.OlympiadBenchBenchmark(
+    benchmark = olympiad.OlympiadBenchOfficialBenchmark(
         debug=True,
         num_samples=2,
         pass_at_k=[1, 2],
