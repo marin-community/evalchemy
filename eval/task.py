@@ -254,9 +254,11 @@ class BaseBenchmark(ABC):
                     # is likewise not a valid API request seed, so drop it.
                     del instance.args[1]["seed"]
                     instance.args[1]["temperature"] = 0.0
-                elif isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                elif isinstance(model, lm_eval_models.openai_completions.LocalCompletionsAPI):
+                    # LocalCompletionsAPI is the root of all four OpenAI-compatible API model
+                    # classes (Local/OpenAI x completions/chat); the OpenAI* classes are the
+                    # SUBCLASSES, so checking those two alone silently routes local-* endpoints
+                    # into the Huggingface branch.
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 elif (
                     isinstance(model, _VLLM)
@@ -267,9 +269,7 @@ class BaseBenchmark(ABC):
                     _ = instance.args[1].pop("seed") if "seed" in instance.args[1] else None
             if "max_new_tokens" in instance.args[1]:
                 max_new_tokens = instance.args[1].pop("max_new_tokens")
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                if isinstance(model, lm_eval_models.openai_completions.LocalCompletionsAPI):
                     instance.args[1]["max_tokens"] = max_new_tokens
                     if "4o" in model.model:
                         instance.args[1]["max_tokens"] = min(max_new_tokens, 16384)
