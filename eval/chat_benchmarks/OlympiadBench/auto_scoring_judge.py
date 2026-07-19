@@ -1,10 +1,11 @@
 """OlympiadBench official answer-equivalence scorer.
 
-Adapted from OpenBMB/OlympiadBench:
-https://github.com/OpenBMB/OlympiadBench/blob/main/eval/auto_scoring_judge.py
+Adapted from OpenBMB/OlympiadBench at revision ba5b26a7e2849940b598a9159c1190daa2b9175f:
+https://github.com/OpenBMB/OlympiadBench/blob/ba5b26a7e2849940b598a9159c1190daa2b9175f/eval/auto_scoring_judge.py
 
-The upstream repository is MIT-licensed. Keep this module close to the official
-implementation because small parser differences can change benchmark scores.
+The upstream repository is MIT-licensed; see LICENSE in this directory. Keep
+this module close to the official implementation because small parser
+differences can change benchmark scores.
 """
 
 import math
@@ -136,9 +137,7 @@ class AutoScoringJudge:
             pass
 
         try:
-            if self.expression_equal(expression1, expression2) and not (
-                "=" in expression1 and "=" in expression2
-            ):
+            if self.expression_equal(expression1, expression2) and not ("=" in expression1 and "=" in expression2):
                 return True
         except Exception:
             pass
@@ -151,9 +150,7 @@ class AutoScoringJudge:
 
         return False
 
-    def numerical_equal(
-        self, expression1: str, expression2: str, include_percentage: bool = True
-    ) -> bool:
+    def numerical_equal(self, expression1: str, expression2: str, include_percentage: bool = True) -> bool:
         reference = float(expression1)
         prediction = float(expression2)
 
@@ -191,15 +188,10 @@ class AutoScoringJudge:
             return False
         if not expr1_sym.has(sp.Symbol) and not expr2_sym.has(sp.Symbol):
             try:
-                if not (
-                    self.can_compute_power(expr1_sym)
-                    and self.can_compute_power(expr2_sym)
-                ):
+                if not (self.can_compute_power(expr1_sym) and self.can_compute_power(expr2_sym)):
                     return False
 
-                return bool(
-                    abs(expr1_sym.evalf() - expr2_sym.evalf()) <= self.precision * 1.01
-                )
+                return bool(abs(expr1_sym.evalf() - expr2_sym.evalf()) <= self.precision * 1.01)
             except Exception:
                 return False
 

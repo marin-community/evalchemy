@@ -1,135 +1,54 @@
-import json
 import logging
+import math
 import os
-import re
-from typing import Any, Dict, List, Optional
+from collections import defaultdict
+from itertools import islice
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+from datasets import load_dataset
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import (
-    is_equiv,
-    last_boxed_only_string,
-    remove_boxed,
-)
+from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
 from eval.task import BaseBenchmark
 
-# Same prompt shape as MATH500/AMC23/AIME24 (math reasoning benchmarks in this tree):
-# the explicit "Mark your solution with \boxed" instruction makes answer extraction reliable.
-PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
-
-DEFAULT_DATA_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "olympiadbench.jsonl"
-)
-DEFAULT_DATASET = "lmms-lab/olympiadbench"
-DEFAULT_SPLIT = "test_en"
+try:
+    from .auto_scoring_judge import AutoScoringJudge
+except ImportError:  # TaskManager executes this module with the benchmark directory on sys.path.
+    from auto_scoring_judge import AutoScoringJudge
 
 
-def _strip_dollars(s: str) -> str:
-    """Strip a single pair of surrounding ``$...$`` (or ``$$...$$``) delimiters if present."""
-    s = s.strip()
-    if len(s) >= 2 and s.startswith("$") and s.endswith("$"):
-        inner = s[1:-1].strip()
-        if inner.startswith("$") and inner.endswith("$") and len(inner) >= 2:
-            inner = inner[1:-1].strip()
-        return inner
-    return s
+PROMPT = """The following is a question from an international {subject} competition.
+{answer_requirement}
 
+{context_block}Problem: {question}
 
-def _split_multiple_answers(s: str) -> List[str]:
-    """Split a single reference-answer string that may itself carry several answers.
+Please calculate the answer from the information provided and show your reasoning using LaTeX for variables and formulas.
+End your solution with "{answer_format}" and give the result explicitly.
+Answer:"""
 
-    OlympiadBench packs multiple answers into one ``final_answer`` list entry as
-    ``$...$, $...$`` (each wrapped in dollars). Strip the dollars first, then split
-    on commas that separate top-level dollar groups. Falls back to the whole string.
-    """
-    cleaned = _strip_dollars(s)
-    if "$" in s:
-        # Re-split on the original dollar-delimited groups, then strip each.
-        groups = re.findall(r"\$([^$]*)\$", s)
-        if groups:
-            return [g.strip() for g in groups if g.strip()]
-    if cleaned:
-        return [cleaned]
-    return []
+DEFAULT_DATASET = "Hothan/OlympiadBench"
+DEFAULT_DATASET_REVISION = "91184b52131e7fc9455fef848035173aea8cc01a"
+DEFAULT_SPLIT = "train"
+BENCHMARK_SCOPE = "english_open_ended_text_only"
+DEFAULT_PRECISION = 1e-8
 
-
-def _flatten_reference_answers(raw: Any) -> List[str]:
-    """Normalize the stored ``answer`` field into a flat list of candidate gold strings.
-
-    Accepts a list of strings (the OlympiadBench ``final_answer`` shape, where each
-    entry may itself contain several dollar-delimited answers) and returns the union of
-    the individual candidate answers. Strings and single-string inputs are also accepted.
-    """
-    if raw is None:
-        return []
-    if isinstance(raw, (str, int, float)):
-        raw = [str(raw)]
-    out: List[str] = []
-    for item in raw:
-        out.extend(_split_multiple_answers(str(item)))
-    return out
-
-
-def _normalize_numerical(s: str) -> str:
-    """Normalize whitespace and strip trailing units so two numerical answers compare cleanly."""
-    s = s.strip()
-    s = re.sub(
-        r"\s+", "", s
-    )  # crush ALL internal whitespace (matches "1 / 5" <-> "1/5")
-    return s
-
-
-def grade_single(model_answer: str, reference: str) -> bool:
-    """Return True if ``model_answer`` matches a single reference answer.
-
-    Uses ``is_equiv`` (the lm-eval hendrycks_math symbolic/expression equivalence
-    grader, which already handles numbers, expressions, equations, intervals, and
-    tuples) as the primary comparator, with a whitespace-collapsed numerical
-    fallback for cases where ``is_equiv`` gives up but the strings are otherwise
-    identical modulo spacing.
-    """
-    if model_answer is None or reference is None:
-        return False
-    m = str(model_answer).strip()
-    r = str(reference).strip()
-    if not m or not r:
-        return False
-    if is_equiv(r, m):
-        return True
-    if _normalize_numerical(m) == _normalize_numerical(r):
-        return True
-    return False
-
-
-def grade_answer(model_answer: str, reference_answers: Any) -> bool:
-    """Grade a model answer against a reference that may be a single value or a list.
-
-    OlympiadBench problems can have multiple acceptable answers; a model response is
-    correct if it matches ANY of them.
-    """
-    candidates = _flatten_reference_answers(reference_answers)
-    if not candidates:
-        return False
-    return any(grade_single(model_answer, c) for c in candidates)
+# The English open-ended text-only scope comprises exactly these two subsets.
+ENGLISH_TEXT_SUBSETS: Dict[str, Tuple[str, int]] = {
+    "OE_TO_maths_en_COMP": ("Math", 674),
+    "OE_TO_physics_en_COMP": ("Physics", 236),
+}
 
 
 class OlympiadBenchBenchmark(BaseBenchmark):
-    """
-    OlympiadBench Benchmark for evaluating competition math/physics reasoning of LLMs.
-    Link: https://huggingface.co/datasets/lmms-lab/olympiadbench
-
-    Uses the text-only English split (``test_en``). Each problem's reference answer may
-    be a single value or a list of acceptable values; grading is correct-if-any-match
-    via ``is_equiv`` (with a numerical-exact fallback). Follows the MATH500/AMC23
-    pattern in this tree: the model is asked to box its final answer.
-    """
+    """English open-ended text-only OlympiadBench evaluation."""
 
     def __init__(
         self,
-        data_file: str = DEFAULT_DATA_FILE,
         dataset_name: str = DEFAULT_DATASET,
+        dataset_revision: str = DEFAULT_DATASET_REVISION,
         dataset_split: str = DEFAULT_SPLIT,
+        cache_dir: Optional[str] = None,
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 32768,
@@ -138,83 +57,34 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
     ):
-        """
-        Initialize OlympiadBench benchmark.
-
-        Args:
-            data_file: Local JSONL with the offline sample (id, problem, answer, subject, ...).
-                Used when it exists on disk; otherwise the HF dataset is loaded.
-            dataset_name: HuggingFace dataset to fall back to when ``data_file`` is absent.
-            dataset_split: Split to load from HF (``test_en`` is the text-only English split).
-            debug: If set, only evaluate on 2 examples.
-            seed: Random seed for reproducibility. Default is [0, 1234, 1234, 1234] for lm-eval-harness.
-            max_tokens: Max generation tokens. These are hard olympiad problems; default 32768.
-            logger: Optional logger instance.
-            system_instruction: Optional system instruction for the model.
-            num_samples: Number of completions per problem. 1 (default) = single-sample path.
-            pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
-        """
         super().__init__(
             logger=logger,
             system_instruction=system_instruction,
             num_samples=num_samples,
             pass_at_k=pass_at_k,
         )
-        self.data_file = data_file
         self.dataset_name = dataset_name
+        self.dataset_revision = dataset_revision
         self.dataset_split = dataset_split
+        self.cache_dir = cache_dir if cache_dir is not None else os.environ.get("HF_HUB_CACHE")
+        self.subsets = list(ENGLISH_TEXT_SUBSETS)
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
+        self.judge = AutoScoringJudge()
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
-
-        Args:
-            model: Language model
-
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
         examples = self.load_questions()
-
-        # ---- native pass@k path: num_samples > 1 ----
         if self.num_samples > 1:
             return self._generate_pass_at_k(model, examples)
 
-        # Prepare instances for model
-        all_instances = []
-        for idx, example in enumerate(examples):
-            messages = [
-                {"role": "user", "content": PROMPT.format(problem=example["problem"])},
-            ]
-
-            templated_messages = self._prepare_messages(messages, model)
-
-            all_instances.append(
-                Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "do_sample": False,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": self.seed,
-                        },
-                    ),
-                    idx,
-                )
-            )
-
-        # Generate model responses
+        instances = [
+            self._make_instance(model, example, idx, do_sample=False, seed=self.seed)
+            for idx, example in enumerate(examples)
+        ]
         self.logger.info("Generating responses for OlympiadBench...")
-        outputs = self.compute(model, all_instances)
+        outputs = self.compute(model, instances)
 
-        # Return None early for non-primary ranks
         if model.rank != 0:
             return None
 
@@ -222,183 +92,301 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             example["model_output"] = output
             example["model_answer"] = self.extract_answer(output)
 
-        return {"examples": examples}
+        return {"examples": examples, **self._result_metadata()}
 
-    def _generate_pass_at_k(
-        self, model: LM, examples: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Generate ``num_samples`` completions per problem via the base scaffold."""
-
+    def _generate_pass_at_k(self, model: LM, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         def build_instances(sample_idx: int, seed: List[int]) -> List[Instance]:
             instances = []
             for idx, example in enumerate(examples):
-                messages = [
-                    {
-                        "role": "user",
-                        "content": PROMPT.format(problem=example["problem"]),
-                    }
-                ]
-                templated_messages = self._prepare_messages(messages, model)
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            # Sampling on (pass@k needs diversity); seed varies per sample.
-                            "do_sample": True,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "top_p": 1.0,
-                            "seed": seed,
-                        },
-                    ),
-                    idx,
-                )
+                instance = self._make_instance(model, example, idx, do_sample=True, seed=seed)
                 instance.repeat_idx = sample_idx
                 instances.append(instance)
             return instances
 
         self.logger.info(
-            f"Generating {self.num_samples} samples/problem for OlympiadBench pass@k..."
+            "Generating %s samples/problem for OlympiadBench pass@k...",
+            self.num_samples,
         )
-        per_problem = self.generate_n_samples_batched(
-            model, build_instances, self.num_samples
-        )
+        per_problem = self.generate_n_samples_batched(model, build_instances, self.num_samples)
         if model.rank != 0:
             return None
+
         for example, outputs in zip(examples, per_problem):
             example["model_outputs"] = list(outputs)
-            example["model_answers"] = [self.extract_answer(o) for o in outputs]
-        return {"examples": examples, "pass_at_k": True}
+            example["model_answers"] = [self.extract_answer(output) for output in outputs]
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions."""
+        return {
+            "examples": examples,
+            "pass_at_k": True,
+            **self._result_metadata(),
+        }
 
-        # Handle None result from non-primary ranks
+    def _make_instance(
+        self,
+        model: LM,
+        example: Dict[str, Any],
+        idx: int,
+        do_sample: bool,
+        seed: List[int],
+    ) -> Instance:
+        messages = [{"role": "user", "content": self._build_prompt(example)}]
+        generation_kwargs = {
+            "do_sample": do_sample,
+            "max_new_tokens": self.max_new_tokens,
+            "temperature": 0.7 if do_sample else 0.0,
+            "seed": seed,
+        }
+        if do_sample:
+            generation_kwargs["top_p"] = 1.0
+
+        instance = Instance(
+            "generate_until",
+            example,
+            (self._prepare_messages(messages, model), generation_kwargs),
+            idx,
+        )
+        instance.metadata = {
+            "problem_id": str(example["id"]),
+            "subset": example["subset"],
+            "subject": example["subject"],
+            "subfield": example["subfield"],
+            "answer_type": example["answer_type"],
+            "expected_answers": list(example["answer"]),
+            "is_multiple_answer": example["is_multiple_answer"],
+            "unit": example["unit"],
+            "error": "" if example["error"] is None else example["error"],
+        }
+        return instance
+
+    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         if results is None:
             return None
 
         examples = results["examples"]
-        total = len(examples)
-
-        # ---- native pass@k aggregation ----
         if results.get("pass_at_k"):
-            num_correct = [
-                sum(int(grade_answer(ans, ex["answer"])) for ans in ex["model_answers"])
-                for ex in examples
-            ]
-            pass_at_k_table = self.aggregate_pass_at_k(num_correct)
+            num_correct = []
+            for example in examples:
+                correctness = [self._score_output(example, output) for output in example["model_outputs"]]
+                example["sample_correctness"] = correctness
+                num_correct.append(sum(int(value) for value in correctness))
+
             results.update(
                 {
-                    "num_total": total,
+                    "num_total": len(examples),
                     "num_samples": self.num_samples,
                     "num_correct": num_correct,
-                    **pass_at_k_table,
+                    **self.aggregate_pass_at_k(num_correct),
                 }
             )
+            self._add_subject_pass_at_k(results, examples, num_correct)
             return results
 
-        solved = sum(
-            grade_answer(example["model_answer"], example["answer"])
-            for example in examples
-        )
+        for example in examples:
+            example["is_correct"] = self._score_output(example, example.get("model_output", ""))
 
+        solved = sum(int(example["is_correct"]) for example in examples)
         results.update(
             {
-                "num_total": total,
+                "num_total": len(examples),
                 "num_solved": solved,
-                "accuracy": solved / total,
+                "accuracy": solved / len(examples) if examples else 0.0,
             }
         )
-
+        self._add_subject_accuracy(results, examples)
         return results
 
     def load_questions(self) -> List[Dict[str, Any]]:
-        """Load OlympiadBench questions from the local JSONL, falling back to HF.
+        questions = []
+        canonical_dataset = (
+            self.dataset_name == DEFAULT_DATASET
+            and self.dataset_revision == DEFAULT_DATASET_REVISION
+            and self.dataset_split == DEFAULT_SPLIT
+        )
 
-        The local data file is preferred so the benchmark works fully offline (clusters
-        without outbound internet). When it is absent, the HF dataset is loaded and the
-        same record shape (id, problem, answer, subject, unit) is projected from it.
-        """
-        if os.path.exists(self.data_file):
-            with open(self.data_file, "r") as f:
-                questions = [json.loads(x) for x in f]
-            self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
-        else:
-            questions = self._load_from_hf()
-            self.logger.info(
-                f"Loaded {len(questions)} questions from HF dataset "
-                f"{self.dataset_name}[{self.dataset_split}]"
+        for subset in self.subsets:
+            dataset = load_dataset(
+                self.dataset_name,
+                subset,
+                split=self.dataset_split,
+                revision=self.dataset_revision,
+                cache_dir=self.cache_dir,
             )
+            expected_count = ENGLISH_TEXT_SUBSETS[subset][1]
+            if canonical_dataset and not self.debug and len(dataset) != expected_count:
+                raise ValueError(
+                    f"Expected {expected_count} rows in {subset} at revision "
+                    f"{self.dataset_revision}, found {len(dataset)}."
+                )
 
-        if self.debug:
-            questions = questions[:2]
-            self.logger.info(
-                f"Debug mode enabled. Using only {len(questions)} questions."
-            )
+            rows = islice(dataset, 2) if self.debug else dataset
+            questions.extend(self._normalize_example(dict(row), subset) for row in rows)
 
+        if not questions:
+            raise ValueError("OlympiadBench did not load any English text-only questions.")
+
+        self.logger.info(
+            "Loaded %s English text-only OlympiadBench questions from %s@%s.",
+            len(questions),
+            self.dataset_name,
+            self.dataset_revision,
+        )
         return questions
 
-    def _load_from_hf(self) -> List[Dict[str, Any]]:
-        """Project the HF dataset into the local JSONL record shape."""
-        from datasets import load_dataset
+    def _normalize_example(self, row: Dict[str, Any], subset: str) -> Dict[str, Any]:
+        problem_id = row.get("id", "")
+        if problem_id in (None, ""):
+            raise ValueError(f"OlympiadBench row in {subset} has no problem ID.")
+        expected_subject = ENGLISH_TEXT_SUBSETS[subset][0]
+        expected_fields = {
+            "modality": "Text-only",
+            "question_type": "Open-ended",
+            "language": "English",
+            "subject": expected_subject,
+        }
+        for field, expected in expected_fields.items():
+            if row.get(field) != expected:
+                raise ValueError(
+                    f"Unexpected {field}={row.get(field)!r} for OlympiadBench "
+                    f"problem {problem_id} in {subset}; expected {expected!r}."
+                )
 
-        ds = load_dataset(self.dataset_name, split=self.dataset_split)
-        cache_dir = os.environ.get("HF_HUB_CACHE")
-        if cache_dir:
-            ds = load_dataset(
-                self.dataset_name, split=self.dataset_split, cache_dir=cache_dir
-            )
+        if any(value for key, value in row.items() if key.startswith("image_")):
+            raise ValueError(f"Text-only OlympiadBench problem {problem_id} unexpectedly contains an image.")
 
-        out: List[Dict[str, Any]] = []
-        for ex in ds:
-            # Skip multimodal problems (require images we cannot serve in text-only eval).
-            if ex.get("images"):
+        question = str(row.get("question") or "").strip()
+        if not question:
+            raise ValueError(f"OlympiadBench problem {problem_id} has no question text.")
+
+        raw_answers = row.get("final_answer")
+        if not isinstance(raw_answers, list):
+            raise ValueError(f"OlympiadBench problem {problem_id} has a non-list final_answer.")
+        answers = []
+        for answer in raw_answers:
+            if answer is None:
                 continue
-            final_answer = ex.get("final_answer")
-            if not final_answer:
-                continue
-            source = ex.get("source") or ""
-            subject = (
-                "mathematics"
-                if "maths" in source
-                else ("physics" if "physics" in source else "unknown")
-            )
-            context = ex.get("context")
-            question = ex.get("question") or ""
-            out.append(
-                {
-                    "id": ex.get("question_id"),
-                    "problem": (context + "\n\n" if context else "") + question,
-                    "question": question,
-                    "context": context,
-                    "answer": list(final_answer),
-                    "subject": subject,
-                    "subfield": ex.get("subfield"),
-                    "unit": ex.get("unit"),
-                    "answer_type": ex.get("answer_type"),
-                    "is_multiple_answer": bool(ex.get("is_multiple_answer")),
-                    "error": ex.get("error"),
-                    "source": source,
-                }
-            )
-        return out
+            # Dollar signs are presentation delimiters. Removing them also repairs the
+            # two canonical rows that mix delimited and undelimited answer components.
+            normalized_answer = str(answer).replace("$", "").strip()
+            if normalized_answer:
+                answers.append(normalized_answer)
+        if not answers:
+            raise ValueError(f"OlympiadBench problem {problem_id} has no final answer.")
+
+        answer_type = str(row.get("answer_type") or "").strip()
+        if not answer_type:
+            raise ValueError(f"OlympiadBench problem {problem_id} has no answer type.")
+        answer_types = [item.strip() for item in answer_type.split(",") if item.strip()]
+        if not answer_types:
+            raise ValueError(f"OlympiadBench problem {problem_id} has an invalid answer type.")
+
+        context = str(row.get("context") or "").strip()
+        return {
+            "id": problem_id,
+            "subset": subset,
+            "problem": f"{context}\n\n{question}" if context else question,
+            "question": question,
+            "context": context,
+            "answer": answers,
+            # Problem 1482 has a composite Equation,Numerical answer despite a false
+            # source flag. The answer-type schema is authoritative for that case.
+            "is_multiple_answer": bool(row.get("is_multiple_answer")) or len(answer_types) > 1,
+            "unit": str(row.get("unit") or ""),
+            "answer_type": answer_type,
+            "error": row.get("error"),
+            "difficulty": str(row.get("difficulty") or ""),
+            "subfield": str(row.get("subfield") or ""),
+            "subject": expected_subject,
+        }
+
+    def _build_prompt(self, example: Dict[str, Any]) -> str:
+        context = example.get("context", "")
+        context_block = f"Context: {context}\n\n" if context else ""
+        answer_types = [item.strip() for item in example["answer_type"].split(",") if item.strip()]
+        if not example["is_multiple_answer"]:
+            answer_requirement = f"The answer should be {answer_types[0]}."
+            answer_format = r"So the final answer is \boxed{answer}."
+        else:
+            answer_format = r"So the final answer is \boxed{multiple answers connected with commas}."
+            if len(answer_types) == 1:
+                answer_requirement = f"The question has multiple answers, each of them should be {answer_types[0]}."
+            else:
+                answer_type_list = ", ".join(answer_types)
+                answer_requirement = (
+                    f"The question has multiple answers, with the answers in order being {answer_type_list}."
+                )
+        return PROMPT.format(
+            subject="mathematics" if example["subject"] == "Math" else "physics",
+            answer_requirement=answer_requirement,
+            answer_format=answer_format,
+            context_block=context_block,
+            question=example["question"],
+        )
+
+    def _sample_prompt(self, example: Dict[str, Any]) -> str:
+        return self._build_prompt(example)
+
+    def _score_output(self, example: Dict[str, Any], output: str) -> bool:
+        if not str(output).strip():
+            return False
+
+        precision = self._parse_precision(example.get("error"))
+        return any(self.judge.judge(candidate, output, precision=precision) for candidate in example["answer"])
+
+    def _parse_precision(self, error: Any) -> Union[float, List[float]]:
+        if isinstance(error, (list, tuple)):
+            values = [self._precision_value(item) for item in error]
+            return values or DEFAULT_PRECISION
+        if isinstance(error, str) and "," in error:
+            return [self._precision_value(item) for item in error.split(",")]
+        return self._precision_value(error)
+
+    def _precision_value(self, value: Any) -> float:
+        if value in (None, "", "null"):
+            return DEFAULT_PRECISION
+        try:
+            precision = float(value)
+        except (TypeError, ValueError):
+            return DEFAULT_PRECISION
+        if not math.isfinite(precision) or precision < 0:
+            return DEFAULT_PRECISION
+        return precision
+
+    def _add_subject_accuracy(self, results: Dict[str, Any], examples: List[Dict[str, Any]]) -> None:
+        grouped = defaultdict(list)
+        for example in examples:
+            grouped[example["subject"]].append(int(example["is_correct"]))
+
+        for subject, scores in grouped.items():
+            results[f"num_total_subject_{subject}"] = len(scores)
+            results[f"num_solved_subject_{subject}"] = sum(scores)
+            results[f"accuracy_subject_{subject}"] = sum(scores) / len(scores)
+
+    def _add_subject_pass_at_k(
+        self,
+        results: Dict[str, Any],
+        examples: List[Dict[str, Any]],
+        num_correct: List[int],
+    ) -> None:
+        grouped = defaultdict(list)
+        for example, correct in zip(examples, num_correct):
+            grouped[example["subject"]].append(correct)
+
+        for subject, correct_counts in grouped.items():
+            results[f"num_total_subject_{subject}"] = len(correct_counts)
+            for metric, value in self.aggregate_pass_at_k(correct_counts).items():
+                results[f"{metric}_subject_{subject}"] = value
+
+    def _result_metadata(self) -> Dict[str, Any]:
+        return {
+            "benchmark_scope": BENCHMARK_SCOPE,
+            "dataset_name": self.dataset_name,
+            "dataset_revision": self.dataset_revision,
+            "subsets": list(self.subsets),
+        }
 
     def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be
-        in the format of \\boxed{answer}.
-
-        Uses the same logic as hendrycks_math.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \\boxed.
-        """
         try:
             answer = remove_boxed(last_boxed_only_string(output))
-            return answer
+            return answer if answer is not None else ""
         except Exception:
             return ""

@@ -1,1 +1,0 @@
-"""OlympiadBench chat benchmark adapter."""

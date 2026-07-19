@@ -194,8 +194,9 @@ livecodebenchv5 = []
 livecodebenchv5-official = []
 math500 = []
 mmlupro = []
-# OlympiadBench grades via lm-eval's hendrycks_math boxed-answer utils (in the lean base
-# via lm-eval[math]) and reads its local JSONL fallback, so it needs no extra deps.
+# OlympiadBench's official scorer uses sympy/parse_latex, and its result metadata uses
+# lm-eval's boxed-answer helpers. The lean base supplies both via lm-eval[math], while
+# datasets supplies the pinned Hugging Face loader, so it needs no extra dependencies.
 olympiadbench = []
 
 # Every benchmark under eval/chat_benchmarks, as a single install. Self-referential union
