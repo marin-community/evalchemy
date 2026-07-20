@@ -244,9 +244,21 @@ class BaseBenchmark(ABC):
                 if torch is not None:
                     torch.manual_seed(seeds[2])
 
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                if instance.args[1].get("do_sample", True) is False:
+                    # do_sample=False means greedy decoding. API models have no do_sample
+                    # knob, so express the intent as temperature 0 -- otherwise a leftover
+                    # sampling temperature makes OpenAI-compatible servers sample, and a
+                    # temperature>0 request that carries a seed (lm-eval injects its own
+                    # into every payload) is rejected outright by the JAX/TPU vLLM backend
+                    # ("JAX does not support per-request seed"). The per-instance seed list
+                    # is likewise not a valid API request seed, so drop it.
+                    del instance.args[1]["seed"]
+                    instance.args[1]["temperature"] = 0.0
+                elif isinstance(model, lm_eval_models.openai_completions.LocalCompletionsAPI):
+                    # LocalCompletionsAPI is the root of all four OpenAI-compatible API model
+                    # classes (Local/OpenAI x completions/chat); the OpenAI* classes are the
+                    # SUBCLASSES, so checking those two alone silently routes local-* endpoints
+                    # into the Huggingface branch.
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 elif (
                     isinstance(model, _VLLM)
@@ -257,9 +269,7 @@ class BaseBenchmark(ABC):
                     _ = instance.args[1].pop("seed") if "seed" in instance.args[1] else None
             if "max_new_tokens" in instance.args[1]:
                 max_new_tokens = instance.args[1].pop("max_new_tokens")
-                if isinstance(model, lm_eval_models.openai_completions.OpenAIChatCompletion) or isinstance(
-                    model, lm_eval_models.openai_completions.OpenAICompletionsAPI
-                ):
+                if isinstance(model, lm_eval_models.openai_completions.LocalCompletionsAPI):
                     instance.args[1]["max_tokens"] = max_new_tokens
                     if "4o" in model.model:
                         instance.args[1]["max_tokens"] = min(max_new_tokens, 16384)
@@ -466,6 +476,9 @@ class BaseBenchmark(ABC):
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
+                    # Per-sample twin of the aggregate accuracy metric, for benchmarks whose
+                    # evaluate_responses annotates example["correct"] -- sample viewers filter on it.
+                    **({"accuracy": float(example["correct"])} if "correct" in example else {}),
                 }
             )
         return samples
