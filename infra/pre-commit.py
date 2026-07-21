@@ -3,8 +3,8 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     # Pin to an exact marin-style revision so every contributor and CI run
-#     # uses the same checks. Bump <REV> to adopt a new version.
-#     "marin-style @ git+https://github.com/marin-community/marin-style@999ea41d48c05db6f78552ddfa8d3cc6d49cd37f",
+#     # uses the same checks. Bump the hash to adopt a new version.
+#     "marin-style @ git+https://github.com/marin-community/marin-style@ccbf03e7ca58486d61fff7a4e73031673d7fd8a4",
 # ]
 # ///
 """Consumer-repo pre-commit shim. Delegates to the shared marin-style checks.
