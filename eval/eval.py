@@ -49,6 +49,13 @@ from eval.task import TaskManager as InstructTaskManager
 
 _BIT_CAP = 15_000
 
+# Evalchemy-owned lm-eval task overrides (marin-community/evalchemy#31). include_path
+# task configs take precedence over lm-eval's packaged defaults, so shipping
+# eval/lm_eval_tasks/drop/drop.yaml here transparently overrides upstream `drop` with the
+# answer-extraction filter_list — no run-config change required. A user-supplied
+# --include_path still wins (it is appended last).
+DEFAULT_LM_EVAL_INCLUDE_DIR = os.path.join(os.path.dirname(__file__), "lm_eval_tasks")
+
 
 def handle_non_serializable_extended(o):
     """
@@ -465,7 +472,12 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         num_samples=getattr(args, "num_samples", 1),
         pass_at_k=getattr(args, "pass_at_k", None),
     )
-    pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=args.include_path)
+    # Always scan the evalchemy-owned overrides first; a user --include_path is appended
+    # last so it still wins (later include paths take precedence).
+    _include_paths = [DEFAULT_LM_EVAL_INCLUDE_DIR]
+    if args.include_path:
+        _include_paths.append(args.include_path)
+    pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=_include_paths)
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 
