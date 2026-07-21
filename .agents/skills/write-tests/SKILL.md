@@ -3,7 +3,7 @@ name: write-tests
 description: Write or revise tests with an emphasis on behavior, regression coverage, pytest style, and avoiding "slop tests." Use when adding tests, fixing failing tests, reviewing test quality, or deciding what test would catch a bug.
 ---
 
-<!-- Vendored from marin-community/marin-style v0.1.0 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.3.0 — do not edit; re-run `marin-style sync`. -->
 
 # Write Tests
 

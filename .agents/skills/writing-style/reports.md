@@ -1,4 +1,4 @@
-<!-- Vendored from marin-community/marin-style v0.1.0 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.3.0 — do not edit; re-run `marin-style sync`. -->
 
 # Reports
 
