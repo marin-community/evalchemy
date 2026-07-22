@@ -185,16 +185,15 @@ class DCEvaluationTracker:
     ) -> None:
         """Write a task's per-doc sample records to a JSONL under the model dir.
 
-        Stock-lm_eval parity: ``save_results_aggregated`` only folds samples into the
-        per-task cumulative hash — it does NOT persist the sample bodies — and the
-        marin ``DCEvaluationTracker`` historically lacked this method, so the
-        ``--log_samples`` persist loop in eval.py AttributeError'd once ``configs``
-        was populated. This writes the bodies so the samples are actually saved.
-        DEFENSIVE: never raises — a save failure must not lose the already-written
-        aggregated score.
+        ``--log_samples`` writes exactly one non-empty file per scored task. Empty
+        records mean a task was unscored or could not be serialized, so no misleading
+        zero-byte placeholder is created. A write failure never changes a score.
         """
         if not self.output_path:
             eval_logger.info("Output path not provided, skipping saving samples")
+            return
+        if not samples:
+            eval_logger.warning("No sample records for scored task %s; not writing an empty artifact", task_name)
             return
         try:
             path = Path(self.output_path).joinpath(self.general_config_tracker.model_name_sanitized)
@@ -206,9 +205,7 @@ class DCEvaluationTracker:
             file_samples = path.joinpath(f"samples_{safe_task}_{date_id}.jsonl")
             with file_samples.open("w", encoding="utf-8") as f:
                 for sample in samples or []:
-                    f.write(
-                        json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n"
-                    )
+                    f.write(json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n")
             eval_logger.info(f"Wrote {len(samples or [])} samples for {task_name} to: {file_samples}")
         except Exception as e:
             eval_logger.warning(f"Could not save samples for {task_name}")

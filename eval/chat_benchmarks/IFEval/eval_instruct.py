@@ -139,6 +139,7 @@ class IFEvalBenchmark(BaseBenchmark):
 
             return {
                 "temp_dir_obj": temp_dir_obj,
+                "examples": generated_examples,
                 "num_examples": len(generated_examples),
                 "total_examples": len(examples),
             }
