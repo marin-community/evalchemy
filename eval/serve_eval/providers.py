@@ -9,9 +9,8 @@
   Iris job in a ``finally`` (killing the CLI leaves the job running). Needs Marin +
   cluster access + a TPU slice.
 
-In ``--access link`` (mint) mode ``marin-serve`` returns a capability URL with a
-scoped token in its path, so no bearer header is needed. ``--access private`` keeps
-the proxy IAP-gated; pass a bearer with ``--api-key`` / ``E2E_API_KEY`` for it.
+``marin-serve iris`` returns a capability URL with a scoped token in its path, so
+no bearer header is needed.
 """
 
 from __future__ import annotations
@@ -33,14 +32,11 @@ from typing import List, Optional
 
 logger = logging.getLogger("eval.serve_eval.providers")
 
-# In `--access link` (mint) mode, marin-serve prints, once vLLM is ready:
+# Once vLLM is ready, marin-serve prints a capability URL:
 #     base_url   https://iris.oa.dev/proxy/t/<token>/serve.<name>/v1
-# a PUBLIC capability URL with the token in the path (no auth header needed).
+# The token is in the path, so no auth header is needed.
 _CAPABILITY_LINE = re.compile(r"^\s*base_url\s+(?P<url>https?://\S+)")
-# In `--access private` mode it prints the cluster-only proxy root:
-#     OpenAI:    https://iris.oa.dev/proxy/serve.<name>/v1
-_OPENAI_LINE = re.compile(r"OpenAI:\s*(?P<url>https?://\S+)")
-# Both modes print the submitted job id: "  job          /app/<name>"
+# The submitted job id is printed as "  job          /app/<name>".
 _JOB_LINE = re.compile(r"^\s*job\s+(?P<job>/\S+)\s*$")
 # marin-serve runs on a PTY (see __enter__), so it may color its output; strip
 # ANSI CSI/SGR escapes before matching the lines above.
@@ -138,10 +134,6 @@ class MarinServeProvider(Provider):
     cluster: str = "marin"
     tpu: str = "v6e-8"
     name: Optional[str] = None
-    # "link" (mint mode) prints a PUBLIC capability URL a plain HTTP client can
-    # call off-cluster with no auth header -- the default so the harness needs no
-    # IAP token plumbing. "private" restricts to cluster identity.
-    access: str = "link"
     region: Optional[str] = None
     api_key: Optional[str] = None
     tokenizer: Optional[str] = None
@@ -162,7 +154,6 @@ class MarinServeProvider(Provider):
     _proc: Optional[subprocess.Popen] = None
     _job_id: Optional[str] = None
     _master_fd: Optional[int] = None
-    _openai_root: Optional[str] = None
 
     @staticmethod
     def default_job_name(model: str) -> str:
@@ -224,15 +215,9 @@ class MarinServeProvider(Provider):
             )
         finally:
             os.close(slave_fd)  # the child holds the only writer end now
-        # link mode: wait for the capability base_url (printed AFTER "OpenAI:");
-        # private mode: the "OpenAI:" root is the endpoint.
         base_url = self._read_until_ready(self.wait_timeout_s + 120.0)
-        if self.access == "link":
-            api_key = self.api_key or _CAPABILITY_API_KEY  # URL carries the credential
-        else:
-            api_key = self.api_key if self.api_key is not None else os.environ.get("E2E_API_KEY")
-        # link URLs carry the credential in the path -> poll without a header.
-        wait_for_models(base_url, None if self.access == "link" else api_key, self.readiness_timeout_s)
+        api_key = self.api_key or _CAPABILITY_API_KEY
+        wait_for_models(base_url, None, self.readiness_timeout_s)
         return ServedModel(
             base_url=api_root(base_url),
             model=self.model,
@@ -240,13 +225,11 @@ class MarinServeProvider(Provider):
             tokenizer=self.tokenizer or self.model,
         )
 
-    def _match_line(self, line: str, want_capability: bool) -> Optional[str]:
+    def _match_line(self, line: str) -> Optional[str]:
         """Inspect one marin-serve output line; return an endpoint URL when found.
 
         Records the job id as a side effect. Returns the capability ``base_url``
-        (link mode) or, in private mode, the ``OpenAI:`` root; ``None`` otherwise.
-        The private ``OpenAI:`` root is also stashed on ``self`` as a link-mode
-        fallback (see the caller).
+        or ``None`` for other lines.
         """
         job_match = _JOB_LINE.match(line)
         if job_match:
@@ -257,26 +240,19 @@ class MarinServeProvider(Provider):
             if github_env:
                 with open(github_env, "a", encoding="utf-8") as f:
                     f.write(f"IRIS_JOB_ID={self._job_id}\n")
-        openai_match = _OPENAI_LINE.search(line)
-        if openai_match:
-            self._openai_root = openai_match.group("url")
-            if not want_capability:
-                return self._openai_root
         cap_match = _CAPABILITY_LINE.match(line)
-        if want_capability and cap_match:
+        if cap_match:
             return cap_match.group("url")
         return None
 
     def _read_until_ready(self, timeout_s: float) -> str:
         """Stream marin-serve's PTY output until the endpoint URL; capture the job id.
 
-        Returns the capability ``base_url`` in link mode, else the ``OpenAI:`` root.
-        Reads the PTY master fd and assembles lines by hand (a PTY has no readline);
-        ANSI escapes are stripped before matching.
+        Returns the capability ``base_url``. Reads the PTY master fd and assembles
+        lines by hand (a PTY has no readline); ANSI escapes are stripped before
+        matching.
         """
         assert self._proc is not None and self._master_fd is not None
-        want_capability = self.access == "link"
-        self._openai_root = None
         deadline = time.monotonic() + timeout_s
         buf = ""
         while time.monotonic() < deadline:
@@ -295,20 +271,13 @@ class MarinServeProvider(Provider):
                         raw, buf = buf.split("\n", 1)
                         line = _ANSI.sub("", raw).rstrip("\r")
                         logger.info("[marin-serve] %s", line.rstrip())
-                        url = self._match_line(line, want_capability)
+                        url = self._match_line(line)
                         if url is not None:
                             return url
                     continue
             # No data this tick (or EOF): only now is an exit terminal.
             if self._proc.poll() is not None:
-                if self._openai_root is not None and want_capability:
-                    break
                 raise RuntimeError(f"marin-serve exited early (code {self._proc.returncode}) before serving")
-        if self._openai_root is not None and want_capability:
-            # Ready, but the capability line never came -- fall back to the proxy
-            # root (needs cluster identity) so a run can still proceed.
-            logger.warning("no capability URL printed; falling back to the cluster-only proxy root")
-            return self._openai_root
         raise TimeoutError(f"marin-serve did not print an endpoint URL within {timeout_s:.0f}s")
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -378,7 +347,6 @@ def build_provider(
     cluster: str = "marin",
     tpu: str = "v6e-8",
     name: Optional[str] = None,
-    access: str = "link",
     region: Optional[str] = None,
     marin_workspace: Optional[str] = None,
     wait_timeout_s: float = 1800.0,
@@ -405,7 +373,6 @@ def build_provider(
             cluster=cluster,
             tpu=tpu,
             name=name,
-            access=access,
             region=region,
             marin_workspace=marin_workspace,
             api_key=api_key,

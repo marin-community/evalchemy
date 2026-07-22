@@ -31,6 +31,5 @@ extra_model_args:
 cluster: marin
 tpu: v5litepod-8              # single-host slice on marin's v5e-serving pool; override with --tpu / --region
 region: europe-west4
-access: link                  # mint a PUBLIC capability URL (no bearer header)
 wait_timeout_s: 1800
 timeout_hours: 2

@@ -108,7 +108,7 @@ jobs:
 
       - name: Serve, evaluate, and gate
         run: |
-          uv run python -m eval.serve_eval.run --provider marin-serve --access link \
+          uv run python -m eval.serve_eval.run --provider marin-serve \
             --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
             --tpu "${{ github.event.inputs.tpu || 'v5litepod-8' }}" \
             --region "${{ github.event.inputs.region || 'europe-west4' }}" \

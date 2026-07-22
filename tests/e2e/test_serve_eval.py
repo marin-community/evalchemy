@@ -229,7 +229,6 @@ def test_marin_serve_provider_uses_iris_subcommand(tmp_path, monkeypatch):
         model="Qwen/Qwen3-0.6B",
         tpu="v5litepod-8",
         name="evalchemy-e2e-qwen3-0-6b",
-        access="link",
         region="europe-west4",
         wait_timeout_s=1800,
         timeout_hours=2.0,
@@ -278,7 +277,7 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
         time.sleep(30)
         """
     )
-    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", access="link")
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B")
     master, slave = pty.openpty()
     prov._master_fd = master
     prov._proc = subprocess.Popen(
@@ -335,5 +334,5 @@ def test_match_line_exports_job_id_to_github_env(tmp_path, monkeypatch):
     env_file = tmp_path / "github_env"
     monkeypatch.setenv("GITHUB_ENV", str(env_file))
     prov = MarinServeProvider(model="Qwen/Qwen3-0.6B")
-    prov._match_line("  job          /app/evalchemy-e2e-test", want_capability=True)
+    prov._match_line("  job          /app/evalchemy-e2e-test")
     assert env_file.read_text() == "IRIS_JOB_ID=/app/evalchemy-e2e-test\n"

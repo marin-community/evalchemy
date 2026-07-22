@@ -47,9 +47,8 @@ Config defaults are in `configs/qwen-tiny.yaml` (loaded with pydantic-settings; 
 flags and `E2E_*` env vars override it). Two providers:
 
 - `endpoint` — attach to a running `/v1` server (the verified, hardware-free path).
-- `marin-serve` — provisions the TPU itself in `--access link` (mint) mode, which
-  returns a PUBLIC capability URL with a scoped token in the path, so no auth header
-  or SSH tunnel is needed. `--access private` keeps the proxy cluster-only.
+- `marin-serve` — provisions the TPU itself and returns a capability URL with a
+  scoped token in the path, so no auth header or SSH tunnel is needed.
 
 Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
 `tokenizer_backend=huggingface,tokenized_requests=False` (the served model tokenizes;

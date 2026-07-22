@@ -28,8 +28,8 @@ grouped CLI.
 ## Hypothesis 2
 
 Inserting the `iris` subcommand and removing `--access` will match the new CLI.
-The provider can retain its `access` setting for choosing which emitted URL to use:
-the current Iris command always prints both the cluster-only and capability URLs.
+The provider should always consume the capability URL because the current Iris
+command always mints it.
 
 ## Changes to make
 
@@ -43,6 +43,10 @@ The focused boundary test passed after the command update. The complete hardware
 e2e suite passed with 33 tests. Running the pinned tool's help confirmed that
 `marin-serve iris` accepts every option the provider supplies and has no `--access`
 option.
+
+The lint-catalog review found that the old `access` setting had become misleading:
+the grouped Iris CLI always mints the capability URL. The setting and its CLI/config
+surface were removed instead of retaining a mode that no longer controls Marin.
 
 ## Future work
 

@@ -164,12 +164,6 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 @click.option("--cluster", default=None, help="Iris cluster (marin-serve provider).")
 @click.option("--tpu", default=None, help="TPU slice type (marin-serve provider).")
 @click.option("--name", default=None, help="Iris job name (marin-serve provider).")
-@click.option(
-    "--access",
-    type=click.Choice(["link", "private"]),
-    default=None,
-    help="marin-serve proxy access. 'link' (default) mints a PUBLIC capability URL; 'private' is cluster-only.",
-)
 @click.option("--region", default=None, help="Region(s) to pin the TPU slice to, e.g. europe-west4.")
 @click.option(
     "--marin-workspace",
@@ -196,7 +190,6 @@ def main(
     cluster: Optional[str],
     tpu: Optional[str],
     name: Optional[str],
-    access: Optional[str],
     region: Optional[str],
     marin_workspace: Optional[str],
     wait_timeout: Optional[float],
@@ -219,7 +212,6 @@ def main(
         cluster=cluster,
         tpu=tpu,
         region=region,
-        access=access,
         marin_workspace=marin_workspace,
         wait_timeout_s=wait_timeout,
         timeout_hours=timeout_hours,
@@ -243,7 +235,6 @@ def main(
         cluster=cfg.cluster,
         tpu=cfg.tpu,
         name=name,
-        access=cfg.access,
         region=cfg.region,
         marin_workspace=cfg.marin_workspace,
         wait_timeout_s=cfg.wait_timeout_s,
