@@ -43,7 +43,6 @@ class RunConfig(BaseSettings):
     cluster: str = "marin"
     tpu: str = "v5litepod-8"
     region: Optional[str] = None
-    access: str = "link"
     wait_timeout_s: float = 1800.0
     timeout_hours: float = 2.0
     marin_workspace: Optional[str] = None

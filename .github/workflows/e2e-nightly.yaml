@@ -96,10 +96,11 @@ jobs:
         # uv tool env. uv symlinks marin-serve but NOT iris, so put the tool's bin
         # dir on PATH -- teardown (the provider's finally + the cleanup step below)
         # shells out to `iris job stop`, which otherwise wouldn't resolve.
-        # Floor = first nightly carrying the WIF IAP-auth fix (marin#7144); `>=`
-        # still floats to newer nightlies, it just won't resolve a pre-fix build.
+        # Floor = first nightly with the `marin-serve iris MODEL` CLI (marin#7452),
+        # which also includes the WIF IAP-auth fix (marin#7144). `>=` still floats
+        # to newer nightlies; it only prevents an incompatible pre-fix install.
         run: |
-          uv tool install --prerelease allow "marin-core>=0.2.46.dev202607131620"
+          uv tool install --prerelease allow "marin-core>=0.2.55.dev202607220801"
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
@@ -107,7 +108,7 @@ jobs:
 
       - name: Serve, evaluate, and gate
         run: |
-          uv run python -m eval.serve_eval.run --provider marin-serve --access link \
+          uv run python -m eval.serve_eval.run --provider marin-serve \
             --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
             --tpu "${{ github.event.inputs.tpu || 'v5litepod-8' }}" \
             --region "${{ github.event.inputs.region || 'europe-west4' }}" \
