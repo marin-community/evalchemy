@@ -8,6 +8,7 @@ config boundaries, the readiness poll, the provider factory, and the marin-serve
 PTY parse. Each runs in-process against stdlib stubs -- a stub HTTP server and a PTY.
 """
 
+import json
 import os
 import pty
 import subprocess
@@ -193,6 +194,72 @@ def test_marin_serve_default_job_name_is_dot_free():
     name = MarinServeProvider.default_job_name("Qwen/Qwen3-0.6B")
     assert "." not in name and "/" not in name
     assert name == "evalchemy-e2e-qwen3-0-6b"
+
+
+def test_marin_serve_provider_uses_iris_subcommand(tmp_path, monkeypatch):
+    server = _serve(ready_after=0)
+    argv_log = tmp_path / "marin-serve-argv.json"
+    fake_marin_serve = tmp_path / "marin-serve"
+    fake_marin_serve.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import os
+            import signal
+            import sys
+
+            with open(os.environ["FAKE_MARIN_SERVE_ARGV"], "w", encoding="utf-8") as stream:
+                json.dump(sys.argv[1:], stream)
+            base_url = os.environ["FAKE_MARIN_SERVE_BASE_URL"]
+            print("  job          /ci-user/evalchemy-e2e-qwen3-0-6b")
+            print(f"        OpenAI:    {base_url}")
+            print(f"    base_url   {base_url}")
+            signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+            signal.pause()
+            """
+        )
+    )
+    fake_marin_serve.chmod(0o755)
+    iris_bin, _ = _fake_iris(tmp_path, "")
+    port = server.server_address[1]
+    monkeypatch.setenv("FAKE_MARIN_SERVE_ARGV", str(argv_log))
+    monkeypatch.setenv("FAKE_MARIN_SERVE_BASE_URL", f"http://127.0.0.1:{port}/v1")
+    provider = MarinServeProvider(
+        model="Qwen/Qwen3-0.6B",
+        tpu="v5litepod-8",
+        name="evalchemy-e2e-qwen3-0-6b",
+        access="link",
+        region="europe-west4",
+        wait_timeout_s=1800,
+        timeout_hours=2.0,
+        marin_serve_bin=str(fake_marin_serve),
+        iris_bin=iris_bin,
+        readiness_timeout_s=5,
+    )
+    try:
+        with provider as served:
+            assert served.base_url == f"http://127.0.0.1:{port}/v1"
+    finally:
+        server.shutdown()
+
+    assert json.loads(argv_log.read_text()) == [
+        "iris",
+        "Qwen/Qwen3-0.6B",
+        "--cluster",
+        "marin",
+        "--tpu",
+        "v5litepod-8",
+        "--name",
+        "evalchemy-e2e-qwen3-0-6b",
+        "--wait",
+        "--wait-timeout",
+        "1800",
+        "--timeout-hours",
+        "2.0",
+        "--region",
+        "europe-west4",
+    ]
 
 
 def test_read_until_ready_parses_capability_url_from_a_blocking_child():

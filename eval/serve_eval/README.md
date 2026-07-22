@@ -16,7 +16,7 @@ uv sync --no-dev --python 3.11 --extra serve-eval   # evalchemy + the runner (vL
 
 # marin-serve provider only -- an isolated tool, since marin-core can't co-resolve
 # with evalchemy's deps:
-uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
+uv tool install --prerelease allow "marin-core>=0.2.55.dev202607220801"
 ```
 
 `marin-serve` bundles its working directory as the Iris job workspace, so run it from a

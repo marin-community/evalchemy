@@ -173,6 +173,7 @@ class MarinServeProvider(Provider):
     def _command(self, job_name: str) -> List[str]:
         cmd = [
             self.marin_serve_bin,
+            "iris",
             self.model,
             "--cluster",
             self.cluster,
@@ -180,8 +181,6 @@ class MarinServeProvider(Provider):
             self.tpu,
             "--name",
             job_name,
-            "--access",
-            self.access,
             "--wait",
             "--wait-timeout",
             str(int(self.wait_timeout_s)),
