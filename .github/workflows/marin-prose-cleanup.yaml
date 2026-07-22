@@ -18,6 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The pinned action is a no-op while automated prose cleanup is disabled.
-      - uses: marin-community/marin-style/actions/prose-cleanup@115ccc5cc27da2246b3b0dd6b7651d56b95d4631
+      - uses: marin-community/marin-style/actions/prose-cleanup@main
         with:
           trigger-token: ${{ secrets.LOOM_TRIGGER_GH_TOKEN }}
