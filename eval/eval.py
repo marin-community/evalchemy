@@ -44,6 +44,7 @@ from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # register p
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
+from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import TaskManager as InstructTaskManager
 
 
@@ -269,35 +270,25 @@ def evaluate(
                         )
                     )
 
-                # Store results using valid tasks for correct mapping
-                for task, result in zip(valid_tasks, evaluate_results):
-                    results["results"][task] = result
+                # Store results using valid tasks for correct mapping.  Sample
+                # serialization is deliberately after scoring: it cannot alter a
+                # score, and it retains the generation result custom evaluators need.
+                for task, generation_result, scored_result in zip(valid_tasks, generation_results, evaluate_results):
+                    results["results"][task] = scored_result
+                    if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
+                        continue
 
-                    # Suspenders: under --log_samples, emit native lm-eval per-sample
-                    # records + a minimal per-task config for the chat_benchmark path
-                    # (the lm-eval-native path produces these itself; this driver
-                    # historically dropped both, crashing the persist step). Flag-off
-                    # path is untouched. DEFENSIVE: a to_samples failure must NEVER
-                    # lose the already-computed score — log + emit []; still populate
-                    # configs so the persist loop finds a task entry.
-                    if getattr(args, "log_samples", False):
-                        benchmark = task_manager.get_benchmark(task)
-                        try:
-                            task_samples = benchmark.to_samples(result) if benchmark is not None else []
-                        except Exception as e:
-                            eval_logger.warning(
-                                f"log_samples: to_samples failed for {task} ({e}); "
-                                f"emitting [] samples (score is preserved)."
-                            )
-                            task_samples = []
-                        results.setdefault("samples", {})[task] = task_samples
-                        results.setdefault("configs", {})[task] = {
-                            "task": task,
-                            "model_args": getattr(args, "model_args", None),
-                            "gen_kwargs": getattr(args, "gen_kwargs", None),
-                            "num_fewshot": getattr(args, "num_fewshot", 0),
-                            "max_tokens": getattr(args, "max_tokens", None),
-                        }
+                    benchmark = task_manager.get_benchmark(task)
+                    try:
+                        task_samples = benchmark.to_samples(generation_result, scored_result)
+                    except Exception as e:
+                        eval_logger.warning("log_samples: could not serialize %s (%s)", task, e)
+                        continue
+                    if not task_samples:
+                        eval_logger.warning("log_samples: scored task %s produced no sample records", task)
+                        continue
+                    results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
+                    results["results"][task] = without_embedded_samples(scored_result)
 
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
@@ -344,13 +335,16 @@ def evaluate(
                 )
                 if pretrain_results is not None:
                     results["results"].update(pretrain_results.get("results", {}))
-                    # Carry configs and (under --log_samples) the per-doc sample bodies
-                    # through the merge: the persist loop at the end of cli_evaluate walks
-                    # results["configs"] and reads results["samples"], so dropping them here
-                    # silently discards every lm-eval-native task's samples.
-                    results.setdefault("configs", {}).update(pretrain_results.get("configs", {}))
                     if getattr(args, "log_samples", False):
-                        results.setdefault("samples", {}).update(pretrain_results.get("samples", {}))
+                        native_samples = pretrain_results.get("samples", {})
+                        for task, scored_result in pretrain_results.get("results", {}).items():
+                            if not is_scored_result(scored_result):
+                                continue
+                            task_samples = native_samples.get(task, [])
+                            if not task_samples:
+                                eval_logger.warning("log_samples: scored task %s produced no sample records", task)
+                                continue
+                            results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
         except Exception as e:
             eval_logger.error(f"Error in pretrain evaluation: {str(e)}")
 
@@ -720,14 +714,7 @@ def handle_evaluation_output(
             Function handles outputs via side effects (logging, saving files)
             rather than returning values.
     """
-    if args.log_samples:
-        # Chat-benchmark eval paths (e.g. MATH500/AIME24) don't always populate
-        # results["samples"] even when --log_samples is set, unlike lm-eval-native
-        # tasks. Guard the pop so a missing key can't crash the persist step AFTER
-        # inference+scoring already finished (which silently discarded the score).
-        # NOTE: this is the belt; the suspenders fix (actually emit chat-benchmark
-        # samples) is tracked separately.
-        samples = results.pop("samples", None)
+    samples = results.pop("samples", {}) if args.log_samples else {}
 
     dumped = json.dumps(
         results,
@@ -761,18 +748,9 @@ def handle_evaluation_output(
             is_external=args.is_external_model,
         )
 
-    # `configs` is now populated for chat_benchmarks at the driver loop, but keep
-    # the `.get` insurance so a missing key can never crash the persist path after
-    # scoring already finished. The `hasattr` guard tolerates a tracker that doesn't
-    # implement save_results_samples (DCEvaluationTracker now does; this protects any
-    # other tracker — the aggregated score is already persisted via
-    # save_results_aggregated above regardless).
     if args.log_samples and hasattr(evaluation_tracker, "save_results_samples"):
-        _samples = samples or {}
-        for task_name, config in results.get("configs", {}).items():
-            evaluation_tracker.save_results_samples(
-                task_name=task_name, samples=_samples.get(task_name, [])
-            )
+        for task_name, task_samples in samples.items():
+            evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "

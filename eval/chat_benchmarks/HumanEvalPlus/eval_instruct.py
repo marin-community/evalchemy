@@ -136,6 +136,9 @@ Please continue to complete the function. You are not allowed to modify the give
                 self.logger.error(f"Error processing language {lang}: {str(e)}")
                 continue
 
+        results["examples"] = [
+            {**example, "language": language} for language in self.languages for example in results.get(language, [])
+        ]
         results["temp_dir_obj"] = temp_dir_obj
         return results
 

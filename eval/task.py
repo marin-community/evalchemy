@@ -421,8 +421,8 @@ class BaseBenchmark(ABC):
         evaluation_results = self.evaluate_responses(generation_results)
         return evaluation_results
 
-    def to_samples(self, result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Reshape this benchmark's ``evaluate_responses`` result into native
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Reshape generated examples into canonical lm-eval-compatible records.
         lm-eval per-doc sample records (the schema ``save_results_samples`` /
         ``save_results_aggregated`` / ``wandb.log_eval_samples`` consume).
 
@@ -446,7 +446,8 @@ class BaseBenchmark(ABC):
         from lm_eval.utils import handle_non_serializable as _hns
         from lm_eval.utils import hash_string
 
-        examples = (result or {}).get("examples", []) or []
+        del scored_result  # Generation owns the per-example data; scoring owns only metrics.
+        examples = (generation_result or {}).get("examples", []) or []
         samples: List[Dict[str, Any]] = []
         for doc_id, example in enumerate(examples):
             prompt = self._sample_prompt(example)
@@ -457,16 +458,22 @@ class BaseBenchmark(ABC):
                 resps = list(example.get("model_outputs", []))
                 filtered = list(example.get("model_answers", []))
             else:  # single-sample path
-                resps = [example.get("model_output", "")]
-                filtered = [example.get("model_answer", "")]
+                response = next(
+                    (
+                        example[key]
+                        for key in ("model_output", "gpt_completion", "response", "output")
+                        if key in example
+                    ),
+                    "",
+                )
+                resps = [response]
+                filtered = [example.get("model_answer", example.get("generation", response))]
 
-            doc_hash = hash_string(
-                _json.dumps(example, indent=2, default=_hns, ensure_ascii=False)
-            )
+            doc_hash = hash_string(_json.dumps(self._sample_doc(example), indent=2, default=_hns, ensure_ascii=False))
             samples.append(
                 {
                     "doc_id": doc_id,
-                    "doc": example,
+                    "doc": self._sample_doc(example),
                     "target": target,
                     # list-of-pairs: one (prompt, gen_kwargs) "request" per doc.
                     "arguments": [[prompt, gen_kwargs]],
@@ -489,7 +496,22 @@ class BaseBenchmark(ABC):
         Default reads a ``problem`` field (the math benches' source field). Override
         for benchmarks whose prompt is built differently.
         """
-        return str(example.get("problem", example.get("question", "")))
+        return str(example.get("prompt", example.get("problem", example.get("question", example.get("Question", "")))))
+
+    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        """Drop generated fields so ``doc`` and its hash describe source data only."""
+        generated_fields = {
+            "model_output",
+            "model_answer",
+            "model_outputs",
+            "model_answers",
+            "gpt_completion",
+            "generation",
+            "response",
+            "output",
+            "correct",
+        }
+        return {key: value for key, value in example.items() if key not in generated_fields}
 
     def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
         """Generation kwargs recorded alongside the prompt in ``arguments``."""

@@ -440,3 +440,20 @@ If you find Evalchemy useful, please consider citing us!
   year = {2025}
 }
 ```
+
+## Sample logs
+
+`eval --log_samples --output_path DIR` writes one canonical, non-empty JSONL
+artifact for every task that completed scoring:
+`DIR/<model>/samples_<task>_<timestamp>.jsonl`. The aggregate
+`results_<timestamp>.json` contains metrics only while sample logging is enabled;
+custom-benchmark examples are not duplicated there.
+
+Every JSONL line has `schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
+`arguments`, `resps`, `filtered_resps`, `filter`, `doc_hash`, `prompt_hash`, and
+`target_hash`. These are lm-eval-compatible records with a stable Evalchemy
+envelope. Custom benchmarks retain their input document in `doc` and their raw
+and normalized completion in `resps` and `filtered_resps`; lm-eval-native tasks
+retain their native fields unchanged. An unscored task (including one returning
+an `error`) writes no sample artifact, and a serialization failure never changes
+the task's score or creates a zero-byte placeholder.
