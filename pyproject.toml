@@ -286,7 +286,9 @@ black_version = "23.1.0"
 include = [
     "eval/serve_eval/**",
     "eval/regression/**",
+    "eval/lm_eval_tasks/**",
     "tests/e2e/**",
+    "tests/drop/**",
     "scripts/ci/**",
     "infra/**",
 ]
