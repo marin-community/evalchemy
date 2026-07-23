@@ -119,7 +119,9 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     model_repo = margs.get("pretrained") or getattr(args, "model_name", None)
     revision = margs.get("revision")
     model_revision = resolve_model_revision(model_repo, revision, allow_network=False)
-    max_model_len = margs.get("max_model_len")
+    # Evalchemy's canonical CLI writes ``max_length``.  Keep the older vLLM
+    # spelling for backwards-compatible resume fingerprints.
+    max_model_len = margs.get("max_length", margs.get("max_model_len"))
     if max_model_len is not None:
         try:
             max_model_len = int(max_model_len)

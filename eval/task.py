@@ -61,6 +61,37 @@ class BaseBenchmark(ABC):
         # Set by the native pass@k batch path to suspend the per-(problem,repeat)
         # resume wrap on its inner ``compute`` calls (Stage 3c).
         self._suspend_resume = False
+        # The driver sets these once after benchmark construction.  Subclasses
+        # predate the common limit contract and commonly keep their own
+        # ``max_tokens`` / ``max_new_tokens`` fields, so request-time enforcement
+        # below is the final, framework-wide guard against a benchmark silently
+        # using a different output budget.
+        self._evaluation_max_length: Optional[int] = None
+        self._evaluation_max_tokens: Optional[int] = None
+
+    def set_evaluation_limits(self, *, max_length: Optional[int] = None, max_tokens: Optional[int] = None) -> None:
+        """Attach Evalchemy's resolved limits to this custom benchmark.
+
+        ``max_length`` is already supplied to the LM adapter through
+        ``model_args``.  MMLU-Pro additionally owns its prompt-budgeting logic,
+        so synchronize its legacy field here.  ``max_tokens`` is forced on every
+        generated ``Instance`` in :meth:`_normalize_model_args`, including
+        benchmarks with a hard-coded per-task default.
+        """
+        self._evaluation_max_length = max_length
+        self._evaluation_max_tokens = max_tokens
+        if max_length is not None and hasattr(self, "max_model_length"):
+            self.max_model_length = max_length
+        if max_tokens is not None:
+            # Keep the legacy fields coherent for prompt constructors that use
+            # their own stored value before they create an Instance.
+            if hasattr(self, "max_tokens"):
+                self.max_tokens = max_tokens
+            if hasattr(self, "max_new_tokens"):
+                self.max_new_tokens = max_tokens
+            config = getattr(self, "config", None)
+            if config is not None and hasattr(config, "max_new_token"):
+                config.max_new_token = max_tokens
 
     def attach_resume_manager(self, manager) -> None:
         """Attach a ResumeManager so ``compute`` skips already-done problems.
@@ -235,6 +266,13 @@ class BaseBenchmark(ABC):
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:
+            if self._evaluation_max_tokens is not None:
+                # The request is the last common point all custom benchmarks
+                # traverse.  Discard every backend spelling before assigning the
+                # canonical output cap so a task-local default cannot win.
+                for alias in ("max_tokens", "max_new_tokens", "max_gen_toks"):
+                    instance.args[1].pop(alias, None)
+                instance.args[1]["max_new_tokens"] = self._evaluation_max_tokens
             seeds = None
             if "seed" in instance.args[1]:
                 seeds = instance.args[1]["seed"]
@@ -260,10 +298,7 @@ class BaseBenchmark(ABC):
                     # SUBCLASSES, so checking those two alone silently routes local-* endpoints
                     # into the Huggingface branch.
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
-                elif (
-                    isinstance(model, _VLLM)
-                    or "UploadInstancesToHF" in model.__class__.__name__
-                ):
+                elif isinstance(model, _VLLM) or "UploadInstancesToHF" in model.__class__.__name__:
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 else:  # Huggingface does not support seed
                     _ = instance.args[1].pop("seed") if "seed" in instance.args[1] else None
@@ -516,7 +551,9 @@ class BaseBenchmark(ABC):
     def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
         """Generation kwargs recorded alongside the prompt in ``arguments``."""
         kwargs: Dict[str, Any] = {}
-        max_new = getattr(self, "max_new_tokens", None)
+        max_new = self._evaluation_max_tokens
+        if max_new is None:
+            max_new = getattr(self, "max_new_tokens", None)
         if max_new is not None:
             kwargs["max_new_tokens"] = max_new
         return kwargs
@@ -647,6 +684,10 @@ class TaskManager:
                 valid_kwargs["system_instruction"] = self.benchmark_kwargs["system_instruction"]
 
             instance = benchmark_class(**valid_kwargs)
+            instance.set_evaluation_limits(
+                max_length=self.benchmark_kwargs.get("max_length"),
+                max_tokens=self.benchmark_kwargs.get("max_tokens"),
+            )
 
             self.tasks[name] = benchmark_class
             self.benchmark_instances[name] = instance

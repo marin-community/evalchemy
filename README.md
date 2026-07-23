@@ -159,6 +159,14 @@ The results will be written out in `output_path`. If you have `jq` [installed](h
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
 - `--output_path`: Directory to save evaluation results
+- `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
+- `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
+
+Use `--max_length` and `--max_tokens` rather than embedding these values in
+`--model_args` or `--gen_kwargs`. The older spellings (`max_model_len` and
+`max_gen_toks` / `max_new_tokens`) remain accepted for compatibility, but
+conflicting values fail before evaluation rather than producing path-dependent
+results. Resolved limits are written to result metadata.
 
 Example running multiple benchmarks:
 ```bash
@@ -172,7 +180,7 @@ python -m eval.eval \
 
 **Config shortcuts**: 
 
-To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
+To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments, and may set the canonical `max_length` and `max_tokens` fields. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
 
 ```bash
 python -m eval.eval \
