@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import logging
 
+from eval.limits import preflight_endpoint_generation
+
 logger = logging.getLogger("eval.robust_api")
 
 _PATCH_FLAG = "_marin_resilient_batch_patched"
@@ -103,7 +105,7 @@ def apply() -> bool:
                 before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
             )(self.amodel_call)
 
-            async def _guarded(message, cache_key, ctxlen):
+            async def _guarded(message, cache_key, ctxlen, call_kwargs):
                 try:
                     return await retry_(
                         session=session,
@@ -112,7 +114,7 @@ def apply() -> bool:
                         cache_keys=cache_key,
                         generate=generate,
                         ctxlens=ctxlen,
-                        **kwargs,
+                        **call_kwargs,
                     )
                 except BaseException as exc:  # noqa: BLE001 - one failed request must not nuke the batch
                     if not generate:
@@ -133,14 +135,37 @@ def apply() -> bool:
                             self.cache_hook.add_partial("generate_until", ck, placeholder)
                     return [placeholder] * n
 
-            tasks = [
-                asyncio.create_task(_guarded(message, cache_key, ctxlen))
-                for message, cache_key, ctxlen in zip(
-                    chunks(requests, n=self._batch_size),
-                    chunks(cache_keys, n=self._batch_size),
-                    chunks(ctxlens, n=self._batch_size),
-                )
-            ]
+            tasks = []
+            for message, cache_key, ctxlen in zip(
+                chunks(requests, n=self._batch_size),
+                chunks(cache_keys, n=self._batch_size),
+                chunks(ctxlens, n=self._batch_size),
+            ):
+                request_kwargs = dict(kwargs)
+                if generate:
+                    # This is the one shared seam for lm-eval-native and every
+                    # Evalchemy benchmark: the actual text/chat payload exists,
+                    # but no HTTP request has been issued yet. ``max_length``
+                    # on TemplateAPI is stored as context-1 by lm-eval.
+                    try:
+                        bounded, prompt_tokens, effective_cap = preflight_endpoint_generation(
+                            tokenizer=self.tokenizer,
+                            payloads=message,
+                            gen_kwargs=kwargs.get("gen_kwargs"),
+                            context_length=self.max_length + 1 if self.max_length is not None else None,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - refuse deterministic overflow before transport
+                        raise ValueError(f"endpoint context preflight failed: {exc}") from exc
+                    if bounded is not None:
+                        request_kwargs["gen_kwargs"] = bounded
+                    if prompt_tokens is not None and effective_cap is not None:
+                        logger.info(
+                            "endpoint context preflight: largest_prompt=%d, max_output=%d, context=%d",
+                            prompt_tokens,
+                            effective_cap,
+                            self.max_length + 1,
+                        )
+                tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
             return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
 
     template_api.get_batched_requests = get_batched_requests

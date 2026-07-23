@@ -4,7 +4,13 @@ from pathlib import Path
 import pytest
 from lm_eval.api.instance import Instance
 
-from eval.limits import parse_key_value_args, resolve_evaluation_limits
+from eval.limits import (
+    endpoint_prompt_token_count,
+    parse_key_value_args,
+    preflight_endpoint_generation,
+    resolve_evaluation_limits,
+    safe_generation_cap,
+)
 from eval.task import BaseBenchmark
 
 
@@ -92,6 +98,47 @@ def test_custom_prompt_budget_field_receives_the_same_context_limit():
 
     assert benchmark.max_model_length == 16384
     assert benchmark.max_new_tokens == 1024
+
+
+class _Tokenizer:
+    def encode(self, text, *, add_special_tokens):
+        assert add_special_tokens is False
+        return list(range(len(text.split())))
+
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+        assert tokenize is True
+        assert add_generation_prompt is True
+        return list(range(sum(len(message["content"].split()) for message in messages) + 3))
+
+
+def test_endpoint_preflight_caps_the_historical_tier2_overflow_before_transport():
+    # 32,768 served tokens - 2,049 rendered prompt - 64-token wiggle room.
+    assert safe_generation_cap(context_length=32768, prompt_tokens=2049, requested_max_tokens=30720) == 30655
+
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=_Tokenizer(),
+        payloads=["token " * 2049],
+        gen_kwargs={"max_gen_toks": 30720, "temperature": 0},
+        context_length=32768,
+    )
+    assert prompt_tokens == 2049
+    assert cap == 30655
+    assert kwargs == {"max_gen_toks": 30655, "temperature": 0}
+
+
+def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context():
+    messages = [{"role": "user", "content": "one two"}]
+    assert endpoint_prompt_token_count(_Tokenizer(), messages) == 5
+
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=_Tokenizer(),
+        payloads=[messages],
+        gen_kwargs={"max_tokens": 128},
+        context_length=None,
+    )
+    assert kwargs == {"max_tokens": 128}
+    assert prompt_tokens is None
+    assert cap is None
 
 
 def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
