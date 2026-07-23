@@ -13,10 +13,17 @@ then pass the same resolved values to native and custom benchmarks.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Optional
+import copy
+import json
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 _MAX_OUTPUT_ALIASES = ("max_tokens", "max_new_tokens", "max_gen_toks")
 _MODEL_LENGTH_ALIASES = ("max_length", "max_model_len")
+
+# The caller's ``max_length`` is the served model's total context window. Leave
+# more than the requested ~50-character wiggle room: tokenization and endpoint
+# templates are not guaranteed to be byte-identical across every provider.
+DEFAULT_CONTEXT_SAFETY_TOKENS = 64
 
 
 def parse_key_value_args(value: Optional[str | Mapping[str, Any]]) -> dict[str, Any]:
@@ -42,6 +49,85 @@ def parse_key_value_args(value: Optional[str | Mapping[str, Any]]) -> dict[str, 
 def format_key_value_args(values: Mapping[str, Any]) -> str:
     """Render a deterministic lm-eval ``key=value`` argument string."""
     return ",".join(f"{key}={value}" for key, value in values.items())
+
+
+def safe_generation_cap(
+    *,
+    context_length: int,
+    prompt_tokens: int,
+    requested_max_tokens: int,
+    safety_tokens: int = DEFAULT_CONTEXT_SAFETY_TOKENS,
+) -> int:
+    """Return the largest safe output cap for one fully rendered endpoint request.
+
+    ``context_length`` is the server's actual total window, not lm-eval's
+    prompt-only bookkeeping limit. A request whose prompt already consumes the
+    usable window fails locally and clearly rather than retrying a deterministic
+    endpoint 400.
+    """
+    for name, value in (
+        ("context_length", context_length),
+        ("prompt_tokens", prompt_tokens),
+        ("requested_max_tokens", requested_max_tokens),
+        ("safety_tokens", safety_tokens),
+    ):
+        if not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    available = context_length - prompt_tokens - safety_tokens
+    if available < 1:
+        raise ValueError(
+            "rendered prompt exhausts the endpoint context budget: "
+            f"context_length={context_length}, prompt_tokens={prompt_tokens}, safety_tokens={safety_tokens}"
+        )
+    return min(requested_max_tokens, available)
+
+
+def endpoint_prompt_token_count(tokenizer: Any, payload: Any) -> int:
+    """Count one final endpoint payload with the tokenizer/template it will use.
+
+    Text completions are encoded directly. Chat payloads are rendered with the
+    configured tokenizer's chat template and an assistant-generation marker.
+    ``JsonChatStr`` is intentionally handled duck-typed to avoid importing an
+    lm-eval-private class into this dependency-light module.
+    """
+    if isinstance(payload, (list, tuple)) and all(isinstance(token, int) for token in payload):
+        return len(payload)
+    if hasattr(payload, "prompt"):
+        payload = json.loads(payload.prompt)
+    if isinstance(payload, str):
+        return len(tokenizer.encode(payload, add_special_tokens=False))
+    if isinstance(payload, Sequence) and all(isinstance(message, Mapping) for message in payload):
+        return len(tokenizer.apply_chat_template(payload, tokenize=True, add_generation_prompt=True))
+    raise TypeError(f"unsupported endpoint payload for preflight tokenization: {type(payload).__name__}")
+
+
+def preflight_endpoint_generation(
+    *, tokenizer: Any, payloads: Sequence[Any], gen_kwargs: Mapping[str, Any] | None, context_length: int | None
+) -> tuple[dict[str, Any] | None, int | None, int | None]:
+    """Tokenize a transport batch and lower its output cap if necessary.
+
+    Returns ``(new_gen_kwargs, largest_prompt, effective_max_tokens)``. Calls
+    without an explicit context or generation cap are a strict no-op. A batch
+    shares one endpoint generation kwargs dictionary, so it uses the largest
+    rendered prompt in that batch.
+    """
+    if context_length is None or gen_kwargs is None:
+        return (dict(gen_kwargs) if gen_kwargs is not None else None, None, None)
+    present = [(key, gen_kwargs[key]) for key in _MAX_OUTPUT_ALIASES if key in gen_kwargs]
+    if not present:
+        return (dict(gen_kwargs), None, None)
+    requested = _resolve_one("max_tokens", present)
+    assert requested is not None
+    largest_prompt = max(endpoint_prompt_token_count(tokenizer, payload) for payload in payloads)
+    cap = safe_generation_cap(
+        context_length=context_length,
+        prompt_tokens=largest_prompt,
+        requested_max_tokens=requested,
+    )
+    adjusted = copy.deepcopy(dict(gen_kwargs))
+    for key, _ in present:
+        adjusted[key] = cap
+    return adjusted, largest_prompt, cap
 
 
 def _as_positive_int(value: Any, source: str) -> int:

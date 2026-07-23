@@ -67,10 +67,11 @@ RUN git clone "${EVALCHEMY_REPO}" evalchemy && \
 WORKDIR /opt/eval/evalchemy
 
 # Reproducible install from the COMMITTED lock. --frozen makes the lock ground truth
-# (fails rather than re-resolving), so the baked env == `uv.lock` exactly. `serve-eval`
-# adds the endpoint runner (eval/serve_eval/); the lean base already carries
-# lm-eval[api,math] + transformers<5 + the graders.
-RUN uv sync --frozen --extra serve-eval
+# (fails rather than re-resolving), so the baked env == `uv.lock` exactly. The Iris
+# Tier-2 suite includes HumanEvalPlus, MBPPPlus, and IFEval; their declared extras
+# supply ``fire`` and the IFEval judge modules. Bake them here rather than performing
+# an unsafe, noncanonical runtime install after a job has already acquired a serve.
+RUN uv sync --frozen --extra serve-eval --extra humanevalplus --extra mbppplus --extra ifeval
 
 ENV VIRTUAL_ENV=/opt/eval/evalchemy/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
@@ -88,6 +89,7 @@ RUN mkdir -p /opt/eval/.cache/hf /opt/eval/.cache/triton /opt/eval/.cache/vllm /
 RUN . "$VIRTUAL_ENV/bin/activate" && python -c "\
 import importlib.metadata as m; \
 import lm_eval, transformers, math_verify; \
+import fire, langdetect, nltk, immutabledict; \
 assert transformers.__version__.split('.')[0] == '4', ('transformers must be <5, got ' + transformers.__version__); \
 from eval import robust_api; \
 assert robust_api._APPLIED, 'robust_api resilience patch did NOT apply'; \
@@ -96,6 +98,7 @@ assert getattr(TemplateAPI, '_marin_resilient_batch_patched', False), 'get_batch
 print('baked lm-eval', m.version('lm-eval')); \
 print('baked transformers', m.version('transformers')); \
 print('baked math-verify', m.version('math-verify')); \
+print('baked Tier-2 benchmark extras: HumanEvalPlus/MBPPPlus/IFEval'); \
 print('robust_api async-batch patch: ACTIVE')"
 
 RUN echo "ulimit -n 65535" >> /etc/profile.d/openthoughts-ulimit.sh
