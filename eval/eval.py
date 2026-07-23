@@ -38,15 +38,16 @@ from lm_eval.tasks import TaskManager as PretrainTaskManager
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from lm_eval.utils import handle_non_serializable as _orig_handle
 
-from eval import robust_api  # noqa: F401  # patch lm-eval async batch: a single request error scores as a miss, not a whole-batch abort
-from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # register curator model
-from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # register precomputed_hf model
-from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register upload_to_hf model
+# Register the async-batch robustness patch before any model adapter is built.
+from eval import robust_api  # noqa: F401
+from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
+from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
+from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
+from eval.limits import resolve_evaluation_limits
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import TaskManager as InstructTaskManager
-
 
 _BIT_CAP = 15_000
 
@@ -139,15 +140,21 @@ def setup_custom_parser():
     )
     parser.add_argument(
         "--max_tokens",
-        type=str,
+        type=int,
         default=None,
-        help="Maximum length of model generatd tokens.",
+        help="Canonical maximum generated tokens for every Evalchemy benchmark.",
+    )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=None,
+        help="Canonical total model context length for every Evalchemy benchmark.",
     )
 
     parser.add_argument(
         "--config",
         type=str,
-        help="Path to config yaml. Overwrites --batch_size, --tasks, --annotator_model, and --max_tokens",
+        help="Path to config yaml. Overwrites --batch_size, --tasks, --annotator_model, --max_length, and --max_tokens",
     )
     parser.add_argument(
         "--debug",
@@ -419,7 +426,10 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         args.tasks = ",".join([t["task_name"] for t in tasks_yaml["tasks"]])
         batch_sizes_list = [int(t["batch_size"]) if t["batch_size"] != "auto" else "auto" for t in tasks_yaml["tasks"]]
         args.annotator_model = tasks_yaml.get("annotator_model", args.annotator_model)
-        args.max_tokens = int(tasks_yaml.get("max_tokens", args.max_tokens))
+        if "max_length" in tasks_yaml:
+            args.max_length = tasks_yaml["max_length"]
+        if "max_tokens" in tasks_yaml:
+            args.max_tokens = tasks_yaml["max_tokens"]
     else:
         batch_sizes_list = [
             int(args.batch_size) if args.batch_size != "auto" else args.batch_size
@@ -455,10 +465,21 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         model_name = args.model_name
         args.model_args = update_model_args_with_name(args.model_args or "", model_name)
 
+    # Resolve once before either benchmark family or the model is initialized.
+    # Native lm-eval receives ``model_args`` / ``gen_kwargs``; custom chat
+    # benchmarks receive the same values from the task manager below.
+    limits = resolve_evaluation_limits(args)
+    utils.eval_logger.info(
+        "Evaluation limits: max_length=%s max_tokens=%s",
+        limits.max_length if limits.max_length is not None else "default",
+        limits.max_tokens if limits.max_tokens is not None else "default",
+    )
+
     # Initialize tasks
     task_manager = InstructTaskManager(
         annotator_model=args.annotator_model,
-        max_tokens=int(args.max_tokens) if args.max_tokens else None,
+        max_length=limits.max_length,
+        max_tokens=limits.max_tokens,
         debug=args.debug,
         seed=args.seed,
         task_list=task_list,
@@ -648,9 +669,7 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "model": (
             args.model
             if isinstance(args.model, str)
-            else args.model.config._name_or_path
-            if hasattr(args.model, "config")
-            else type(args.model).__name__
+            else args.model.config._name_or_path if hasattr(args.model, "config") else type(args.model).__name__
         ),
         "model_args": args.model_args,
         "tasks": args.tasks,
@@ -659,7 +678,16 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "use_cache": args.use_cache,
         "limit": args.limit,
         "annotator_model": args.annotator_model,
-        "max_tokens": args.max_tokens if args.max_tokens is not None else "default",
+        "max_length": getattr(args, "max_length", None) if getattr(args, "max_length", None) is not None else "default",
+        "max_tokens": getattr(args, "max_tokens", None) if getattr(args, "max_tokens", None) is not None else "default",
+        "evaluation_limits": {
+            "max_length": (
+                getattr(args, "max_length", None) if getattr(args, "max_length", None) is not None else "default"
+            ),
+            "max_tokens": (
+                getattr(args, "max_tokens", None) if getattr(args, "max_tokens", None) is not None else "default"
+            ),
+        },
         # "bootstrap_iters": args.bootstrap_iters,
         "gen_kwargs": args.gen_kwargs,
         "random_seed": args.seed[0],
@@ -754,6 +782,7 @@ def handle_evaluation_output(
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "
+        f"max_length: {getattr(args, 'max_length', None)}, max_tokens: {getattr(args, 'max_tokens', None)}, "
         f"limit: {args.limit}, num_fewshot: {args.num_fewshot}, annotator_model: {args.annotator_model}, "
         f"batch_size: {args.batch_size}{f' ({batch_sizes})' if batch_sizes else ''}"
     )
