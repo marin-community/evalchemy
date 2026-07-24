@@ -126,6 +126,8 @@ def test_full_wheel_serve_eval_extra_contains_the_config_resolver(tmp_path):
             "uv",
             "run",
             "--no-project",
+            "--python",
+            "3.12",
             "--with",
             f"{wheel}[serve-eval]",
             "python",
