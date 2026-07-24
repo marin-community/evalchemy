@@ -104,13 +104,41 @@ def test_config_wheel_imports_without_runner_or_inference_dependencies(tmp_path)
     )
     result = subprocess.run(
         ["uv", "run", "--no-project", "--with", str(wheel), "python", "-c", probe],
-        cwd=_ROOT,
+        cwd=tmp_path,
         check=True,
         capture_output=True,
         text=True,
     )
 
     assert json.loads(result.stdout) == []
+
+
+def test_full_wheel_serve_eval_extra_contains_the_config_resolver(tmp_path):
+    dist = tmp_path / "dist"
+    subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(dist), str(_ROOT)],
+        cwd=tmp_path,
+        check=True,
+    )
+    wheel = next(dist.glob("evalchemy-*.whl"))
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            f"{wheel}[serve-eval]",
+            "python",
+            "-c",
+            "import evalchemy_config; import eval.serve_eval.run; print(evalchemy_config.fingerprint())",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == fingerprint()
 
 
 def test_release_manifest_binds_wheel_digest_to_schema_fingerprint(tmp_path):
