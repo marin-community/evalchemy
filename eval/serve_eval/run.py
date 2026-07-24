@@ -27,6 +27,7 @@ import click
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.providers import ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
+from evalchemy_config import materialize_eval_args
 
 logger = logging.getLogger("eval.serve_eval")
 
@@ -97,26 +98,15 @@ def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit,
         adapter,
         "--model_args",
         build_model_args(served, adapter, dict(cfg.extra_model_args)),
-        "--tasks",
-        ",".join(cfg.tasks),
+    ]
+    # ``limit`` is post-processed because non-positive runner values mean the full
+    # task, whereas the portable config preserves the original requested value.
+    argv += materialize_eval_args(cfg.evaluation.model_copy(update={"limit": limit}))
+    argv += [
         "--output_path",
         output_dir,
         "--log_samples",
     ]
-    if cfg.apply_chat_template:
-        argv.append("--apply_chat_template")  # bare flag => const=True
-    if limit is not None:
-        argv += ["--limit", str(limit)]
-    if cfg.num_fewshot is not None:
-        argv += ["--num_fewshot", str(cfg.num_fewshot)]
-    if cfg.batch_size is not None:
-        argv += ["--batch_size", str(cfg.batch_size)]
-    if cfg.seed is not None:
-        # evalchemy/lm-eval accept a 4-tuple "python,numpy,torch,fewshot"; a single
-        # value sets all four (see eval/eval.py seed handling).
-        argv += ["--seed", str(cfg.seed)]
-    if cfg.gen_kwargs:
-        argv += ["--gen_kwargs", cfg.gen_kwargs]
     argv += list(extra_args)  # verbatim eval.eval passthrough (last => can override)
     return argv
 
