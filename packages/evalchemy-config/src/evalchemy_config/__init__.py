@@ -2,6 +2,7 @@
 
 from .config import (
     EvaluationConfig,
+    TaskOptions,
     apply_evaluation_patch,
     canonical_json,
     fingerprint,
@@ -13,6 +14,7 @@ from .limits import EvaluationLimits, resolve_evaluation_limits
 __all__ = [
     "EvaluationConfig",
     "EvaluationLimits",
+    "TaskOptions",
     "apply_evaluation_patch",
     "canonical_json",
     "fingerprint",
