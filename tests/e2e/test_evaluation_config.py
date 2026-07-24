@@ -133,11 +133,11 @@ def test_full_wheel_serve_eval_extra_contains_the_config_resolver(tmp_path):
             "import evalchemy_config; import eval.serve_eval.run; print(evalchemy_config.fingerprint())",
         ],
         cwd=tmp_path,
-        check=True,
         capture_output=True,
         text=True,
     )
 
+    assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == fingerprint()
 
 
