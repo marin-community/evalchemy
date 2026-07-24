@@ -52,6 +52,7 @@ jobs:
         # installing evalchemy.
         run: >-
           uv run --no-project --python 3.11
+          --with ./packages/evalchemy-config
           --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click
           python -m pytest tests/e2e/ -q
 

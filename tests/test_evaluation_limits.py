@@ -6,12 +6,14 @@ from lm_eval.api.instance import Instance
 
 from eval.limits import (
     endpoint_prompt_token_count,
+    format_key_value_args,
     parse_key_value_args,
     preflight_endpoint_generation,
     resolve_evaluation_limits,
     safe_generation_cap,
 )
 from eval.task import BaseBenchmark
+from evalchemy_config import EvaluationConfig
 
 
 def _args(**overrides):
@@ -57,6 +59,28 @@ def test_conflicting_limit_spellings_fail_before_any_benchmark_runs():
 
     with pytest.raises(ValueError, match="conflicting max_length"):
         resolve_evaluation_limits(_args(max_length=8192, model_args="pretrained=test/model,max_length=4096"))
+
+
+def test_runner_and_portable_config_normalize_the_same_legacy_limit_aliases():
+    args = _args(model_args="pretrained=test/model,max_model_len=4096", gen_kwargs="max_new_tokens=512")
+    runner_limits = resolve_evaluation_limits(args)
+    portable_config = EvaluationConfig.model_validate(
+        {
+            "extra_model_args": {"max_model_len": 4096},
+            "gen_kwargs": "max_new_tokens=512",
+        }
+    )
+
+    assert (portable_config.max_length, portable_config.max_tokens) == (
+        runner_limits.max_length,
+        runner_limits.max_tokens,
+    )
+    portable_model_args = parse_key_value_args(format_key_value_args(portable_config.extra_model_args))
+    runner_model_args = parse_key_value_args(args.model_args)
+    assert {key: portable_model_args[key] for key in portable_model_args} == {
+        key: runner_model_args[key] for key in portable_model_args
+    }
+    assert parse_key_value_args(portable_config.gen_kwargs) == parse_key_value_args(args.gen_kwargs)
 
 
 class _BudgetBenchmark(BaseBenchmark):
