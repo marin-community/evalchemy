@@ -12,6 +12,7 @@ from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, build_eval_argv
 from evalchemy_config import (
     EvaluationConfig,
+    TaskOptions,
     apply_evaluation_patch,
     canonical_json,
     fingerprint,
@@ -78,6 +79,33 @@ def test_evaluation_config_patch_revalidates_canonical_limits():
     assert updated.max_tokens == 768
     assert "max_gen_toks=768" in (updated.gen_kwargs or "")
     assert materialize_eval_args(updated)[-2:] == ["--max_tokens", "768"]
+
+
+def test_evaluation_config_carries_task_level_client_routing():
+    config = EvaluationConfig.model_validate(
+        {
+            "tasks": ["humaneval", "gsm8k"],
+            "task_options": {
+                "humaneval": {
+                    "num_fewshot": 0,
+                    "task_alias": "humaneval_0shot",
+                    "generation": True,
+                    "unsafe_code": True,
+                    "completion_only": True,
+                }
+            },
+        }
+    )
+
+    assert config.task_options["humaneval"] == TaskOptions(
+        num_fewshot=0,
+        task_alias="humaneval_0shot",
+        generation=True,
+        unsafe_code=True,
+        completion_only=True,
+    )
+    with pytest.raises(ValidationError, match="task_options refer"):
+        EvaluationConfig.model_validate({"tasks": ["gsm8k"], "task_options": {"aime24": {}}})
 
 
 def test_canonical_json_and_schema_fingerprint_are_stable():

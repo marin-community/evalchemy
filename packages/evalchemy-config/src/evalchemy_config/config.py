@@ -19,12 +19,25 @@ from .limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES, format_key_value_a
 _SCHEMA_VERSION = 1
 
 
+class TaskOptions(BaseModel):
+    """Per-task behavior that Evalchemy's one-task-at-a-time client must retain."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    num_fewshot: int | None = None
+    task_alias: str | None = None
+    generation: bool = False
+    unsafe_code: bool = False
+    completion_only: bool = False
+
+
 class EvaluationConfig(BaseModel):
     """Evaluation intent that is portable across Evalchemy launch environments."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tasks: list[str] = Field(default_factory=lambda: ["gsm8k"])
+    task_options: dict[str, TaskOptions] = Field(default_factory=dict)
     apply_chat_template: bool = False
     limit: int | None = 200
     num_fewshot: int | None = None
@@ -34,6 +47,13 @@ class EvaluationConfig(BaseModel):
     extra_model_args: dict[str, str | int | float | bool] = Field(default_factory=dict)
     max_length: int | None = None
     max_tokens: int | None = None
+
+    @model_validator(mode="after")
+    def task_options_match_tasks(self) -> "EvaluationConfig":
+        unknown = sorted(set(self.task_options).difference(self.tasks))
+        if unknown:
+            raise ValueError(f"task_options refer to task(s) not selected in tasks: {unknown}")
+        return self
 
     @model_validator(mode="before")
     @classmethod
