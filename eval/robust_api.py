@@ -16,12 +16,12 @@ This is exactly the failure that blocked the Grug 67B-A2B ``local-completions`` 
 eval: the served model was healthy (a 200 payload-probe returned coherent math), yet one
 transient async request error aborted the whole gsm8k gather.
 
-The fix, applied as a monkeypatch so it stays a minimal, upstream-tracking delta:
-a request that fails ALL its retries is scored as a **miss** -- filled with
-``LMEVAL_MODEL_NONE_ANSWER_PLACEHOLDER`` (the same placeholder lm-eval already substitutes
-for a null generation) -- instead of aborting the batch, and the real underlying exception
-is logged at ERROR. Retries themselves are unchanged (the tenacity wrapper is preserved
-verbatim inside the guard, so a transient error still retries before it counts as a miss).
+The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
+prevents one exhausted request from aborting the batch. It returns a stable,
+human-readable infrastructure-error marker instead of lm-eval's empty-generation
+placeholder, so artifacts distinguish a request failure from a genuine empty model
+completion. Retries themselves are unchanged (the tenacity wrapper is preserved
+verbatim inside the guard).
 
 Only the *generative* path (``generate=True`` -> ``generate_until``) is softened; the
 loglikelihood path (``generate=False``) re-raises exactly as before, because turning a
@@ -44,6 +44,16 @@ from eval.limits import preflight_endpoint_generation
 logger = logging.getLogger("eval.robust_api")
 
 _PATCH_FLAG = "_marin_resilient_batch_patched"
+_REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
+_MAX_REQUEST_FAILURE_DETAIL = 512
+
+
+def request_failure_placeholder(exc: BaseException) -> str:
+    """Return the artifact marker for an endpoint request that exhausted retries."""
+    detail = " ".join(str(exc).split())
+    if detail:
+        detail = f": {detail[:_MAX_REQUEST_FAILURE_DETAIL]}"
+    return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
 
 
 def apply() -> bool:
@@ -77,8 +87,6 @@ def apply() -> bool:
     if getattr(template_api, _PATCH_FLAG, False):
         return True  # already patched (idempotent across repeated imports)
 
-    placeholder = getattr(_api, "LMEVAL_MODEL_NONE_ANSWER_PLACEHOLDER", "")
-
     async def get_batched_requests(  # noqa: PLR0913 - mirrors the upstream signature verbatim
         self,
         requests,
@@ -91,8 +99,8 @@ def apply() -> bool:
         """Resilient mirror of lm-eval v0.4.12 ``TemplateAPI.get_batched_requests``.
 
         Identical to upstream except each per-request task is wrapped in a guard: a
-        request that exhausts its retries is logged and returns placeholder answers
-        (a scored miss) rather than propagating out of ``gather`` and aborting the batch.
+        request that exhausts its retries returns an infrastructure-error marker
+        rather than propagating out of ``gather`` and aborting the batch.
         """
         ctxlens = ctxlens if ctxlens else [None] * len(requests)
         conn = TCPConnector(limit=self._concurrent, ssl=self.verify_certificate)
@@ -122,14 +130,15 @@ def apply() -> bool:
                         # upstream fail-fast behavior.
                         raise
                     n = len(message) if hasattr(message, "__len__") else 1
+                    placeholder = request_failure_placeholder(exc)
                     logger.error(
-                        "Request failed after all retries; scoring %d prompt(s) as a MISS "
-                        "(placeholder=%r) instead of aborting the batch. Cause: %r",
+                        "Request failed after all retries; returning an infrastructure-error "
+                        "marker for %d prompt(s) (placeholder=%r). Cause: %r",
                         n,
                         placeholder,
                         exc,
                     )
-                    # Cache the misses so a --use_cache resume does not re-issue them.
+                    # Cache the failure markers so a --use_cache resume does not re-issue them.
                     if cache_key:
                         for ck in cache_key:
                             self.cache_hook.add_partial("generate_until", ck, placeholder)
@@ -170,7 +179,7 @@ def apply() -> bool:
 
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
-    logger.info("robust_api: patched TemplateAPI.get_batched_requests (single-request errors score as a miss).")
+    logger.info("robust_api: patched TemplateAPI.get_batched_requests (single-request errors leave markers).")
     return True
 
 

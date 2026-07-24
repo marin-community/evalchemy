@@ -28,6 +28,7 @@ from eval.serve_eval.run import (
     build_model_args,
     endpoint_url,
 )
+from eval.robust_api import request_failure_placeholder
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -47,6 +48,14 @@ _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 )
 def test_endpoint_url_appends_adapter_path_exactly_once(base_url, adapter, expected):
     assert endpoint_url(base_url, adapter) == expected
+
+
+def test_request_failure_placeholder_identifies_infrastructure_error():
+    marker = request_failure_placeholder(TimeoutError("endpoint timed out"))
+
+    assert marker.startswith("[EVALCHEMY_INFRASTRUCTURE_ERROR]")
+    assert "TimeoutError" in marker
+    assert "endpoint timed out" in marker
 
 
 # --- model_args semantics (lm-eval parses to a dict; the test compares parsed keys) --
