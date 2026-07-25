@@ -8,6 +8,7 @@ config boundaries, the readiness poll, the provider factory, and the marin-serve
 PTY parse. Each runs in-process against stdlib stubs -- a stub HTTP server and a PTY.
 """
 
+import json
 import os
 import pty
 import subprocess
@@ -19,8 +20,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 from pydantic import ValidationError
 
+from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.providers import EndpointProvider, MarinServeProvider, ServedModel, build_provider, wait_for_models
+from eval.serve_eval.providers import (
+    EndpointProvider,
+    MarinServeProvider,
+    ServedModel,
+    build_provider,
+    select_served_model_id,
+    wait_for_served_models,
+)
 from eval.serve_eval.run import (
     LOCAL_CHAT_COMPLETIONS,
     LOCAL_COMPLETIONS,
@@ -28,7 +37,6 @@ from eval.serve_eval.run import (
     build_model_args,
     endpoint_url,
 )
-from eval.robust_api import request_failure_placeholder
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -122,6 +130,7 @@ def test_shipped_config_parses():
 
 class _ModelsHandler(BaseHTTPRequestHandler):
     ready_after = 0
+    model_ids: list = []
     _hits = {"n": 0}
 
     def do_GET(self):  # noqa: N802
@@ -130,7 +139,8 @@ class _ModelsHandler(BaseHTTPRequestHandler):
             if _ModelsHandler._hits["n"] > _ModelsHandler.ready_after:
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b'{"data": []}')
+                body = {"data": [{"id": mid} for mid in _ModelsHandler.model_ids]}
+                self.wfile.write(json.dumps(body).encode())
                 return
             self.send_response(503)
             self.end_headers()
@@ -142,46 +152,77 @@ class _ModelsHandler(BaseHTTPRequestHandler):
         pass
 
 
-def _serve(ready_after=0):
+def _serve(ready_after=0, model_ids=()):
     _ModelsHandler._hits["n"] = 0
     _ModelsHandler.ready_after = ready_after
+    _ModelsHandler.model_ids = list(model_ids)
     server = HTTPServer(("127.0.0.1", 0), _ModelsHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
 
-def test_wait_for_models_returns_when_ready():
-    server = _serve(ready_after=0)
+def test_wait_for_served_models_returns_advertised_ids_when_ready():
+    server = _serve(ready_after=0, model_ids=["/cache/models--Qwen--Qwen3-0.6B/snapshots/abc"])
     try:
         port = server.server_address[1]
-        wait_for_models(f"http://127.0.0.1:{port}/v1", None, timeout_s=5, interval_s=0.1)
+        ids = wait_for_served_models(f"http://127.0.0.1:{port}/v1", None, timeout_s=5, interval_s=0.1)
+        assert ids == ["/cache/models--Qwen--Qwen3-0.6B/snapshots/abc"]
     finally:
         server.shutdown()
 
 
-def test_wait_for_models_times_out_when_never_ready():
+def test_wait_for_served_models_times_out_when_never_ready():
     server = _serve(ready_after=10_000)
     try:
         port = server.server_address[1]
         with pytest.raises(TimeoutError):
-            wait_for_models(f"http://127.0.0.1:{port}/v1", None, timeout_s=0.5, interval_s=0.1)
+            wait_for_served_models(f"http://127.0.0.1:{port}/v1", None, timeout_s=0.5, interval_s=0.1)
     finally:
         server.shutdown()
 
 
-def test_endpoint_provider_yields_normalized_served_model():
-    server = _serve(ready_after=0)
+@pytest.mark.parametrize(
+    "requested, advertised, expected",
+    [
+        # The endpoint advertises the requested id -> keep it (the common case).
+        ("Qwen/Qwen3-0.6B", ["Qwen/Qwen3-0.6B"], "Qwen/Qwen3-0.6B"),
+        # marin-serve advertises the resolved weights path, not the HF id -> adopt it
+        # (this is the nightly-e2e 404 this whole path guards against).
+        (
+            "Qwen/Qwen3-0.6B",
+            ["/cache/models--Qwen--Qwen3-0.6B/snapshots/abc"],
+            "/cache/models--Qwen--Qwen3-0.6B/snapshots/abc",
+        ),
+        # Nothing advertised -> trust the requested id and let the eval surface any error.
+        ("Qwen/Qwen3-0.6B", [], "Qwen/Qwen3-0.6B"),
+    ],
+)
+def test_select_served_model_id(requested, advertised, expected):
+    assert select_served_model_id(requested, advertised) == expected
+
+
+def test_select_served_model_id_refuses_ambiguous_mismatch():
+    with pytest.raises(ValueError):
+        select_served_model_id("Qwen/Qwen3-0.6B", ["model-a", "model-b"])
+
+
+def test_endpoint_provider_adopts_the_advertised_served_id():
+    # The endpoint serves the model under a name that is not the requested HF id
+    # (marin-serve advertises the resolved weights path). The request `model` must
+    # follow /v1/models, while the tokenizer stays the HF id for length bookkeeping.
+    served_id = "/cache/models--Qwen--Qwen3-0.6B/snapshots/abc"
+    server = _serve(ready_after=0, model_ids=[served_id])
     try:
         port = server.server_address[1]
         # Pass a URL that redundantly includes the adapter path; the provider must
-        # normalize to the /v1 root and default the tokenizer to the model.
+        # normalize to the /v1 root.
         prov = EndpointProvider(
-            base_url=f"http://127.0.0.1:{port}/v1/chat/completions", model="m", readiness_timeout_s=5
+            base_url=f"http://127.0.0.1:{port}/v1/chat/completions", model="Qwen/Qwen3-0.6B", readiness_timeout_s=5
         )
         with prov as served:
             assert served.base_url == f"http://127.0.0.1:{port}/v1"
-            assert served.model == "m"
-            assert served.tokenizer == "m"
+            assert served.model == served_id
+            assert served.tokenizer == "Qwen/Qwen3-0.6B"
     finally:
         server.shutdown()
 

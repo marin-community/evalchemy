@@ -16,6 +16,7 @@ no bearer header is needed.
 from __future__ import annotations
 
 import errno
+import json
 import logging
 import os
 import pty
@@ -71,8 +72,28 @@ def api_root(base_url: str) -> str:
     return root
 
 
-def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, interval_s: float = 3.0) -> None:
-    """Poll ``<base_url>/models`` until it returns HTTP 200 or ``timeout_s`` elapses."""
+def _parse_model_ids(body: bytes) -> List[str]:
+    """Extract ``data[].id`` from an OpenAI ``/v1/models`` response body."""
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list):
+        return []
+    return [entry["id"] for entry in data if isinstance(entry, dict) and entry.get("id")]
+
+
+def wait_for_served_models(
+    base_url: str, api_key: Optional[str], timeout_s: float, interval_s: float = 3.0
+) -> List[str]:
+    """Poll ``<base_url>/models`` until HTTP 200 and return the advertised model ids.
+
+    The OpenAI ``/v1/models`` list is authoritative for what the endpoint accepts as
+    a request ``model``: a served vLLM advertises the name it was launched with
+    (``--served-model-name``), which need not equal the HF id we asked to serve.
+    Returns the ids from ``data[].id`` (may be empty if the endpoint lists none).
+    """
     url = api_root(base_url) + "/models"
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
     deadline = time.monotonic() + timeout_s
@@ -82,8 +103,9 @@ def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, int
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - trusted operator-supplied URL
                 if 200 <= resp.status < 300:
-                    logger.info("endpoint ready: %s", url)
-                    return
+                    ids = _parse_model_ids(resp.read())
+                    logger.info("endpoint ready: %s (models: %s)", url, ids or "none advertised")
+                    return ids
                 last_err = "HTTP %s" % resp.status
         except urllib.error.HTTPError as exc:
             last_err = "HTTP %s" % exc.code
@@ -91,6 +113,29 @@ def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, int
             last_err = str(exc)
         time.sleep(interval_s)
     raise TimeoutError(f"endpoint {url!r} not ready after {timeout_s:.0f}s (last: {last_err})")
+
+
+def select_served_model_id(requested: str, advertised: List[str]) -> str:
+    """Choose the request ``model`` value for a served endpoint.
+
+    ``/v1/models`` names every id the endpoint accepts. Keep ``requested`` when the
+    endpoint advertises it; otherwise adopt the sole advertised id -- a served vLLM
+    lists exactly one model, under whatever ``--served-model-name`` it was launched
+    with (marin-serve derives that from the resolved weights path, not the HF id).
+    Fall back to ``requested`` when nothing is advertised, and refuse an ambiguous
+    choice rather than guess.
+    """
+    if requested in advertised:
+        return requested
+    if len(advertised) == 1:
+        logger.info("endpoint serves %r, not requested %r; using the served id", advertised[0], requested)
+        return advertised[0]
+    if not advertised:
+        return requested
+    raise ValueError(
+        f"endpoint advertises models {advertised!r}, none matching requested {requested!r}; "
+        "cannot pick a request model id"
+    )
 
 
 class Provider:
@@ -116,10 +161,12 @@ class EndpointProvider(Provider):
 
     def __enter__(self) -> ServedModel:
         root = api_root(self.base_url)
-        if self.wait_ready:
-            wait_for_models(root, self.api_key, self.readiness_timeout_s)
+        advertised = wait_for_served_models(root, self.api_key, self.readiness_timeout_s) if self.wait_ready else []
         return ServedModel(
-            base_url=root, model=self.model, api_key=self.api_key, tokenizer=self.tokenizer or self.model
+            base_url=root,
+            model=select_served_model_id(self.model, advertised),
+            api_key=self.api_key,
+            tokenizer=self.tokenizer or self.model,
         )
 
     def __exit__(self, exc_type, exc, tb) -> bool:
@@ -217,10 +264,14 @@ class MarinServeProvider(Provider):
             os.close(slave_fd)  # the child holds the only writer end now
         base_url = self._read_until_ready(self.wait_timeout_s + 120.0)
         api_key = self.api_key or _CAPABILITY_API_KEY
-        wait_for_models(base_url, None, self.readiness_timeout_s)
+        # The capability URL carries the credential in its path, so poll without a
+        # bearer. marin-serve launches vLLM with --served-model-name set to the
+        # resolved weights path, so the advertised id is the one the endpoint
+        # accepts -- not necessarily the HF id in self.model.
+        advertised = wait_for_served_models(base_url, None, self.readiness_timeout_s)
         return ServedModel(
             base_url=api_root(base_url),
-            model=self.model,
+            model=select_served_model_id(self.model, advertised),
             api_key=api_key,
             tokenizer=self.tokenizer or self.model,
         )
