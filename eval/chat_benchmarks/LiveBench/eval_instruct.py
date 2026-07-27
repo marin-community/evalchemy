@@ -1,5 +1,4 @@
 from typing import Dict, Any, Optional, List
-import importlib.util
 import logging
 import os
 from eval.chat_benchmarks.LiveBench.livebench.common import load_questions
@@ -28,19 +27,8 @@ from eval.chat_benchmarks.LiveBench.livebench.common import (
     reorg_answer_file,
 )
 from eval.chat_benchmarks.LiveBench.livebench.gen_ground_truth_judgment import gen_judgments
+from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import get_conversation_template
 from eval.task import BaseBenchmark
-
-
-def get_conversation_template(model_name):
-    if importlib.util.find_spec("torch") is None:
-        from eval.chat_benchmarks.LiveBench.livebench.conversation import get_conv_template
-
-        return get_conv_template("api_based_default")
-    from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import (
-        get_conversation_template as get_model_conversation_template,
-    )
-
-    return get_model_conversation_template(model_name)
 
 
 class LiveBenchBenchmark(BaseBenchmark):

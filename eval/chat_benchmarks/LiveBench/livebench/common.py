@@ -3,7 +3,6 @@ Common data structures and utilities.
 """
 
 import dataclasses
-import importlib.util
 from datasets import load_dataset, Dataset
 from datetime import datetime
 import glob
@@ -12,6 +11,8 @@ import os
 
 import re
 from typing import Optional
+
+from livebench.model.api_models import get_model
 
 
 # Extract scores from judgments
@@ -35,10 +36,6 @@ LIVE_BENCH_RELEASES = {"2024-07-26", "2024-06-24", "2024-08-31", "2024-11-25"}
 
 
 def model_display_name(model_name: str) -> str:
-    if importlib.util.find_spec("torch") is None:
-        return model_name
-    from livebench.model.api_models import get_model
-
     return get_model(model_name).display_name
 
 

@@ -182,9 +182,20 @@ def main() -> None:
         if args.import_one == "BigCodeBench":
             module.cleanup_resources()
         elif args.import_one == "LiveBench":
-            conversation = module.get_conversation_template("served-model")
-            if conversation.roles != ("user", "assistant"):
-                raise RuntimeError("LiveBench's torch-free endpoint conversation template is not usable.")
+            conversation = module.get_conversation_template("gpt-4o-mini-2024-07-18")
+            if conversation.name != "chatgpt":
+                raise RuntimeError("LiveBench's torch-free model adapter selected the wrong conversation template.")
+            common = importlib.import_module("livebench.common")
+            if common.model_display_name("gpt-4o-mini") != "gpt-4o-mini-2024-07-18":
+                raise RuntimeError("LiveBench's torch-free model alias lookup changed.")
+            model_adapter = importlib.import_module("livebench.model.model_adapter")
+            try:
+                model_adapter.load_model("local-model")
+            except ModuleNotFoundError as exc:
+                if "evalchemy[vllm]" not in str(exc):
+                    raise
+            else:
+                raise RuntimeError("LiveBench local model loading did not require the local-inference extra.")
         elif args.import_one == "MTBench":
             api_models = importlib.import_module("fastchat.model.api_models")
             conversation = api_models.get_api_conversation_template("gpt-4o-mini-2024-07-18")

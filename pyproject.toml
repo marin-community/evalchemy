@@ -144,11 +144,10 @@ cruxeval = []
 humaneval = ["fire"]
 humanevalplus = ["fire"]
 ifeval = ["nltk", "langdetect", "absl-py", "immutabledict"]
-# LiveBench uses the FastChat model adapter only when torch is available for local
-# inference. Endpoint mode uses its torch-free API conversation template. Its vendored
-# IFEval judge needs langdetect/immutabledict/nltk, and the lcb_runner code-exec grader
-# imports pyext at module load; the penfever py3 fork is the only pyext that imports
-# under Python 3.
+# LiveBench's FastChat adapter registry selects conversation templates without importing
+# its torch-backed local model loaders. Its vendored IFEval judge needs
+# langdetect/immutabledict/nltk, and the lcb_runner code-exec grader imports pyext at
+# module load; the penfever py3 fork is the only pyext that imports under Python 3.
 livebench = [
     "psutil",
     "fschat",
