@@ -1,6 +1,6 @@
 from typing import Dict, List, Any, Optional
+from contextlib import nullcontext
 import logging
-import torch
 import datasets
 from tqdm import tqdm
 import pandas as pd
@@ -10,6 +10,16 @@ from lm_eval.api.model import LM
 from alpaca_eval.main import evaluate as alpaca_eval_evaluate
 from alpaca_eval.constants import DEFAULT_ANNOTATOR_CONFIG
 from eval.task import BaseBenchmark
+
+
+def _no_grad():
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch":
+            raise
+        return nullcontext()
+    return torch.no_grad()
 
 
 class AlpacaBenchmark(BaseBenchmark):
@@ -117,7 +127,7 @@ class AlpacaBenchmark(BaseBenchmark):
                     self.logger.error(f"Error preparing instance {idx}: {str(e)}")
                     continue
 
-            with torch.no_grad():
+            with _no_grad():
                 self.logger.info("Generating responses for Alpaca Eval...")
                 outputs = self.compute(model, all_instances)
 

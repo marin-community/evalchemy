@@ -21,7 +21,7 @@ Evalchemy uses [uv](https://docs.astral.sh/uv/); `uv sync` resolves from the com
 
 ```bash
 make install                        # uv sync + dev/serve-eval extras + pre-commit hooks
-uv sync --extra mtbench             # + one benchmark's deps (MTBench: torch, fschat, ...)
+uv sync --extra mtbench             # + one benchmark's endpoint/grading deps
 uv sync --extra benchmarks          # + every benchmark under eval/chat_benchmarks
 uv sync --extra vllm                # + the local vLLM inference engine
 uv sync --extra serve-eval          # + the serve-and-eval runner / regression gate
@@ -105,10 +105,11 @@ The runner prints scores; the gate decides pass/fail. Keep that split.
 - **`marin-ci.yaml`** — every PR: `infra/pre-commit.py` over the changed files, and
   `marin-style sync --check` to catch a drifted `.agents/` vendor.
 - **`e2e-ci.yaml`** — every PR: the `tests/e2e` harness; `lean-install` (builds the wheel,
-  runs the `eval` entry point, and asserts the torch-free core imports the math/code
-  benchmarks with no torch/vllm/ray); and `benchmark-extras`, which syncs each non-empty
-  per-benchmark extra in isolation and exec-imports its benchmark, so a mis-scoped extra
-  fails in CI (`scripts/ci/check_benchmark_extras.py`). Plus two opt-in jobs — an endpoint
+  runs the `eval` entry point, and asserts the torch-free core imports benchmarks with
+  empty extras and no torch/vllm/ray); and `benchmark-extras`, which syncs each non-empty
+  per-benchmark extra in isolation, asserts that it stays torch-free, and exec-imports its
+  benchmark, so a mis-scoped extra fails in CI (`scripts/ci/check_benchmark_extras.py`).
+  Plus two opt-in jobs — an endpoint
   smoke when the `E2E_BASE_URL` repo variable is set, and a `cluster-preflight` that checks
   GCP auth and Iris reachability without provisioning a TPU (label a PR `e2e-preflight`, or
   dispatch it).

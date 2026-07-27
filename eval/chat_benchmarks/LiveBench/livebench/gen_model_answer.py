@@ -23,7 +23,7 @@ from livebench.common import (
     load_questions_jsonl,
     LIVE_BENCH_DATA_SUPER_PATH,
 )
-from livebench.model import load_model, get_conversation_template
+from livebench.model.model_adapter import get_conversation_template, load_model
 from fastchat.utils import str_to_torch_dtype
 
 

@@ -22,10 +22,8 @@ from tqdm import tqdm
 warnings.simplefilter("ignore", category=DeprecationWarning)
 warnings.simplefilter("ignore", category=FutureWarning)
 
-from torch.utils.data import DataLoader
-
 import mix_eval.api.registry
-from mix_eval.models import AVAILABLE_MODELS
+from mix_eval.models import AVAILABLE_MODELS, load_model_implementations
 from mix_eval.utils.dataset import get_eval_dataset
 from mix_eval.compute_metrics import compute_metrics_p
 from mix_eval.utils.common_utils import set_seed, cache_status, read_status, dict_equal, log_error
@@ -129,6 +127,8 @@ def parse_args(return_parser=False):
 
 
 def _eval(args):
+    from torch.utils.data import DataLoader
+
     print(f"\n\nStart to evaluate {args.model_name}'s {args.split} split. \n\n")
     time_elapsed = 0
     start_time = time.time()
@@ -175,6 +175,7 @@ def _eval(args):
                     "You might consider delete the response and metadata file to start from scratch."
                 )
 
+    load_model_implementations()
     model = mix_eval.api.registry.get_model(args.model_name)(args)
     eval_dataset = get_eval_dataset(args)
     dataloader = DataLoader(

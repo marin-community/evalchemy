@@ -2,6 +2,8 @@
 From https://github.com/lm-sys/FastChat/blob/main/fastchat/model/model_adapter.py
 """
 
+from __future__ import annotations
+
 import math
 import os
 import re
@@ -16,34 +18,42 @@ else:
     from functools import lru_cache as cache
 
 import psutil
-import torch
 from fastchat.constants import CPU_ISA
-from fastchat.model.compression import load_compress_model
-from fastchat.model.llama_condense_monkey_patch import replace_llama_with_condense
-from fastchat.model.model_chatglm import generate_stream_chatglm
-from fastchat.model.model_codet5p import generate_stream_codet5p
-from fastchat.model.model_exllama import generate_stream_exllama
-from fastchat.model.model_falcon import generate_stream_falcon
-from fastchat.model.model_xfastertransformer import generate_stream_xft
-from fastchat.model.model_yuan2 import generate_stream_yuan2
-from fastchat.model.monkey_patch_non_inplace import replace_llama_attn_with_non_inplace_operations
-from fastchat.modules.awq import AWQConfig, load_awq_quantized
-from fastchat.modules.exllama import ExllamaConfig, load_exllama_model
-from fastchat.modules.gptq import GptqConfig, load_gptq_quantized
-from fastchat.modules.xfastertransformer import XftConfig, load_xft_model
-from fastchat.utils import get_gpu_memory
-from transformers import (
-    AutoConfig,
-    AutoModel,
-    AutoModelForCausalLM,
-    AutoModelForSeq2SeqLM,
-    AutoTokenizer,
-    LlamaForCausalLM,
-    LlamaTokenizer,
-    T5Tokenizer,
-)
 
 from livebench.conversation import Conversation, get_conv_template
+
+try:
+    import torch
+except ModuleNotFoundError as exc:
+    if exc.name != "torch":
+        raise
+    torch = None
+
+if torch is not None:
+    from fastchat.model.compression import load_compress_model
+    from fastchat.model.llama_condense_monkey_patch import replace_llama_with_condense
+    from fastchat.model.model_chatglm import generate_stream_chatglm
+    from fastchat.model.model_codet5p import generate_stream_codet5p
+    from fastchat.model.model_exllama import generate_stream_exllama
+    from fastchat.model.model_falcon import generate_stream_falcon
+    from fastchat.model.model_xfastertransformer import generate_stream_xft
+    from fastchat.model.model_yuan2 import generate_stream_yuan2
+    from fastchat.model.monkey_patch_non_inplace import replace_llama_attn_with_non_inplace_operations
+    from fastchat.modules.awq import AWQConfig, load_awq_quantized
+    from fastchat.modules.exllama import ExllamaConfig, load_exllama_model
+    from fastchat.modules.gptq import GptqConfig, load_gptq_quantized
+    from fastchat.modules.xfastertransformer import XftConfig, load_xft_model
+    from fastchat.utils import get_gpu_memory
+    from transformers import (
+        AutoConfig,
+        AutoModel,
+        AutoModelForCausalLM,
+        AutoModelForSeq2SeqLM,
+        AutoTokenizer,
+        LlamaForCausalLM,
+        LlamaTokenizer,
+        T5Tokenizer,
+    )
 
 
 # from fastchat.model.model_cllm import generate_stream_cllm
@@ -52,6 +62,12 @@ from livebench.conversation import Conversation, get_conv_template
 # Check an environment variable to check if we should be sharing Peft model
 # weights.  When false we treat all Peft models as separate.
 peft_share_base_weights = os.environ.get("PEFT_SHARE_BASE_WEIGHTS", "false").lower() == "true"
+
+
+def _require_torch():
+    if torch is None:
+        raise ModuleNotFoundError("LiveBench local model loading requires evalchemy[vllm].")
+
 
 ANTHROPIC_MODEL_LIST = (
     "claude-1",
@@ -303,6 +319,7 @@ def load_model(
     debug: bool = False,
 ):
     """Load a model from Hugging Face."""
+    _require_torch()
     import accelerate
 
     # get model adapter
@@ -473,6 +490,7 @@ def get_conversation_template(model_path: str) -> Conversation:
 
 def get_generate_stream_function(model: torch.nn.Module, model_path: str):
     """Get the generate_stream function for inference."""
+    _require_torch()
     from fastchat.serve.inference import generate_stream
 
     model_type = str(type(model)).lower()

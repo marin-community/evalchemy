@@ -1,28 +1,19 @@
 from typing import Dict, List, Any, Optional
 import logging
-import torch
 import os
 import json
 import time
 import warnings
 from argparse import Namespace
-from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data.distributed import DistributedSampler
 
 from lm_eval.api.model import LM
 from lm_eval.api.instance import Instance
-from lm_eval.models.dummy import DummyLM
 from eval.task import BaseBenchmark
 
-import mix_eval
-from mix_eval.evaluate import parse_args
 from mix_eval.utils.dataset import get_eval_dataset
 from mix_eval.compute_metrics import compute_metrics_p
 from mix_eval.utils.common_utils import cache_status, read_status, dict_equal
-from mix_eval.models.lm_chat_model import LMChatModel
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["MODEL_PARSER_API"] = os.getenv("OPENAI_API_KEY")
@@ -102,25 +93,19 @@ class MixEvalBenchmark(BaseBenchmark):
         Returns:
             Namespace object with all arguments
         """
-        parser = parse_args(return_parser=True)
-        default_args = {action.dest: action.default for action in parser._actions if action.dest != "help"}
+        default_args = {
+            "model_name": None,
+            "model_path": None,
+            "model_systemprompt": None,
+            "inference_only": False,
+            "free_form_parser": "model",
+            "multi_choice_parser": "model",
+            "api_base_url": None,
+            "extract_base_model_response": False,
+            "compute_score_from_judged_file": False,
+        }
         default_args.update(params)
         return Namespace(**default_args)
-
-    def _get_model(self, model: LM) -> LMChatModel:
-        """
-        Get the appropriate model wrapper.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            LMChatModel instance
-        """
-        if isinstance(model, DummyLM):
-            return mix_eval.api.registry.get_model(self.args.model_name)(self.args)
-        else:
-            return LMChatModel(self.args, model)
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """

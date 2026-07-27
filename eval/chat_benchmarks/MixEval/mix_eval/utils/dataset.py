@@ -4,9 +4,7 @@ import nltk
 
 nltk.download("punkt", quiet=True)
 
-import torch
-from torch.utils.data import Dataset
-from typing import Dict
+from typing import Any, Dict
 
 from mix_eval.prompts.evaluation_prompts import (
     construct_prompt_multichoice,
@@ -26,10 +24,8 @@ def get_eval_dataset(args):
         raise ValueError(f"Split {args.split} not supported in {get_eval_dataset.__name__}.")
 
 
-class EvalDatasetCloseended(Dataset):
+class EvalDatasetCloseended:
     def __init__(self, args):
-        super().__init__()
-
         self.args = args
 
         version_dir = os.path.join(args.data_path, f"mixeval-{args.version}")
@@ -79,7 +75,7 @@ class EvalDatasetCloseended(Dataset):
     def __len__(self):
         return len(self.raw_inputs)
 
-    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, i) -> Dict[str, Any]:
         return dict(
             raw_inputs=self.raw_inputs[i],
         )
