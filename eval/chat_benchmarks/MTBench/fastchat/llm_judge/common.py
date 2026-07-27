@@ -14,10 +14,10 @@ from typing import Optional
 import openai
 import anthropic
 
-from fastchat.model.model_adapter import (
-    get_conversation_template,
+from fastchat.model.api_models import (
     ANTHROPIC_MODEL_LIST,
     OPENAI_MODEL_LIST,
+    get_api_conversation_template as get_conversation_template,
 )
 
 # API setting constants
@@ -53,6 +53,20 @@ reverse_model_map = {
     "model_1": "model_2",
     "model_2": "model_1",
 }
+
+
+def reorg_answer_file(answer_file):
+    """Sort by question id and de-duplication"""
+    answers = {}
+    with open(answer_file, "r") as fin:
+        for line in fin:
+            qid = json.loads(line)["question_id"]
+            answers[qid] = line
+
+    qids = sorted(list(answers.keys()))
+    with open(answer_file, "w") as fout:
+        for qid in qids:
+            fout.write(answers[qid])
 
 
 @dataclasses.dataclass

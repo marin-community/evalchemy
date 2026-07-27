@@ -29,8 +29,6 @@ import gc
 # suppress warnings
 import warnings
 
-import torch
-
 warnings.filterwarnings("ignore")
 
 
@@ -58,6 +56,12 @@ def cleanup_resources():
 
     # Force garbage collection
     gc.collect()
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch":
+            raise
+        return
     torch.cuda.empty_cache()
 
 

@@ -1744,11 +1744,9 @@ dependencies = [
 alpaca-eval = [
     { name = "alpaca-eval" },
     { name = "patsy" },
-    { name = "torch" },
 ]
 benchmarks = [
     { name = "absl-py" },
-    { name = "accelerate" },
     { name = "alpaca-eval" },
     { name = "anthropic" },
     { name = "codebleu" },
@@ -1772,7 +1770,6 @@ benchmarks = [
     { name = "shortuuid" },
     { name = "swebench" },
     { name = "together" },
-    { name = "torch" },
     { name = "tree-sitter" },
     { name = "tree-sitter-python" },
 ]
@@ -1780,12 +1777,8 @@ bigcodebench = [
     { name = "fire" },
     { name = "pqdm" },
     { name = "regex" },
-    { name = "torch" },
     { name = "tree-sitter" },
     { name = "tree-sitter-python" },
-]
-cruxeval = [
-    { name = "torch" },
 ]
 database = [
     { name = "psycopg2-binary" },
@@ -1810,7 +1803,6 @@ ifeval = [
     { name = "nltk" },
 ]
 livebench = [
-    { name = "accelerate" },
     { name = "fschat" },
     { name = "immutabledict" },
     { name = "langdetect" },
@@ -1820,7 +1812,6 @@ livebench = [
     { name = "psutil" },
     { name = "pyext" },
     { name = "shortuuid" },
-    { name = "torch" },
 ]
 mbpp = [
     { name = "fire" },
@@ -1831,15 +1822,12 @@ mbppplus = [
 mixeval = [
     { name = "nltk" },
     { name = "prettytable" },
-    { name = "torch" },
 ]
 mtbench = [
-    { name = "accelerate" },
     { name = "anthropic" },
     { name = "fschat" },
     { name = "psutil" },
     { name = "shortuuid" },
-    { name = "torch" },
 ]
 multiple = [
     { name = "fire" },
@@ -1861,6 +1849,7 @@ swebench = [
     { name = "swebench" },
 ]
 vllm = [
+    { name = "accelerate" },
     { name = "lm-eval", extra = ["vllm"] },
 ]
 wildbench = [
@@ -1881,8 +1870,7 @@ zeroeval = [
 [package.metadata]
 requires-dist = [
     { name = "absl-py", marker = "extra == 'ifeval'" },
-    { name = "accelerate", marker = "extra == 'livebench'" },
-    { name = "accelerate", marker = "extra == 'mtbench'" },
+    { name = "accelerate", marker = "extra == 'vllm'" },
     { name = "alpaca-eval", marker = "extra == 'alpaca-eval'", directory = "eval/chat_benchmarks/alpaca_eval" },
     { name = "anthropic", marker = "extra == 'mtbench'" },
     { name = "anthropic", marker = "extra == 'wildbench'" },
@@ -1950,12 +1938,6 @@ requires-dist = [
     { name = "swebench", marker = "extra == 'swebench'", specifier = ">=3.0.4" },
     { name = "together", marker = "extra == 'wildbench'" },
     { name = "together", marker = "extra == 'zeroeval'" },
-    { name = "torch", marker = "extra == 'alpaca-eval'" },
-    { name = "torch", marker = "extra == 'bigcodebench'" },
-    { name = "torch", marker = "extra == 'cruxeval'" },
-    { name = "torch", marker = "extra == 'livebench'" },
-    { name = "torch", marker = "extra == 'mixeval'" },
-    { name = "torch", marker = "extra == 'mtbench'" },
     { name = "transformers", specifier = "<5" },
     { name = "tree-sitter", marker = "extra == 'bigcodebench'" },
     { name = "tree-sitter", marker = "extra == 'multiple'" },

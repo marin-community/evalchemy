@@ -8,7 +8,6 @@ import logging
 import numpy as np
 import pandas as pd
 import shortuuid
-import torch.distributed as dist
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -26,7 +25,6 @@ from fastchat.llm_judge.common import (
     NEED_REF_CATS,
     temperature_config,
 )
-from fastchat.utils import str_to_torch_dtype
 from fastchat.llm_judge.gen_judgment import (
     make_match,
     make_match_all_pairs,

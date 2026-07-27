@@ -134,24 +134,23 @@ database = [
 # Benchmarks the lean base already covers get an EMPTY extra (see the block further down),
 # so `evalchemy[<any benchmark dir>]` is uniformly valid. `benchmarks` is the union of them
 # all. Each non-empty extra is verified in ISOLATION (base + that one extra, nothing else)
-# by scripts/ci/check_benchmark_extras.py -- a dep that goes missing fails there, in CI,
-# not at eval time. torch lands here (not base) because it is a module-level import of a
-# handful of benchmarks only (MTBench/MixEval/alpaca_eval/CruxEval/BigCodeBench/LiveBench).
+# by scripts/ci/check_benchmark_extras.py -- a dep that goes missing or pulls torch fails
+# there, in CI, not at eval time. Local inference installs torch through the `vllm` extra;
+# benchmark extras cover endpoint generation and grading only.
 # `fschat`/`alpaca-eval` resolve from the vendored copies via [tool.uv.sources] for a
 # workspace `uv sync`; a git/uvx install falls back to the PyPI packages.
-bigcodebench = ["torch", "fire", "regex", "tree_sitter", "tree-sitter-python", "pqdm"]
-cruxeval = ["torch"]
+bigcodebench = ["fire", "regex", "tree_sitter", "tree-sitter-python", "pqdm"]
+cruxeval = []
 humaneval = ["fire"]
 humanevalplus = ["fire"]
 ifeval = ["nltk", "langdetect", "absl-py", "immutabledict"]
-# LiveBench loads fastchat's model adapter (torch, psutil, accelerate via fschat), a
-# vendored IFEval judge (langdetect, immutabledict, nltk), and its vendored lcb_runner
-# code-exec grader imports pyext at module load; the penfever py3 fork is the only pyext
-# that imports under Python 3.
+# LiveBench uses the FastChat model adapter only when torch is available for local
+# inference. Endpoint mode uses its torch-free API conversation template. Its vendored
+# IFEval judge needs langdetect/immutabledict/nltk, and the lcb_runner code-exec grader
+# imports pyext at module load; the penfever py3 fork is the only pyext that imports
+# under Python 3.
 livebench = [
-    "torch",
     "psutil",
-    "accelerate",
     "fschat",
     "shortuuid",
     "nltk",
@@ -163,14 +162,15 @@ livebench = [
 ]
 mbpp = ["fire"]
 mbppplus = ["fire"]
-# fschat's llm_judge/model adapter imports anthropic, psutil and accelerate at module load.
-mtbench = ["torch", "fschat", "accelerate", "anthropic", "psutil", "shortuuid"]
-mixeval = ["torch", "nltk", "prettytable"]
+# MTBench's torch-free llm_judge path imports anthropic and FastChat's conversation
+# templates. FastChat's local model adapter remains available when `vllm` supplies torch.
+mtbench = ["fschat", "anthropic", "psutil", "shortuuid"]
+mixeval = ["nltk", "prettytable"]
 multiple = ["fire", "regex", "tree_sitter"]
 repobench = ["fuzzywuzzy", "codebleu"]
 swebench = ["swebench>=3.0.4"]
 wildbench = ["jsonlines", "cohere", "anthropic", "reka-api", "together"]
-alpaca-eval = ["torch", "alpaca-eval", "patsy"]
+alpaca-eval = ["alpaca-eval", "patsy"]
 zeroeval = ["google-generativeai", "cohere", "anthropic", "reka-api", "together"]
 
 # Empty extras: these benchmark dirs import nothing beyond the lean base (their graders
@@ -229,8 +229,10 @@ benchmarks = [
 
 # Local vLLM inference engine. Needed only to serve/evaluate models locally
 # (`--model vllm`); NOT needed to evaluate against a served OpenAI-compatible
-# endpoint. Split out of the base deps so a CPU-only install stays lean.
+# endpoint. accelerate keeps the vendored FastChat model adapters available once
+# torch is installed. Split these out of the base deps so a CPU-only install stays lean.
 vllm = [
+    "accelerate",
     "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
 ]
 

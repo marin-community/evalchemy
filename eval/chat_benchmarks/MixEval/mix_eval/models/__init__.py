@@ -1,3 +1,6 @@
+import importlib.util
+
+
 AVAILABLE_MODELS = {
     # open models
     "llama_2_7b": "LLAMA_2_7B",
@@ -129,12 +132,24 @@ AVAILABLE_MODELS = {
     "local_base": "LocalBaseModel",
 }
 
-for model_name, model_class in AVAILABLE_MODELS.items():
-    try:
-        exec(f"from .{model_name} import {model_class}")
-    except ImportError as e:
-        print(e)
-        pass
+_models_loaded = False
+
+
+def load_model_implementations():
+    global _models_loaded
+    if _models_loaded:
+        return
+    for model_name, model_class in AVAILABLE_MODELS.items():
+        try:
+            exec(f"from .{model_name} import {model_class}", globals())
+        except ImportError as e:
+            print(e)
+            pass
+    _models_loaded = True
+
+
+if importlib.util.find_spec("torch") is not None:
+    load_model_implementations()
 
 
 if __name__ == "__main__":
