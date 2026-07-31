@@ -110,9 +110,8 @@ jobs:
         run: uv sync --no-dev --python 3.12 --extra serve-eval
 
       - name: Configure Finelog telemetry
-        # The controller fix that makes /system endpoints mintable may roll out
-        # independently of evalchemy. Until then, leave the endpoint unset: the
-        # runner's telemetry calls remain inert and the eval still runs.
+        # Telemetry must not gate the nightly. If the controller cannot mint the
+        # short-lived endpoint capability, leave telemetry disabled and run the eval.
         run: |
           if ! mint_output=$(iris --cluster marin endpoints mint /system/log-server --ttl-hours 2 2>&1); then
             echo "::warning::Finelog capability mint failed; continuing without telemetry"

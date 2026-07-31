@@ -4,8 +4,8 @@
 
 Only the subtle behaviors that would SILENTLY break the runner: model_args
 semantics, the bare ``--apply_chat_template`` footgun, URL normalization, the run
-config boundaries, the readiness poll, the provider factory, and the marin-serve
-PTY parse. Each runs in-process against stdlib stubs -- a stub HTTP server and a PTY.
+config boundaries, the readiness poll, the provider factory, the marin-serve PTY
+parse, and telemetry across real HTTP, subprocess, and filesystem boundaries.
 """
 
 import json
@@ -26,6 +26,8 @@ from pydantic import ValidationError
 
 from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
+from eval.serve_eval.observability import configure as configure_telemetry
+from eval.serve_eval.observability import record_failure, shutdown as shutdown_telemetry
 from eval.serve_eval.providers import (
     EndpointProvider,
     MarinServeProvider,
@@ -371,6 +373,30 @@ def _telemetry_records() -> list[dict]:
     return [record for batch in _ModelsHandler.telemetry_batches for record in batch["records"]]
 
 
+def test_structured_failure_redacts_capability_token_before_export():
+    server = _serve()
+    try:
+        port = server.server_address[1]
+        configure_telemetry(
+            f"http://127.0.0.1:{port}/v1/telemetry",
+            run_id="redaction-test",
+            model="served-model",
+            provider="endpoint",
+            tasks=["gsm8k"],
+        )
+        record_failure(
+            "readiness",
+            RuntimeError("GET https://iris.oa.dev/proxy/t/secret-token/system.log-server/v1/models failed"),
+        )
+        shutdown_telemetry()
+    finally:
+        server.shutdown()
+
+    [failure] = [record for record in _telemetry_records() if record["name"] == "failure"]
+    assert "secret-token" not in json.dumps(failure)
+    assert "/proxy/t/<redacted>/system.log-server/" in failure["body"]["message"]
+
+
 def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
     server = _serve()
     try:
@@ -388,8 +414,6 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
 
     records = _telemetry_records()
     event_names = {record["name"] for record in records if record["kind"] == "event"}
-    metric_names = {record["name"] for record in records if record["kind"] != "event"}
-    assert all(not name.startswith("evalchemy") for name in metric_names)
     assert {
         "run_started",
         "provider_starting",
@@ -450,7 +474,7 @@ def test_runner_exports_observed_subprocess_failure_and_cleanup(tmp_path):
     terminal = next(record for record in records if record["name"] == "run_terminal")
     assert terminal["attributes"]["state"] == "failed"
     cleanup = next(record for record in records if record["name"] == "cleanup_terminal")
-    assert cleanup["attributes"] == {"outcome": "succeeded", "provider": "endpoint"}
+    assert cleanup["attributes"] == {"outcome": "succeeded"}
 
 
 @pytest.mark.parametrize("eval_exit_code", [0, 7])

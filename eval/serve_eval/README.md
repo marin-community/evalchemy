@@ -100,17 +100,17 @@ The metric schema is intentionally small:
 
 | Metric | Kind | Record attributes |
 | --- | --- | --- |
-| `provider_duration_seconds` | histogram | `provider`, `outcome` |
-| `readiness_attempts` | counter | `provider`, `outcome` |
-| `readiness_duration_seconds` | histogram | `provider`, `outcome` |
+| `provider_duration_seconds` | histogram | `outcome` |
+| `readiness_attempts` | counter | `outcome` |
+| `readiness_duration_seconds` | histogram | `outcome` |
 | `subprocess_duration_seconds` | histogram | `outcome` |
 | `subprocess_exit_code` | gauge | snapshot attributes |
 | `runs` | counter | `state` |
 | `task_samples` | gauge | `task`, snapshot attributes |
 | `task_metric` | gauge | `task`, `metric`, snapshot attributes |
 | `results_persisted` | counter | none |
-| `cleanup_duration_seconds` | histogram | `provider`, `outcome` |
-| `cleanups` | counter | `provider`, `outcome` |
+| `cleanup_duration_seconds` | histogram | `outcome` |
+| `cleanups` | counter | `outcome` |
 
 Snapshot gauges carry `source_kind=gauge` and
 `source_temporality=current_snapshot`. Lifecycle details are structured events named

@@ -30,10 +30,10 @@ from evalchemy_config import materialize_eval_args
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.observability import (
     configure as configure_telemetry,
-    failure as record_failure,
     output_ready,
     provider_starting,
     provider_terminal,
+    record_failure,
     results_persisted,
     run_started,
     run_terminal,
@@ -265,7 +265,7 @@ def main(
         output_ready(output_dir)
 
         stage = "provider"
-        provider_starting(provider)
+        provider_starting()
         provider_started = time.monotonic()
         provider_is_ready = False
         try:
@@ -286,7 +286,7 @@ def main(
             )
             with prov as served:
                 provider_is_ready = True
-                provider_terminal(provider, time.monotonic() - provider_started, "ready")
+                provider_terminal(time.monotonic() - provider_started, "ready")
                 logger.info(
                     "served model: base_url=%s model=%s (auth=%s)",
                     served.base_url,
@@ -297,7 +297,7 @@ def main(
                 run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
         except BaseException:
             if not provider_is_ready:
-                provider_terminal(provider, time.monotonic() - provider_started, "failed")
+                provider_terminal(time.monotonic() - provider_started, "failed")
             raise
 
         stage = "results"
