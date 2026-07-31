@@ -19,15 +19,31 @@ import logging
 import os
 import subprocess
 import sys
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Union
 
 import click
+from evalchemy_config import materialize_eval_args
 
 from eval.serve_eval.config import RunConfig
+from eval.serve_eval.observability import (
+    configure as configure_telemetry,
+    failure as record_failure,
+    output_ready,
+    provider_starting,
+    provider_terminal,
+    results_persisted,
+    run_started,
+    run_terminal,
+    shutdown as shutdown_telemetry,
+    subprocess_started,
+    subprocess_terminal,
+    task_results,
+)
 from eval.serve_eval.providers import ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
-from evalchemy_config import materialize_eval_args
 
 logger = logging.getLogger("eval.serve_eval")
 
@@ -113,9 +129,24 @@ def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit,
 
 def run_eval(argv: List[str]) -> None:
     logger.info("running eval.eval:\n  %s", " ".join(argv))
-    result = subprocess.run(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
-    if result.returncode != 0:
-        raise RuntimeError(f"eval.eval exited with code {result.returncode}")
+    started = time.monotonic()
+    try:
+        process = subprocess.Popen(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
+    except BaseException:
+        subprocess_terminal(time.monotonic() - started, "start_failed")
+        raise
+    subprocess_started(process.pid)
+    try:
+        returncode = process.wait()
+    except BaseException:
+        process.kill()
+        process.wait()
+        subprocess_terminal(time.monotonic() - started, "interrupted")
+        raise
+    outcome = "succeeded" if returncode == 0 else "failed"
+    subprocess_terminal(time.monotonic() - started, outcome, exit_code=returncode)
+    if returncode != 0:
+        raise RuntimeError(f"eval.eval exited with code {returncode}")
 
 
 def summarize(results: EvalResults, tasks: List[str]) -> str:
@@ -146,6 +177,13 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 )
 @click.option("--output-dir", default=None, help="Where eval.eval writes results (default: a stamped dir under runs/).")
 @click.option("--python", "python_bin", default=sys.executable, help="Python used to run eval.eval.")
+@click.option(
+    "--telemetry-endpoint",
+    default=None,
+    envvar="FINELOG_TELEMETRY_ENDPOINT",
+    help="Finelog /v1/telemetry endpoint. Unset disables telemetry.",
+)
+@click.option("--run-id", default=None, envvar="EVAL_RUN_ID", help="Stable identity for this eval run (default: UUID).")
 # endpoint provider
 @click.option("--base-url", default=None, envvar="E2E_BASE_URL", help="OpenAI /v1 root (endpoint provider).")
 @click.option("--api-key", default=None, envvar="E2E_API_KEY", help="Bearer token for the endpoint.")
@@ -174,6 +212,8 @@ def main(
     limit: Optional[int],
     output_dir: Optional[str],
     python_bin: str,
+    telemetry_endpoint: Optional[str],
+    run_id: Optional[str],
     base_url: Optional[str],
     api_key: Optional[str],
     no_wait_ready: bool,
@@ -214,33 +254,71 @@ def main(
     output_dir = output_dir or os.path.join(
         _REPO_ROOT, "eval", "serve_eval", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     )
-    os.makedirs(output_dir, exist_ok=True)
+    run_id = run_id or str(uuid.uuid4())
+    configure_telemetry(telemetry_endpoint, run_id=run_id, model=cfg.model, provider=provider, tasks=cfg.tasks)
 
-    prov = build_provider(
-        provider,
-        cfg.model,
-        base_url=base_url,
-        api_key=api_key,
-        tokenizer=cfg.tokenizer,
-        cluster=cfg.cluster,
-        tpu=cfg.tpu,
-        name=name,
-        region=cfg.region,
-        marin_workspace=cfg.marin_workspace,
-        wait_timeout_s=cfg.wait_timeout_s,
-        timeout_hours=cfg.timeout_hours,
-        wait_ready=not no_wait_ready,
-    )
+    state = "failed"
+    stage = "output"
+    try:
+        run_started(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        output_ready(output_dir)
 
-    with prov as served:
-        logger.info("served model: base_url=%s model=%s (auth=%s)", served.base_url, served.model, bool(served.api_key))
-        run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
+        stage = "provider"
+        provider_starting(provider)
+        provider_started = time.monotonic()
+        provider_is_ready = False
+        try:
+            prov = build_provider(
+                provider,
+                cfg.model,
+                base_url=base_url,
+                api_key=api_key,
+                tokenizer=cfg.tokenizer,
+                cluster=cfg.cluster,
+                tpu=cfg.tpu,
+                name=name,
+                region=cfg.region,
+                marin_workspace=cfg.marin_workspace,
+                wait_timeout_s=cfg.wait_timeout_s,
+                timeout_hours=cfg.timeout_hours,
+                wait_ready=not no_wait_ready,
+            )
+            with prov as served:
+                provider_is_ready = True
+                provider_terminal(provider, time.monotonic() - provider_started, "ready")
+                logger.info(
+                    "served model: base_url=%s model=%s (auth=%s)",
+                    served.base_url,
+                    served.model,
+                    bool(served.api_key),
+                )
+                stage = "evaluation"
+                run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
+        except BaseException:
+            if not provider_is_ready:
+                provider_terminal(provider, time.monotonic() - provider_started, "failed")
+            raise
 
-    results_path = EvalResults.find_latest_path(output_dir)
-    results = EvalResults.load(results_path)
-    click.echo("\n" + summarize(results, cfg.tasks))
-    click.echo(f"\nresults: {results_path}")
-    click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+        stage = "results"
+        results_path = EvalResults.find_latest_path(output_dir)
+        results = EvalResults.load(results_path)
+        results_persisted(results_path)
+        task_results(results, cfg.tasks)
+        click.echo("\n" + summarize(results, cfg.tasks))
+        click.echo(f"\nresults: {results_path}")
+        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+        state = "succeeded"
+    except KeyboardInterrupt as error:
+        state = "cancelled"
+        record_failure(stage, error)
+        raise
+    except BaseException as error:
+        record_failure(stage, error)
+        raise
+    finally:
+        run_terminal(state)
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

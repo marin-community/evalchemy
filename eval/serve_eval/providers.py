@@ -24,11 +24,14 @@ import select
 import shlex
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import List, Optional
+
+from eval.serve_eval.observability import cleanup_terminal, failure as record_failure, readiness_terminal
 
 logger = logging.getLogger("eval.serve_eval.providers")
 
@@ -71,18 +74,29 @@ def api_root(base_url: str) -> str:
     return root
 
 
-def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, interval_s: float = 3.0) -> None:
+def wait_for_models(
+    base_url: str,
+    api_key: Optional[str],
+    timeout_s: float,
+    interval_s: float = 3.0,
+    *,
+    provider: str = "endpoint",
+) -> None:
     """Poll ``<base_url>/models`` until it returns HTTP 200 or ``timeout_s`` elapses."""
     url = api_root(base_url) + "/models"
     headers = {"Authorization": "Bearer " + api_key} if api_key else {}
+    started = time.monotonic()
     deadline = time.monotonic() + timeout_s
     last_err: Optional[str] = None
+    attempts = 0
     while time.monotonic() < deadline:
+        attempts += 1
         req = urllib.request.Request(url, headers=headers, method="GET")
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310 - trusted operator-supplied URL
                 if 200 <= resp.status < 300:
                     logger.info("endpoint ready: %s", url)
+                    readiness_terminal(provider, time.monotonic() - started, attempts, "ready")
                     return
                 last_err = "HTTP %s" % resp.status
         except urllib.error.HTTPError as exc:
@@ -90,6 +104,7 @@ def wait_for_models(base_url: str, api_key: Optional[str], timeout_s: float, int
         except (urllib.error.URLError, OSError, ValueError) as exc:
             last_err = str(exc)
         time.sleep(interval_s)
+    readiness_terminal(provider, time.monotonic() - started, attempts, "timeout")
     raise TimeoutError(f"endpoint {url!r} not ready after {timeout_s:.0f}s (last: {last_err})")
 
 
@@ -115,14 +130,21 @@ class EndpointProvider(Provider):
     wait_ready: bool = True
 
     def __enter__(self) -> ServedModel:
-        root = api_root(self.base_url)
-        if self.wait_ready:
-            wait_for_models(root, self.api_key, self.readiness_timeout_s)
-        return ServedModel(
-            base_url=root, model=self.model, api_key=self.api_key, tokenizer=self.tokenizer or self.model
-        )
+        try:
+            root = api_root(self.base_url)
+            if self.wait_ready:
+                wait_for_models(root, self.api_key, self.readiness_timeout_s)
+            else:
+                readiness_terminal("endpoint", 0.0, 0, "skipped")
+            return ServedModel(
+                base_url=root, model=self.model, api_key=self.api_key, tokenizer=self.tokenizer or self.model
+            )
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        cleanup_terminal("endpoint", 0.0, "succeeded")
         return False
 
 
@@ -143,6 +165,7 @@ class MarinServeProvider(Provider):
     marin_serve_bin: str = "marin-serve"
     iris_bin: str = "iris"
     readiness_timeout_s: float = 300.0
+    wait_ready: bool = True
     # cwd for the marin-serve subprocess. marin-serve bundles cwd as the Iris job
     # workspace and the container `uv sync`s it, so this MUST be a marin workspace
     # checkout (a dir whose pyproject resolves marin-core[tpu,vllm]). Running from
@@ -185,6 +208,13 @@ class MarinServeProvider(Provider):
         return cmd
 
     def __enter__(self) -> ServedModel:
+        try:
+            return self._start()
+        except BaseException:
+            self.__exit__(*sys.exc_info())
+            raise
+
+    def _start(self) -> ServedModel:
         # An explicit --name makes teardown deterministic. marin-serve derives a
         # random name otherwise, which we could not then stop reliably.
         job_name = self.name or self.default_job_name(self.model)
@@ -217,7 +247,10 @@ class MarinServeProvider(Provider):
             os.close(slave_fd)  # the child holds the only writer end now
         base_url = self._read_until_ready(self.wait_timeout_s + 120.0)
         api_key = self.api_key or _CAPABILITY_API_KEY
-        wait_for_models(base_url, None, self.readiness_timeout_s)
+        if self.wait_ready:
+            wait_for_models(base_url, None, self.readiness_timeout_s, provider="marin-serve")
+        else:
+            readiness_terminal("marin-serve", 0.0, 0, "skipped")
         return ServedModel(
             base_url=api_root(base_url),
             model=self.model,
@@ -281,26 +314,56 @@ class MarinServeProvider(Provider):
         raise TimeoutError(f"marin-serve did not print an endpoint URL within {timeout_s:.0f}s")
 
     def __exit__(self, exc_type, exc, tb) -> bool:
+        started = time.monotonic()
+        try:
+            outcome = self._cleanup()
+        except Exception as error:
+            outcome = "failed"
+            record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "cleanup"})
+            logger.warning("marin-serve cleanup failed (%s); check for a live Iris job", error)
+        cleanup_terminal("marin-serve", time.monotonic() - started, outcome)
+        return False
+
+    def _cleanup(self) -> str:
         # Detach the tunnel-holding CLI first, then stop the Iris job it left
         # running. Both are best-effort so teardown never masks a run failure.
+        outcome = "succeeded"
         proc = self._proc
         if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGINT)
             try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                proc.send_signal(signal.SIGINT)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired as error:
+                    outcome = "failed"
+                    record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "wait"})
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired as kill_error:
+                        record_failure(
+                            "cleanup",
+                            kill_error,
+                            attributes={"provider": "marin-serve", "operation": "kill"},
+                        )
+            except (OSError, subprocess.SubprocessError) as error:
+                outcome = "failed"
+                record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "stop_cli"})
+                logger.warning("marin-serve CLI cleanup failed (%s)", error)
         if self._master_fd is not None:
             try:
                 os.close(self._master_fd)
-            except OSError:
-                pass
+            except OSError as error:
+                outcome = "failed"
+                record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "close_pty"})
             self._master_fd = None
         # `iris job stop` accepts only canonical /<user>/<job> ids; a bare name makes
         # it raise, which check=False would swallow -- resolve one before stopping.
         job_id = self._job_id or self._resolve_job_id()
         if job_id is None:
             name = self.name or self.default_job_name(self.model)
+            error = RuntimeError(f"no canonical Iris job ID found for {name}")
+            record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "find_job"})
             logger.warning(
                 "no canonical iris job id (marin-serve never printed one and `job list` shows no '%s'); "
                 "if a slice is still up, stop it manually: %s --cluster %s job stop /<user>/%s",
@@ -309,16 +372,23 @@ class MarinServeProvider(Provider):
                 self.cluster,
                 name,
             )
-            return False
+            return "job_not_found" if outcome == "succeeded" else outcome
         # NB: --cluster is a TOP-LEVEL iris flag (`iris --cluster X job stop <id>`),
         # not a `job stop` option.
         stop = [self.iris_bin, "--cluster", self.cluster, "job", "stop", job_id]
         logger.info("stopping iris job: %s", " ".join(shlex.quote(c) for c in stop))
         try:
-            subprocess.run(stop, timeout=120, check=False)  # noqa: S603 - operator-supplied command
-        except (OSError, subprocess.SubprocessError) as e:
-            logger.warning("iris job stop failed (%s); stop it manually: %s", e, " ".join(stop))
-        return False
+            result = subprocess.run(stop, timeout=120, check=False)  # noqa: S603 - operator-supplied command
+            if result.returncode != 0:
+                outcome = "failed"
+                error = RuntimeError(f"iris job stop exited with code {result.returncode}")
+                record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "stop_job"})
+                logger.warning("%s; stop it manually: %s", error, " ".join(stop))
+        except (OSError, subprocess.SubprocessError) as error:
+            outcome = "failed"
+            record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "stop_job"})
+            logger.warning("iris job stop failed (%s); stop it manually: %s", error, " ".join(stop))
+        return outcome
 
     def _resolve_job_id(self) -> Optional[str]:
         """Find this run's canonical /<user>/<job> id via `iris job list`.
@@ -330,8 +400,14 @@ class MarinServeProvider(Provider):
         cmd = [self.iris_bin, "--cluster", self.cluster, "job", "list"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
-        except (OSError, subprocess.SubprocessError) as e:
-            logger.warning("iris job list failed (%s)", e)
+        except (OSError, subprocess.SubprocessError) as error:
+            record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "list_jobs"})
+            logger.warning("iris job list failed (%s)", error)
+            return None
+        if result.returncode != 0:
+            error = RuntimeError(f"iris job list exited with code {result.returncode}")
+            record_failure("cleanup", error, attributes={"provider": "marin-serve", "operation": "list_jobs"})
+            logger.warning("%s", error)
             return None
         match = re.search(rf"(/\S+/{re.escape(name)})\b", result.stdout)
         return match.group(1) if match else None
@@ -380,6 +456,7 @@ def build_provider(
             wait_timeout_s=wait_timeout_s,
             timeout_hours=timeout_hours,
             readiness_timeout_s=readiness_timeout_s,
+            wait_ready=wait_ready,
             extra_args=extra_args,
         )
     raise ValueError(f"unknown provider {provider!r}; expected 'endpoint' or 'marin-serve'")

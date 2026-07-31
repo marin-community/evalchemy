@@ -10,13 +10,11 @@ authors = [
     { name = "Your Name", email = "your.email@example.com" },
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 
@@ -50,7 +48,7 @@ dependencies = [
 
     # Runtime tokenizer / chat-template for API models. lm-eval 0.4.x imports symbols
     # transformers 5 removed, so cap below it.
-    "transformers<5",
+    "transformers>=4.31,<5",
     # Slow-tokenizer backends for common models.
     "sentencepiece",
     "protobuf",
@@ -95,8 +93,9 @@ dev = [
 
 # The serve-and-eval runner (eval/serve_eval/): the run/validate CLIs use click,
 # parse results/spec JSON with pydantic, and load the run config (qwen-tiny.yaml) with
-# pydantic-settings. An optional extra, not base deps -- base evalchemy evaluates fine
-# without the runner, and this keeps a plain `uv sync` lean. The regression gate
+# pydantic-settings. marin-rigging exports bounded, best-effort lifecycle records to
+# Finelog without pulling marin-core. This is an optional extra, not a base dependency:
+# base evalchemy evaluates fine without the runner. The regression gate
 # (eval/regression/) reuses these same deps.
 #
 # s3fs gives fsspec an s3:// backend so an endpoint-eval job can route its result
@@ -111,6 +110,7 @@ serve-eval = [
     "pydantic-settings>=2",
     "pyyaml",
     "s3fs",
+    "marin-rigging>=0.2.67.dev30673006835",
 ]
 
 # Postgres driver for the --use_database result-tracking path only. DATABASE_URL
