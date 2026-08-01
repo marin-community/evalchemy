@@ -19,20 +19,32 @@ import logging
 import os
 import subprocess
 import sys
+import time
+import uuid
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Dict, List, Optional, Union
 
 import click
+from evalchemy_config import materialize_eval_args
+from rigging import telemetry
 
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.providers import ServedModel, api_root, build_provider
+from eval.serve_eval.providers import PHASE_DURATION, ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
-from evalchemy_config import materialize_eval_args
 
 logger = logging.getLogger("eval.serve_eval")
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "serve_eval", "configs", "qwen-tiny.yaml")
+_SHUTDOWN_TIMEOUT = 2.0
+_DRAIN_POLL_INTERVAL = 0.01
+_SNAPSHOT_GAUGE_ATTRIBUTES = telemetry.snapshot_attributes("gauge", telemetry.CURRENT_SNAPSHOT)
+_WORK_COMPLETED = telemetry.gauge("work_completed", unit="{item}")
+_SECONDS_PER_TRIAL = telemetry.gauge("seconds_per_trial", unit="s/trial")
 
 # lm-eval OpenAI-compatible model backends (registry names it resolves via
 # lm_eval.api.registry.get_model). Chat endpoint when a chat template is applied.
@@ -41,6 +53,97 @@ LOCAL_CHAT_COMPLETIONS = "local-chat-completions"
 _ADAPTER_PATH = {LOCAL_COMPLETIONS: "completions", LOCAL_CHAT_COMPLETIONS: "chat/completions"}
 
 ModelArgValue = Union[str, int, float, bool]
+
+
+@dataclass
+class _EvaluationPhase:
+    duration_seconds: float = 0.0
+    exit_code: int | None = None
+
+
+class _EvaluationOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+@contextmanager
+def _measure_evaluation() -> Iterator[_EvaluationPhase]:
+    phase = _EvaluationPhase()
+    started = time.monotonic()
+    outcome = _EvaluationOutcome.FAILED
+    try:
+        yield phase
+    except KeyboardInterrupt:
+        outcome = _EvaluationOutcome.INTERRUPTED
+        raise
+    else:
+        outcome = _EvaluationOutcome.SUCCEEDED
+    finally:
+        phase.duration_seconds = time.monotonic() - started
+        attributes = {"phase": "evaluation", "outcome": outcome}
+        if phase.exit_code is not None:
+            attributes["exit_code"] = str(phase.exit_code)
+        PHASE_DURATION.record(phase.duration_seconds, attributes=attributes)
+
+
+def configure_telemetry(
+    endpoint: str | None,
+    *,
+    root_run_uid: str,
+    execution_uid: str,
+    model: str,
+    provider: str,
+    tasks: list[str],
+    serving_job_id: str | None = None,
+) -> None:
+    """Configure telemetry once when a Finelog endpoint was provided."""
+    if endpoint is None:
+        return
+    attributes = {
+        "root_run_uid": root_run_uid,
+        "execution_uid": execution_uid,
+        "model": model,
+        "provider": provider,
+        "tasks": ",".join(tasks),
+    }
+    if serving_job_id is not None:
+        attributes["serving_job_id"] = serving_job_id
+    telemetry.configure(endpoint=endpoint, service="evalchemy", attributes=attributes)
+
+
+def shutdown_telemetry() -> None:
+    """Give telemetry one bounded opportunity to drain without changing the run."""
+    deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
+    status = telemetry.runtime_status()
+    while status.configured and status.queued_records:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_DRAIN_POLL_INTERVAL, remaining))
+        status = telemetry.runtime_status()
+    telemetry.shutdown(max(0.0, deadline - time.monotonic()))
+
+
+def _record_completed_work(results: EvalResults, tasks: list[str], evaluation_duration: float) -> None:
+    sample_counts = [results.sample_count(task) for task in tasks]
+    for task, samples in zip(tasks, sample_counts, strict=True):
+        if samples is not None:
+            _WORK_COMPLETED.set(
+                samples,
+                attributes={"work_kind": "trial", "scope": "task", "task": task, **_SNAPSHOT_GAUGE_ATTRIBUTES},
+            )
+    if all(samples is not None for samples in sample_counts):
+        total_trials = sum(samples for samples in sample_counts if samples is not None)
+        _WORK_COMPLETED.set(
+            total_trials,
+            attributes={"work_kind": "trial", "scope": "run", **_SNAPSHOT_GAUGE_ATTRIBUTES},
+        )
+        if total_trials > 0:
+            _SECONDS_PER_TRIAL.set(
+                evaluation_duration / total_trials,
+                attributes={"source_phase": "evaluation", **_SNAPSHOT_GAUGE_ATTRIBUTES},
+            )
 
 
 def adapter_for(apply_chat_template: bool) -> str:
@@ -80,7 +183,14 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
     return ",".join(f"{k}={_model_arg(v)}" for k, v in args.items())
 
 
-def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit, extra_args, python: str) -> List[str]:
+def build_eval_argv(
+    served: ServedModel,
+    cfg: RunConfig,
+    output_dir: str,
+    limit: Optional[int],
+    extra_args: Sequence[str],
+    python: str,
+) -> List[str]:
     """Build the ``python -m eval.eval`` argv for this run.
 
     Uses the bare ``--apply_chat_template`` flag: that parser option is
@@ -111,11 +221,15 @@ def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit,
     return argv
 
 
-def run_eval(argv: List[str]) -> None:
+def run_eval(argv: List[str]) -> float:
+    """Run the evaluation child and return its critical-path wall time in seconds."""
     logger.info("running eval.eval:\n  %s", " ".join(argv))
-    result = subprocess.run(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
-    if result.returncode != 0:
-        raise RuntimeError(f"eval.eval exited with code {result.returncode}")
+    with _measure_evaluation() as phase:
+        result = subprocess.run(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
+        phase.exit_code = result.returncode
+        if result.returncode != 0:
+            raise RuntimeError(f"eval.eval exited with code {result.returncode}")
+    return phase.duration_seconds
 
 
 def summarize(results: EvalResults, tasks: List[str]) -> str:
@@ -146,6 +260,30 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 )
 @click.option("--output-dir", default=None, help="Where eval.eval writes results (default: a stamped dir under runs/).")
 @click.option("--python", "python_bin", default=sys.executable, help="Python used to run eval.eval.")
+@click.option(
+    "--telemetry-endpoint",
+    default=None,
+    envvar="FINELOG_TELEMETRY_ENDPOINT",
+    help="Finelog /v1/telemetry endpoint. Unset disables telemetry.",
+)
+@click.option(
+    "--root-run-uid",
+    default=None,
+    envvar="EVAL_ROOT_RUN_UID",
+    help="Stable identity for the logical eval effort (default: UUID).",
+)
+@click.option(
+    "--execution-uid",
+    default=None,
+    envvar="EVAL_EXECUTION_UID",
+    help="Identity for this invocation or retry (default: UUID).",
+)
+@click.option(
+    "--serving-job-id",
+    default=None,
+    envvar="EVAL_SERVING_JOB_ID",
+    help="Optional canonical Iris serving job ID for joining service=vllm telemetry.",
+)
 # endpoint provider
 @click.option("--base-url", default=None, envvar="E2E_BASE_URL", help="OpenAI /v1 root (endpoint provider).")
 @click.option("--api-key", default=None, envvar="E2E_API_KEY", help="Bearer token for the endpoint.")
@@ -174,6 +312,10 @@ def main(
     limit: Optional[int],
     output_dir: Optional[str],
     python_bin: str,
+    telemetry_endpoint: Optional[str],
+    root_run_uid: Optional[str],
+    execution_uid: Optional[str],
+    serving_job_id: Optional[str],
     base_url: Optional[str],
     api_key: Optional[str],
     no_wait_ready: bool,
@@ -185,7 +327,7 @@ def main(
     wait_timeout: Optional[float],
     timeout_hours: Optional[float],
     verbose: bool,
-    extra_eval_args: tuple,
+    extra_eval_args: tuple[str, ...],
 ) -> None:
     """Serve a model, run the eval, and print the results.
 
@@ -214,33 +356,53 @@ def main(
     output_dir = output_dir or os.path.join(
         _REPO_ROOT, "eval", "serve_eval", "runs", datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     )
-    os.makedirs(output_dir, exist_ok=True)
-
-    prov = build_provider(
-        provider,
-        cfg.model,
-        base_url=base_url,
-        api_key=api_key,
-        tokenizer=cfg.tokenizer,
-        cluster=cfg.cluster,
-        tpu=cfg.tpu,
-        name=name,
-        region=cfg.region,
-        marin_workspace=cfg.marin_workspace,
-        wait_timeout_s=cfg.wait_timeout_s,
-        timeout_hours=cfg.timeout_hours,
-        wait_ready=not no_wait_ready,
+    root_run_uid = root_run_uid or str(uuid.uuid4())
+    execution_uid = execution_uid or str(uuid.uuid4())
+    configure_telemetry(
+        telemetry_endpoint,
+        root_run_uid=root_run_uid,
+        execution_uid=execution_uid,
+        serving_job_id=serving_job_id,
+        model=cfg.model,
+        provider=provider,
+        tasks=cfg.tasks,
     )
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        prov = build_provider(
+            provider,
+            cfg.model,
+            base_url=base_url,
+            api_key=api_key,
+            tokenizer=cfg.tokenizer,
+            cluster=cfg.cluster,
+            tpu=cfg.tpu,
+            name=name,
+            region=cfg.region,
+            marin_workspace=cfg.marin_workspace,
+            wait_timeout_s=cfg.wait_timeout_s,
+            timeout_hours=cfg.timeout_hours,
+            wait_ready=not no_wait_ready,
+        )
+        with prov as served:
+            logger.info(
+                "served model: base_url=%s model=%s (auth=%s)",
+                served.base_url,
+                served.model,
+                bool(served.api_key),
+            )
+            evaluation_duration = run_eval(
+                build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin)
+            )
 
-    with prov as served:
-        logger.info("served model: base_url=%s model=%s (auth=%s)", served.base_url, served.model, bool(served.api_key))
-        run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
-
-    results_path = EvalResults.find_latest_path(output_dir)
-    results = EvalResults.load(results_path)
-    click.echo("\n" + summarize(results, cfg.tasks))
-    click.echo(f"\nresults: {results_path}")
-    click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+        results_path = EvalResults.find_latest_path(output_dir)
+        results = EvalResults.load(results_path)
+        _record_completed_work(results, cfg.tasks, evaluation_duration)
+        click.echo("\n" + summarize(results, cfg.tasks))
+        click.echo(f"\nresults: {results_path}")
+        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+    finally:
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

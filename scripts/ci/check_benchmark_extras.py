@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 from check_lean_install import CHAT_BENCHMARKS_DIR, REPO_ROOT, import_benchmark
 
-PYTHON_VERSION = "3.11"
+PYTHON_VERSION = "3.12"
 
 # eval/task.py sets an empty OPENAI_API_KEY so benchmarks that read it at import do not hit
 # a NoneType; HLE's judge client rejects an EMPTY key, so use a non-empty dummy here. It

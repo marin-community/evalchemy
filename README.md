@@ -76,14 +76,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone git@github.com:mlfoundations/evalchemy.git
 cd evalchemy
 
-# Create the environment from the lockfile (base install; Python 3.11).
+# Create the environment from the lockfile (base install; Python 3.12).
 # The vendored fschat dependency resolves automatically via [tool.uv.sources].
-uv sync --python 3.11
+uv sync --python 3.12
 #   make install         # equivalent, plus pre-commit hooks
 
 # The base install is vLLM-free (evaluation against served/API models needs no
 # local inference engine). To also install the local vLLM backend (`--model vllm`):
-uv sync --python 3.11 --extra vllm
+uv sync --python 3.12 --extra vllm
 
 # alpaca_eval is still an editable add-on:
 uv pip install -e eval/chat_benchmarks/alpaca_eval

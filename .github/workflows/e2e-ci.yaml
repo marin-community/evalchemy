@@ -46,13 +46,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Run e2e harness tests
-        # The harness core imports only stdlib + pyyaml/pydantic/pydantic-settings/
-        # click, so the tests run in an ephemeral env (--no-project) without
-        # installing evalchemy.
+        # The harness imports the dependency-light runner stack, including
+        # marin-rigging telemetry, so it runs in an ephemeral env (--no-project)
+        # without installing evalchemy.
         run: >-
-          uv run --no-project --python 3.11
+          uv run --no-project --python 3.12
           --with ./packages/evalchemy-config
           --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click
+          --with marin-rigging
           python -m pytest tests/e2e/ -q
 
   lean-install:
@@ -67,9 +68,9 @@ jobs:
       - name: Build the wheel and run the eval entry point
         # `uv tool run --from .` builds + installs the wheel in an isolated env, so this
         # proves the packaging, the console script, and the base import closure at once.
-        run: uv tool run --python 3.11 --from . eval --help
+        run: uv tool run --python 3.12 --from . eval --help
       - name: Sync the lean base env
-        run: uv sync --python 3.11
+        run: uv sync --python 3.12
       - name: Assert no heavy deps leaked and empty-extra benchmarks import
         run: uv run python scripts/ci/check_lean_install.py
 
@@ -85,7 +86,7 @@ jobs:
         with:
           enable-cache: true
       - name: Sync the driver env (for the checker itself)
-        run: uv sync --python 3.11
+        run: uv sync --python 3.12
       - name: Import every non-empty benchmark extra without torch
         run: uv run python scripts/ci/check_benchmark_extras.py
 
@@ -100,7 +101,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
-        run: uv sync --no-dev --python 3.11 --extra serve-eval
+        run: uv sync --no-dev --python 3.12 --extra serve-eval
       - name: Run evalchemy against the endpoint
         run: >-
           uv run python -m eval.serve_eval.run --provider endpoint

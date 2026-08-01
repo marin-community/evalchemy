@@ -28,9 +28,13 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import List, Optional
 
+from rigging import telemetry
+
 logger = logging.getLogger("eval.serve_eval.providers")
+PHASE_DURATION = telemetry.histogram("phase_duration_seconds", unit="s")
 
 # Once vLLM is ready, marin-serve prints a capability URL:
 #     base_url   https://iris.oa.dev/proxy/t/<token>/serve.<name>/v1
@@ -60,6 +64,28 @@ class ServedModel:
     model: str
     api_key: Optional[str] = None
     tokenizer: Optional[str] = None
+
+
+class JobResolutionStatus(StrEnum):
+    """Whether Iris enumeration found a job, found no match, or failed."""
+
+    FOUND = "found"
+    NOT_FOUND = "not_found"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class JobResolution:
+    """Typed result from resolving a canonical Iris job ID."""
+
+    status: JobResolutionStatus
+    job_id: Optional[str] = None
+
+
+class CleanupOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    JOB_NOT_FOUND = "job_not_found"
 
 
 def api_root(base_url: str) -> str:
@@ -283,6 +309,7 @@ class MarinServeProvider(Provider):
     def __exit__(self, exc_type, exc, tb) -> bool:
         # Detach the tunnel-holding CLI first, then stop the Iris job it left
         # running. Both are best-effort so teardown never masks a run failure.
+        started = time.monotonic()
         proc = self._proc
         if proc is not None and proc.poll() is None:
             proc.send_signal(signal.SIGINT)
@@ -296,10 +323,25 @@ class MarinServeProvider(Provider):
             except OSError:
                 pass
             self._master_fd = None
+        outcome = self._stop_iris_job()
+        PHASE_DURATION.record(
+            time.monotonic() - started,
+            attributes={"phase": "cleanup", "outcome": outcome},
+        )
+        return False
+
+    def _stop_iris_job(self) -> CleanupOutcome:
+        """Resolve and stop the served Iris job."""
         # `iris job stop` accepts only canonical /<user>/<job> ids; a bare name makes
         # it raise, which check=False would swallow -- resolve one before stopping.
-        job_id = self._job_id or self._resolve_job_id()
-        if job_id is None:
+        resolution = (
+            JobResolution(JobResolutionStatus.FOUND, self._job_id)
+            if self._job_id
+            else self._resolve_job_id()
+        )
+        if resolution.status is JobResolutionStatus.FAILED:
+            return CleanupOutcome.FAILED
+        if resolution.status is JobResolutionStatus.NOT_FOUND:
             name = self.name or self.default_job_name(self.model)
             logger.warning(
                 "no canonical iris job id (marin-serve never printed one and `job list` shows no '%s'); "
@@ -309,18 +351,25 @@ class MarinServeProvider(Provider):
                 self.cluster,
                 name,
             )
-            return False
+            return CleanupOutcome.JOB_NOT_FOUND
+        job_id = resolution.job_id
+        assert job_id is not None
         # NB: --cluster is a TOP-LEVEL iris flag (`iris --cluster X job stop <id>`),
         # not a `job stop` option.
         stop = [self.iris_bin, "--cluster", self.cluster, "job", "stop", job_id]
         logger.info("stopping iris job: %s", " ".join(shlex.quote(c) for c in stop))
         try:
-            subprocess.run(stop, timeout=120, check=False)  # noqa: S603 - operator-supplied command
-        except (OSError, subprocess.SubprocessError) as e:
-            logger.warning("iris job stop failed (%s); stop it manually: %s", e, " ".join(stop))
-        return False
+            result = subprocess.run(stop, timeout=120, check=False)  # noqa: S603 - operator-supplied command
+            if result.returncode != 0:
+                error = RuntimeError(f"iris job stop exited with code {result.returncode}")
+                logger.warning("%s; stop it manually: %s", error, " ".join(stop))
+                return CleanupOutcome.FAILED
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning("iris job stop failed (%s); stop it manually: %s", error, " ".join(stop))
+            return CleanupOutcome.FAILED
+        return CleanupOutcome.SUCCEEDED
 
-    def _resolve_job_id(self) -> Optional[str]:
+    def _resolve_job_id(self) -> JobResolution:
         """Find this run's canonical /<user>/<job> id via `iris job list`.
 
         Covers the case where marin-serve died before printing its job line --
@@ -330,11 +379,17 @@ class MarinServeProvider(Provider):
         cmd = [self.iris_bin, "--cluster", self.cluster, "job", "list"]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)  # noqa: S603
-        except (OSError, subprocess.SubprocessError) as e:
-            logger.warning("iris job list failed (%s)", e)
-            return None
+        except (OSError, subprocess.SubprocessError) as error:
+            logger.warning("iris job list failed (%s)", error)
+            return JobResolution(JobResolutionStatus.FAILED)
+        if result.returncode != 0:
+            error = RuntimeError(f"iris job list exited with code {result.returncode}")
+            logger.warning("%s", error)
+            return JobResolution(JobResolutionStatus.FAILED)
         match = re.search(rf"(/\S+/{re.escape(name)})\b", result.stdout)
-        return match.group(1) if match else None
+        if match is None:
+            return JobResolution(JobResolutionStatus.NOT_FOUND)
+        return JobResolution(JobResolutionStatus.FOUND, match.group(1))
 
 
 def build_provider(

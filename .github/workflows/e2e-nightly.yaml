@@ -104,7 +104,7 @@ jobs:
           echo "$(uv tool dir)/marin-core/bin" >> "$GITHUB_PATH"
 
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
-        run: uv sync --no-dev --python 3.11 --extra serve-eval
+        run: uv sync --no-dev --python 3.12 --extra serve-eval
 
       - name: Serve, evaluate, and gate
         run: |

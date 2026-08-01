@@ -1,4 +1,4 @@
-PYTHON_VERSION ?= 3.11
+PYTHON_VERSION ?= 3.12
 
 # Evalchemy uses uv (https://docs.astral.sh/uv/). `uv sync` resolves from the
 # committed uv.lock into a local .venv. The base install is the lean, torch-free
