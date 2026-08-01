@@ -53,7 +53,7 @@ jobs:
           uv run --no-project --python 3.12
           --with ./packages/evalchemy-config
           --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click
-          --with 'marin-rigging>=0.2.67.dev30673006835'
+          --with marin-rigging
           python -m pytest tests/e2e/ -q
 
   lean-install:

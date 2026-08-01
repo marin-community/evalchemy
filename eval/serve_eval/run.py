@@ -31,6 +31,8 @@ from evalchemy_config import materialize_eval_args
 
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.observability import (
+    FailureStage,
+    TelemetryOutcome,
     configure as configure_telemetry,
     output_ready,
     provider_starting,
@@ -135,7 +137,7 @@ def run_eval(argv: List[str]) -> None:
     try:
         process = subprocess.Popen(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args
     except BaseException:
-        subprocess_terminal(time.monotonic() - started, "start_failed")
+        subprocess_terminal(time.monotonic() - started, TelemetryOutcome.START_FAILED)
         raise
     subprocess_started(process.pid)
     try:
@@ -143,9 +145,9 @@ def run_eval(argv: List[str]) -> None:
     except BaseException:
         process.kill()
         process.wait()
-        subprocess_terminal(time.monotonic() - started, "interrupted")
+        subprocess_terminal(time.monotonic() - started, TelemetryOutcome.INTERRUPTED)
         raise
-    outcome = "succeeded" if returncode == 0 else "failed"
+    outcome = TelemetryOutcome.SUCCEEDED if returncode == 0 else TelemetryOutcome.FAILED
     subprocess_terminal(time.monotonic() - started, outcome, exit_code=returncode)
     if returncode != 0:
         raise RuntimeError(f"eval.eval exited with code {returncode}")
@@ -174,54 +176,78 @@ def execute_run(
     python_bin: str,
 ) -> None:
     """Run the provider, child evaluation, result export, and terminal telemetry."""
-    state = "failed"
-    stage = "output"
+    state = TelemetryOutcome.FAILED
     try:
-        run_started(output_dir)
-        os.makedirs(output_dir, exist_ok=True)
-        output_ready(output_dir)
-
-        stage = "provider"
-        provider_starting()
-        provider_started = time.monotonic()
-        provider_is_ready = False
         try:
-            prov = provider_factory()
-            with prov as served:
-                provider_is_ready = True
-                provider_terminal(time.monotonic() - provider_started, "ready")
+            _prepare_output(output_dir)
+        except BaseException as error:
+            record_failure(FailureStage.OUTPUT, error)
+            raise
+
+        _run_provider_and_eval(provider_factory, cfg, output_dir, limit, extra_eval_args, python_bin)
+
+        try:
+            _report_results(output_dir, cfg.tasks)
+        except BaseException as error:
+            record_failure(FailureStage.RESULTS, error)
+            raise
+        state = TelemetryOutcome.SUCCEEDED
+    except KeyboardInterrupt:
+        state = TelemetryOutcome.CANCELLED
+        raise
+    finally:
+        run_terminal(state)
+        shutdown_telemetry()
+
+
+def _prepare_output(output_dir: str) -> None:
+    run_started(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    output_ready()
+
+
+def _run_provider_and_eval(
+    provider_factory: Callable[[], Provider],
+    cfg: RunConfig,
+    output_dir: str,
+    limit: Optional[int],
+    extra_eval_args: tuple,
+    python_bin: str,
+) -> None:
+    provider_starting()
+    provider_started = time.monotonic()
+    provider_is_ready = False
+    try:
+        prov = provider_factory()
+        with prov as served:
+            provider_is_ready = True
+            provider_terminal(time.monotonic() - provider_started, TelemetryOutcome.READY)
+            try:
                 logger.info(
                     "served model: base_url=%s model=%s (auth=%s)",
                     served.base_url,
                     served.model,
                     bool(served.api_key),
                 )
-                stage = "evaluation"
                 run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
-        except BaseException:
-            if not provider_is_ready:
-                provider_terminal(time.monotonic() - provider_started, "failed")
-            raise
-
-        stage = "results"
-        results_path = EvalResults.find_latest_path(output_dir)
-        results = EvalResults.load(results_path)
-        results_persisted(results_path)
-        record_task_results(results, cfg.tasks)
-        click.echo("\n" + summarize(results, cfg.tasks))
-        click.echo(f"\nresults: {results_path}")
-        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
-        state = "succeeded"
-    except KeyboardInterrupt as error:
-        state = "cancelled"
-        record_failure(stage, error)
-        raise
+            except BaseException as error:
+                record_failure(FailureStage.EVALUATION, error)
+                raise
     except BaseException as error:
-        record_failure(stage, error)
+        if not provider_is_ready:
+            provider_terminal(time.monotonic() - provider_started, TelemetryOutcome.FAILED)
+            record_failure(FailureStage.PROVIDER, error)
         raise
-    finally:
-        run_terminal(state)
-        shutdown_telemetry()
+
+
+def _report_results(output_dir: str, tasks: List[str]) -> None:
+    results_path = EvalResults.find_latest_path(output_dir)
+    results = EvalResults.load(results_path)
+    results_persisted(results_path)
+    record_task_results(results, tasks)
+    click.echo("\n" + summarize(results, tasks))
+    click.echo(f"\nresults: {results_path}")
+    click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
 
 
 @click.command(context_settings={"show_default": True})

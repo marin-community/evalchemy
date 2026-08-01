@@ -9,6 +9,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping
+from enum import StrEnum
 
 from rigging import telemetry
 
@@ -21,6 +22,26 @@ _SNAPSHOT_GAUGE_ATTRIBUTES = telemetry.snapshot_attributes("gauge", telemetry.CU
 _CAPABILITY_TOKEN = re.compile(r"(/proxy/t/)[^/\s]+")
 
 logger = logging.getLogger("eval.serve_eval.telemetry")
+
+
+class FailureStage(StrEnum):
+    OUTPUT = "output"
+    PROVIDER = "provider"
+    EVALUATION = "evaluation"
+    RESULTS = "results"
+    CLEANUP = "cleanup"
+
+
+class TelemetryOutcome(StrEnum):
+    READY = "ready"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    START_FAILED = "start_failed"
+    INTERRUPTED = "interrupted"
+    TIMEOUT = "timeout"
+    SKIPPED = "skipped"
+    JOB_NOT_FOUND = "job_not_found"
 
 _PROVIDER_DURATION = telemetry.histogram("provider_duration_seconds", unit="s")
 _READINESS_ATTEMPTS = telemetry.counter("readiness_attempts")
@@ -137,8 +158,8 @@ def subprocess_terminal(duration: float, outcome: str, *, exit_code: int | None 
     telemetry.event("subprocess_terminal", body, attributes=attributes)
 
 
-def output_ready(output_dir: str) -> None:
-    telemetry.event("output_ready", {"output_dir": output_dir})
+def output_ready() -> None:
+    telemetry.event("output_ready", {})
 
 
 def results_persisted(results_path: str) -> None:
