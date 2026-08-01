@@ -16,6 +16,7 @@ import sys
 import textwrap
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import ClassVar
@@ -26,9 +27,8 @@ from pydantic import ValidationError
 
 from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.observability import configure as configure_telemetry
-from eval.serve_eval.observability import FailureStage, record_failure, shutdown as shutdown_telemetry
 from eval.serve_eval.providers import (
+    CleanupOutcome,
     EndpointProvider,
     MarinServeProvider,
     ServedModel,
@@ -40,8 +40,10 @@ from eval.serve_eval.run import (
     LOCAL_COMPLETIONS,
     build_eval_argv,
     build_model_args,
+    configure_telemetry,
     endpoint_url,
     main,
+    shutdown_telemetry,
 )
 
 _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -271,7 +273,7 @@ def test_read_until_ready_parses_capability_url_from_a_blocking_child():
         os.close(master)
 
 
-def _fake_iris(tmp_path, list_output: str):
+def _fake_iris(tmp_path, list_output: str, *, list_exit_code: int = 0):
     """A stand-in iris binary that logs every argv line and answers `job list`."""
     log = tmp_path / "iris-calls.log"
     script = tmp_path / "iris"
@@ -281,10 +283,38 @@ def _fake_iris(tmp_path, list_output: str):
         'case "$*" in *"job list"*) cat <<"OUT"\n'
         f"{list_output}\n"
         "OUT\n"
+        f"exit {list_exit_code}\n"
         ";; esac\n"
     )
     script.chmod(0o755)
     return str(script), log
+
+
+def _cleanup_outcome(prov: MarinServeProvider) -> str:
+    """Run provider cleanup and return its exported terminal outcome."""
+    server = _serve()
+    try:
+        port = server.server_address[1]
+        configure_telemetry(
+            f"http://127.0.0.1:{port}/v1/telemetry",
+            root_run_uid="cleanup-root",
+            execution_uid="cleanup-execution",
+            model=prov.model,
+            provider="marin-serve",
+            tasks=["gsm8k"],
+        )
+        prov.__exit__(None, None, None)
+        shutdown_telemetry()
+    finally:
+        shutdown_telemetry()
+        server.shutdown()
+    [cleanup] = [
+        record
+        for batch in _ModelsHandler.telemetry_batches
+        for record in batch["records"]
+        if record["name"] == "phase_duration_seconds" and record["attributes"]["phase"] == "cleanup"
+    ]
+    return cleanup["attributes"]["outcome"]
 
 
 def test_exit_stops_by_canonical_id_resolved_from_job_list(tmp_path):
@@ -298,12 +328,27 @@ def test_exit_stops_by_canonical_id_resolved_from_job_list(tmp_path):
     assert stop_calls == ["--cluster marin job stop /ci-user/evalchemy-e2e-qwen3-0-6b"]
 
 
-def test_exit_without_resolvable_id_never_calls_stop(tmp_path):
+def test_cleanup_reports_job_not_found_after_successful_empty_listing(tmp_path):
     iris_bin, log = _fake_iris(tmp_path, "no jobs")
     prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
-    prov.__exit__(None, None, None)
+    outcome = _cleanup_outcome(prov)
     calls = log.read_text().splitlines() if log.exists() else []
+    assert outcome == CleanupOutcome.JOB_NOT_FOUND
     assert not [c for c in calls if "job stop" in c]
+
+
+def test_cleanup_reports_failed_when_job_listing_exits_nonzero(tmp_path):
+    iris_bin, log = _fake_iris(tmp_path, "controller unavailable", list_exit_code=7)
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
+    outcome = _cleanup_outcome(prov)
+    calls = log.read_text().splitlines()
+    assert outcome == CleanupOutcome.FAILED
+    assert not [c for c in calls if "job stop" in c]
+
+
+def test_cleanup_reports_failed_when_job_listing_cannot_start(tmp_path):
+    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=str(tmp_path / "missing-iris"))
+    assert _cleanup_outcome(prov) == CleanupOutcome.FAILED
 
 
 def test_match_line_exports_job_id_to_github_env(tmp_path, monkeypatch):
@@ -317,8 +362,8 @@ def test_match_line_exports_job_id_to_github_env(tmp_path, monkeypatch):
 # --- full runner telemetry: real HTTP, subprocess, and filesystem boundaries --
 
 
-def _fake_eval_python(tmp_path: Path, exit_code: int = 0) -> str:
-    script = tmp_path / f"fake-eval-python-{exit_code}"
+def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3) -> str:
+    script = tmp_path / f"fake-eval-python-{exit_code}-{sample_count}"
     script.write_text(
         textwrap.dedent(
             f"""\
@@ -339,7 +384,7 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0) -> str:
                         "exact_match_stderr,strict-match": 0.125,
                     }}
                 }},
-                "n-samples": {{"gsm8k": {{"original": 4, "effective": 3}}}},
+                "n-samples": {{"gsm8k": {{"original": 4, "effective": {sample_count}}}}},
             }}
             (results_dir / "results_test.json").write_text(json.dumps(payload))
             """
@@ -349,9 +394,15 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0) -> str:
     return str(script)
 
 
-def _runner_args(server: HTTPServer, output_dir: Path, python_bin: str) -> list[str]:
+def _runner_args(
+    server: HTTPServer,
+    output_dir: Path,
+    python_bin: str,
+    *,
+    include_identity: bool = True,
+) -> list[str]:
     port = server.server_address[1]
-    return [
+    args = [
         "--provider",
         "endpoint",
         "--base-url",
@@ -364,37 +415,23 @@ def _runner_args(server: HTTPServer, output_dir: Path, python_bin: str) -> list[
         str(output_dir),
         "--python",
         python_bin,
-        "--run-id",
-        "eval-run-42",
     ]
+    if include_identity:
+        args.extend(
+            [
+                "--root-run-uid",
+                "root-eval-42",
+                "--execution-uid",
+                "execution-eval-42-attempt-1",
+                "--serving-job-id",
+                "/ci-user/serve-qwen",
+            ]
+        )
+    return args
 
 
 def _telemetry_records() -> list[dict]:
     return [record for batch in _ModelsHandler.telemetry_batches for record in batch["records"]]
-
-
-def test_structured_failure_redacts_capability_token_before_export():
-    server = _serve()
-    try:
-        port = server.server_address[1]
-        configure_telemetry(
-            f"http://127.0.0.1:{port}/v1/telemetry",
-            run_id="redaction-test",
-            model="served-model",
-            provider="endpoint",
-            tasks=["gsm8k"],
-        )
-        record_failure(
-            FailureStage.PROVIDER,
-            RuntimeError("GET https://iris.oa.dev/proxy/t/secret-token/system.log-server/v1/models failed"),
-        )
-        shutdown_telemetry()
-    finally:
-        server.shutdown()
-
-    [failure] = [record for record in _telemetry_records() if record["name"] == "failure"]
-    assert "secret-token" not in json.dumps(failure)
-    assert "/proxy/t/<redacted>/system.log-server/" in failure["body"]["message"]
 
 
 def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
@@ -413,19 +450,6 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
     assert (output_dir / "served-model" / "results_test.json").is_file()
 
     records = _telemetry_records()
-    event_names = {record["name"] for record in records if record["kind"] == "event"}
-    assert {
-        "run_started",
-        "provider_starting",
-        "readiness_terminal",
-        "provider_terminal",
-        "subprocess_started",
-        "subprocess_terminal",
-        "cleanup_terminal",
-        "results_persisted",
-        "run_terminal",
-    } <= event_names
-
     resources = {json.dumps(batch["resource"], sort_keys=True) for batch in _ModelsHandler.telemetry_batches}
     assert resources == {
         json.dumps(
@@ -434,27 +458,95 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
                 "attributes": {
                     "model": "served-model",
                     "provider": "endpoint",
-                    "run_id": "eval-run-42",
+                    "execution_uid": "execution-eval-42-attempt-1",
                     "tasks": "gsm8k",
+                    "root_run_uid": "root-eval-42",
+                    "serving_job_id": "/ci-user/serve-qwen",
                 },
             },
             sort_keys=True,
         )
     }
-    task_samples = next(record for record in records if record["name"] == "task_samples")
-    assert task_samples["value"] == 3
-    assert task_samples["attributes"]["task"] == "gsm8k"
-    task_metric = next(
+    evaluation = next(
         record
         for record in records
-        if record["name"] == "task_metric" and record["attributes"]["metric"] == "exact_match,strict-match"
+        if record["name"] == "phase_duration_seconds" and record["attributes"]["phase"] == "evaluation"
     )
-    assert task_metric["value"] == 0.75
-    exit_code = next(record for record in records if record["name"] == "subprocess_exit_code")
-    assert exit_code["value"] == 0
+    assert evaluation["value"] > 0
+    assert evaluation["attributes"]["outcome"] == "succeeded"
+    assert evaluation["attributes"]["exit_code"] == "0"
+    task_trials = next(
+        record
+        for record in records
+        if record["name"] == "work_completed" and record["attributes"]["scope"] == "task"
+    )
+    assert task_trials["value"] == 3
+    assert task_trials["unit"] == "{item}"
+    assert task_trials["attributes"]["work_kind"] == "trial"
+    assert task_trials["attributes"]["task"] == "gsm8k"
+    total_trials = next(
+        record
+        for record in records
+        if record["name"] == "work_completed" and record["attributes"]["scope"] == "run"
+    )
+    assert total_trials["value"] == 3
+    seconds_per_trial = next(record for record in records if record["name"] == "seconds_per_trial")
+    assert seconds_per_trial["value"] == pytest.approx(evaluation["value"] / 3)
 
 
-def test_runner_exports_observed_subprocess_failure_and_cleanup(tmp_path):
+def test_runner_omits_rate_when_no_trials_completed(tmp_path):
+    server = _serve()
+    try:
+        args = _runner_args(server, tmp_path / "results", _fake_eval_python(tmp_path, sample_count=0))
+        port = server.server_address[1]
+        result = CliRunner().invoke(main, [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"])
+    finally:
+        server.shutdown()
+
+    assert result.exit_code == 0, result.output
+    records = _telemetry_records()
+    completed = [record for record in records if record["name"] == "work_completed"]
+    assert {record["attributes"]["scope"]: record["value"] for record in completed} == {"task": 0, "run": 0}
+    assert not [record for record in records if record["name"] == "seconds_per_trial"]
+
+
+def test_retries_keep_root_and_generate_distinct_execution_uids(tmp_path):
+    server = _serve()
+    try:
+        port = server.server_address[1]
+        for attempt in range(2):
+            args = _runner_args(
+                server,
+                tmp_path / f"results-{attempt}",
+                _fake_eval_python(tmp_path),
+                include_identity=False,
+            )
+            result = CliRunner().invoke(
+                main,
+                [
+                    *args,
+                    "--root-run-uid",
+                    "root-retry-42",
+                    "--telemetry-endpoint",
+                    f"http://127.0.0.1:{port}/v1/telemetry",
+                ],
+            )
+            assert result.exit_code == 0, result.output
+    finally:
+        server.shutdown()
+
+    resources = {
+        batch["resource"]["attributes"]["execution_uid"]: batch["resource"]["attributes"]
+        for batch in _ModelsHandler.telemetry_batches
+    }
+    assert len(resources) == 2
+    for execution_uid, attributes in resources.items():
+        uuid.UUID(execution_uid)
+        assert attributes["root_run_uid"] == "root-retry-42"
+        assert "serving_job_id" not in attributes
+
+
+def test_runner_exports_total_evaluation_failure(tmp_path):
     server = _serve()
     try:
         args = _runner_args(server, tmp_path / "results", _fake_eval_python(tmp_path, exit_code=7))
@@ -466,15 +558,14 @@ def test_runner_exports_observed_subprocess_failure_and_cleanup(tmp_path):
     assert result.exit_code == 1
     assert isinstance(result.exception, RuntimeError)
     records = _telemetry_records()
-    exit_code = next(record for record in records if record["name"] == "subprocess_exit_code")
-    assert exit_code["value"] == 7
-    failure = next(record for record in records if record["name"] == "failure")
-    assert failure["attributes"]["stage"] == "evaluation"
-    assert failure["body"]["error_type"] == "RuntimeError"
-    terminal = next(record for record in records if record["name"] == "run_terminal")
-    assert terminal["attributes"]["state"] == "failed"
-    cleanup = next(record for record in records if record["name"] == "cleanup_terminal")
-    assert cleanup["attributes"] == {"outcome": "succeeded"}
+    evaluation = next(
+        record
+        for record in records
+        if record["name"] == "phase_duration_seconds" and record["attributes"]["phase"] == "evaluation"
+    )
+    assert evaluation["value"] >= 0
+    assert evaluation["attributes"]["outcome"] == "failed"
+    assert evaluation["attributes"]["exit_code"] == "7"
 
 
 @pytest.mark.parametrize("eval_exit_code", [0, 7])

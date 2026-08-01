@@ -48,8 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      # Stable across GitHub reruns so one logical nightly has one Finelog identity.
-      EVAL_RUN_ID: evalchemy-nightly-${{ github.run_id }}
+      # The root stays stable across GitHub reruns; each attempt remains distinct.
+      EVAL_ROOT_RUN_UID: evalchemy-nightly-${{ github.run_id }}
+      EVAL_EXECUTION_UID: evalchemy-nightly-${{ github.run_id }}-attempt-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write   # mint the GitHub OIDC token that WIF exchanges for github-iris
