@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from typing import Dict, List, Optional, Union
@@ -100,7 +100,14 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
     return ",".join(f"{k}={_model_arg(v)}" for k, v in args.items())
 
 
-def build_eval_argv(served: ServedModel, cfg: RunConfig, output_dir: str, limit, extra_args, python: str) -> List[str]:
+def build_eval_argv(
+    served: ServedModel,
+    cfg: RunConfig,
+    output_dir: str,
+    limit: Optional[int],
+    extra_args: Sequence[str],
+    python: str,
+) -> List[str]:
     """Build the ``python -m eval.eval`` argv for this run.
 
     Uses the bare ``--apply_chat_template`` flag: that parser option is
@@ -169,11 +176,9 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 
 def execute_run(
     provider_factory: Callable[[], Provider],
-    cfg: RunConfig,
+    eval_argv_factory: Callable[[ServedModel], List[str]],
     output_dir: str,
-    limit: Optional[int],
-    extra_eval_args: tuple,
-    python_bin: str,
+    tasks: List[str],
 ) -> None:
     """Run the provider, child evaluation, result export, and terminal telemetry."""
     state = TelemetryOutcome.FAILED
@@ -184,10 +189,10 @@ def execute_run(
             record_failure(FailureStage.OUTPUT, error)
             raise
 
-        _run_provider_and_eval(provider_factory, cfg, output_dir, limit, extra_eval_args, python_bin)
+        _run_provider_and_eval(provider_factory, eval_argv_factory)
 
         try:
-            _report_results(output_dir, cfg.tasks)
+            _report_results(output_dir, tasks)
         except BaseException as error:
             record_failure(FailureStage.RESULTS, error)
             raise
@@ -208,11 +213,7 @@ def _prepare_output(output_dir: str) -> None:
 
 def _run_provider_and_eval(
     provider_factory: Callable[[], Provider],
-    cfg: RunConfig,
-    output_dir: str,
-    limit: Optional[int],
-    extra_eval_args: tuple,
-    python_bin: str,
+    eval_argv_factory: Callable[[ServedModel], List[str]],
 ) -> None:
     provider_starting()
     provider_started = time.monotonic()
@@ -229,7 +230,7 @@ def _run_provider_and_eval(
                     served.model,
                     bool(served.api_key),
                 )
-                run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
+                run_eval(eval_argv_factory(served))
             except BaseException as error:
                 record_failure(FailureStage.EVALUATION, error)
                 raise
@@ -312,7 +313,7 @@ def main(
     wait_timeout: Optional[float],
     timeout_hours: Optional[float],
     verbose: bool,
-    extra_eval_args: tuple,
+    extra_eval_args: tuple[str, ...],
 ) -> None:
     """Serve a model, run the eval, and print the results.
 
@@ -359,7 +360,15 @@ def main(
         timeout_hours=cfg.timeout_hours,
         wait_ready=not no_wait_ready,
     )
-    execute_run(provider_factory, cfg, output_dir, limit, extra_eval_args, python_bin)
+    eval_argv_factory = partial(
+        build_eval_argv,
+        cfg=cfg,
+        output_dir=output_dir,
+        limit=limit,
+        extra_args=extra_eval_args,
+        python=python_bin,
+    )
+    execute_run(provider_factory, eval_argv_factory, output_dir, cfg.tasks)
 
 
 if __name__ == "__main__":

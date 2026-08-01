@@ -365,6 +365,7 @@ class MarinServeProvider(Provider):
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired as kill_error:
                     record_failure(FailureStage.CLEANUP, kill_error, attributes={"operation": "kill"})
+                    logger.warning("marin-serve process survived SIGKILL (%s)", kill_error)
                 return TelemetryOutcome.FAILED
         except (OSError, subprocess.SubprocessError) as error:
             record_failure(FailureStage.CLEANUP, error, attributes={"operation": "stop_cli"})
@@ -373,7 +374,7 @@ class MarinServeProvider(Provider):
         return TelemetryOutcome.SUCCEEDED
 
     def _close_pty(self) -> TelemetryOutcome:
-        """Close the marin-serve PTY."""
+        """Close the PTY and return FAILED if the descriptor could not be closed."""
         if self._master_fd is None:
             return TelemetryOutcome.SUCCEEDED
         try:

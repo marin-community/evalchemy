@@ -27,7 +27,7 @@ from pydantic import ValidationError
 from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.observability import configure as configure_telemetry
-from eval.serve_eval.observability import record_failure, shutdown as shutdown_telemetry
+from eval.serve_eval.observability import FailureStage, record_failure, shutdown as shutdown_telemetry
 from eval.serve_eval.providers import (
     EndpointProvider,
     MarinServeProvider,
@@ -385,7 +385,7 @@ def test_structured_failure_redacts_capability_token_before_export():
             tasks=["gsm8k"],
         )
         record_failure(
-            "readiness",
+            FailureStage.PROVIDER,
             RuntimeError("GET https://iris.oa.dev/proxy/t/secret-token/system.log-server/v1/models failed"),
         )
         shutdown_telemetry()

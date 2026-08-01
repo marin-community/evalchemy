@@ -109,24 +109,6 @@ jobs:
       - name: Sync evalchemy + the serve-eval runner (vLLM-free)
         run: uv sync --no-dev --python 3.12 --extra serve-eval
 
-      - name: Configure Finelog telemetry
-        # Telemetry must not gate the nightly. If the controller cannot mint the
-        # short-lived endpoint capability, leave telemetry disabled and run the eval.
-        run: |
-          if ! mint_output=$(iris --cluster marin endpoints mint /system/log-server --ttl-hours 2 2>&1); then
-            echo "::warning::Finelog capability mint failed; continuing without telemetry"
-            exit 0
-          fi
-          capability_url=$(printf '%s\n' "$mint_output" | awk '$1 == "url" { print $2 }')
-          if [ -z "$capability_url" ]; then
-            echo "::warning::Iris did not return a Finelog capability URL; continuing without telemetry"
-            exit 0
-          fi
-          telemetry_endpoint="${capability_url%/}/v1/telemetry"
-          echo "::add-mask::$capability_url"
-          echo "::add-mask::$telemetry_endpoint"
-          echo "FINELOG_TELEMETRY_ENDPOINT=$telemetry_endpoint" >> "$GITHUB_ENV"
-
       - name: Serve, evaluate, and gate
         run: |
           uv run python -m eval.serve_eval.run --provider marin-serve \

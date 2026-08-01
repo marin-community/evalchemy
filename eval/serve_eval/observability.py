@@ -106,13 +106,18 @@ def run_started(output_dir: str) -> None:
     telemetry.event("run_started", {"output_dir": output_dir})
 
 
-def run_terminal(state: str) -> None:
+def run_terminal(state: TelemetryOutcome) -> None:
     attributes = {"state": state}
     _RUNS.add(attributes=attributes)
     telemetry.event("run_terminal", {"state": state}, attributes=attributes)
 
 
-def record_failure(stage: str, error: BaseException, *, attributes: Mapping[str, str] | None = None) -> None:
+def record_failure(
+    stage: FailureStage,
+    error: BaseException,
+    *,
+    attributes: Mapping[str, str] | None = None,
+) -> None:
     record_attributes = {"stage": stage, **dict(attributes or {})}
     redacted = _CAPABILITY_TOKEN.sub(r"\1<redacted>", str(error))
     message = redacted.encode("utf-8")[:4096].decode("utf-8", "ignore")
@@ -127,13 +132,13 @@ def provider_starting() -> None:
     telemetry.event("provider_starting", {})
 
 
-def provider_terminal(duration: float, outcome: str) -> None:
+def provider_terminal(duration: float, outcome: TelemetryOutcome) -> None:
     attributes = {"outcome": outcome}
     _PROVIDER_DURATION.record(duration, attributes=attributes)
     telemetry.event("provider_terminal", {"duration_seconds": duration}, attributes=attributes)
 
 
-def readiness_terminal(duration: float, attempts: int, outcome: str) -> None:
+def readiness_terminal(duration: float, attempts: int, outcome: TelemetryOutcome) -> None:
     attributes = {"outcome": outcome}
     _READINESS_ATTEMPTS.add(attempts, attributes=attributes)
     _READINESS_DURATION.record(duration, attributes=attributes)
@@ -148,7 +153,7 @@ def subprocess_started(process_id: int) -> None:
     telemetry.event("subprocess_started", {}, attributes={"process_id": str(process_id)})
 
 
-def subprocess_terminal(duration: float, outcome: str, *, exit_code: int | None = None) -> None:
+def subprocess_terminal(duration: float, outcome: TelemetryOutcome, *, exit_code: int | None = None) -> None:
     attributes = {"outcome": outcome}
     _SUBPROCESS_DURATION.record(duration, attributes=attributes)
     body: dict[str, float | int] = {"duration_seconds": duration}
@@ -176,7 +181,7 @@ def record_task_results(results: EvalResults, tasks: list[str]) -> None:
             _TASK_METRIC.set(value, attributes={"task": task, "metric": metric, **_SNAPSHOT_GAUGE_ATTRIBUTES})
 
 
-def cleanup_terminal(duration: float, outcome: str) -> None:
+def cleanup_terminal(duration: float, outcome: TelemetryOutcome) -> None:
     attributes = {"outcome": outcome}
     _CLEANUP_DURATION.record(duration, attributes=attributes)
     _CLEANUPS.add(attributes=attributes)

@@ -76,17 +76,12 @@ provider, and task list are Finelog resource attributes; task and metric names r
 record attributes instead of being embedded in instrument names. Metric names therefore
 do not repeat the `evalchemy` service name.
 
-For a run outside the controller's private network, an Iris admin can mint a short-lived
-capability for `/system/log-server` and pass the returned `url` with
-`/v1/telemetry` appended. The capability URL is a credential: mask it in CI, do not put
-it in logs, and keep its TTL to the run duration.
-
-```bash
-iris --cluster marin endpoints mint /system/log-server --ttl-hours 2
-# returned url: https://iris.oa.dev/proxy/t/<token>/system.log-server/
-capability_url="<url value printed by iris>"
-export FINELOG_TELEMETRY_ENDPOINT="${capability_url%/}/v1/telemetry"
-```
+In standard Marin execution, the orchestrator resolves the direct Finelog address and
+sets `FINELOG_TELEMETRY_ENDPOINT`. GCP and CoreWeave Finelog deployments authorize
+requests from their private cluster CIDRs, so an in-cluster runner does not need a
+bearer token. An external orchestrator must supply an ingestion URL authorized by its
+environment. Endpoint discovery and credential acquisition intentionally stay outside
+Evalchemy so the endpoint-only install remains independent of `marin-core`.
 
 The parent runner exports provider and readiness timing, eval subprocess duration and
 exit code, terminal run state, per-task terminal sample counts and numeric result
