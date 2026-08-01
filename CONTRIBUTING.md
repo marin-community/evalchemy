@@ -6,7 +6,7 @@ Welcome to the Evalchemy project! We value your contributions and are excited to
 
 Get setup with
 ```
-make install        # uv sync (Python 3.11) + pre-commit hooks
+make install        # uv sync (Python 3.12) + pre-commit hooks
 ```
 (Install [uv](https://docs.astral.sh/uv/) first; `make install` creates the `.venv` and installs deps + hooks. Run commands with `uv run ...`.)
 
@@ -32,7 +32,7 @@ Add eval name to the list in [README.md](README.md)
 make install
 ```
 
-This uses [uv](https://docs.astral.sh/uv/) to create a `.venv` (Python 3.11) from the
+This uses [uv](https://docs.astral.sh/uv/) to create a `.venv` (Python 3.12) from the
 committed `uv.lock`, install the dependencies, and set up the pre-commit hooks. Run
 project commands inside the environment with `uv run ...` (e.g. `uv run pytest`). The
 base install is vLLM-free; add the local inference engine with `uv sync --extra vllm`.

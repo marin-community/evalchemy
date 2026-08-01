@@ -21,7 +21,9 @@ import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import partial
 from typing import Dict, List, Optional, Union
 
 import click
@@ -34,15 +36,15 @@ from eval.serve_eval.observability import (
     provider_starting,
     provider_terminal,
     record_failure,
+    record_task_results,
     results_persisted,
     run_started,
     run_terminal,
     shutdown as shutdown_telemetry,
     subprocess_started,
     subprocess_terminal,
-    task_results,
 )
-from eval.serve_eval.providers import ServedModel, api_root, build_provider
+from eval.serve_eval.providers import Provider, ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
 
 logger = logging.getLogger("eval.serve_eval")
@@ -163,6 +165,65 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
     return "\n".join(lines)
 
 
+def execute_run(
+    provider_factory: Callable[[], Provider],
+    cfg: RunConfig,
+    output_dir: str,
+    limit: Optional[int],
+    extra_eval_args: tuple,
+    python_bin: str,
+) -> None:
+    """Run the provider, child evaluation, result export, and terminal telemetry."""
+    state = "failed"
+    stage = "output"
+    try:
+        run_started(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        output_ready(output_dir)
+
+        stage = "provider"
+        provider_starting()
+        provider_started = time.monotonic()
+        provider_is_ready = False
+        try:
+            prov = provider_factory()
+            with prov as served:
+                provider_is_ready = True
+                provider_terminal(time.monotonic() - provider_started, "ready")
+                logger.info(
+                    "served model: base_url=%s model=%s (auth=%s)",
+                    served.base_url,
+                    served.model,
+                    bool(served.api_key),
+                )
+                stage = "evaluation"
+                run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
+        except BaseException:
+            if not provider_is_ready:
+                provider_terminal(time.monotonic() - provider_started, "failed")
+            raise
+
+        stage = "results"
+        results_path = EvalResults.find_latest_path(output_dir)
+        results = EvalResults.load(results_path)
+        results_persisted(results_path)
+        record_task_results(results, cfg.tasks)
+        click.echo("\n" + summarize(results, cfg.tasks))
+        click.echo(f"\nresults: {results_path}")
+        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+        state = "succeeded"
+    except KeyboardInterrupt as error:
+        state = "cancelled"
+        record_failure(stage, error)
+        raise
+    except BaseException as error:
+        record_failure(stage, error)
+        raise
+    finally:
+        run_terminal(state)
+        shutdown_telemetry()
+
+
 @click.command(context_settings={"show_default": True})
 @click.option("--provider", type=click.Choice(["marin-serve", "endpoint"]), default="marin-serve")
 @click.option("--config", "config_path", default=_DEFAULT_CONFIG, help="Path to the run config yaml.")
@@ -256,69 +317,23 @@ def main(
     )
     run_id = run_id or str(uuid.uuid4())
     configure_telemetry(telemetry_endpoint, run_id=run_id, model=cfg.model, provider=provider, tasks=cfg.tasks)
-
-    state = "failed"
-    stage = "output"
-    try:
-        run_started(output_dir)
-        os.makedirs(output_dir, exist_ok=True)
-        output_ready(output_dir)
-
-        stage = "provider"
-        provider_starting()
-        provider_started = time.monotonic()
-        provider_is_ready = False
-        try:
-            prov = build_provider(
-                provider,
-                cfg.model,
-                base_url=base_url,
-                api_key=api_key,
-                tokenizer=cfg.tokenizer,
-                cluster=cfg.cluster,
-                tpu=cfg.tpu,
-                name=name,
-                region=cfg.region,
-                marin_workspace=cfg.marin_workspace,
-                wait_timeout_s=cfg.wait_timeout_s,
-                timeout_hours=cfg.timeout_hours,
-                wait_ready=not no_wait_ready,
-            )
-            with prov as served:
-                provider_is_ready = True
-                provider_terminal(time.monotonic() - provider_started, "ready")
-                logger.info(
-                    "served model: base_url=%s model=%s (auth=%s)",
-                    served.base_url,
-                    served.model,
-                    bool(served.api_key),
-                )
-                stage = "evaluation"
-                run_eval(build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin))
-        except BaseException:
-            if not provider_is_ready:
-                provider_terminal(time.monotonic() - provider_started, "failed")
-            raise
-
-        stage = "results"
-        results_path = EvalResults.find_latest_path(output_dir)
-        results = EvalResults.load(results_path)
-        results_persisted(results_path)
-        task_results(results, cfg.tasks)
-        click.echo("\n" + summarize(results, cfg.tasks))
-        click.echo(f"\nresults: {results_path}")
-        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
-        state = "succeeded"
-    except KeyboardInterrupt as error:
-        state = "cancelled"
-        record_failure(stage, error)
-        raise
-    except BaseException as error:
-        record_failure(stage, error)
-        raise
-    finally:
-        run_terminal(state)
-        shutdown_telemetry()
+    provider_factory = partial(
+        build_provider,
+        provider,
+        cfg.model,
+        base_url=base_url,
+        api_key=api_key,
+        tokenizer=cfg.tokenizer,
+        cluster=cfg.cluster,
+        tpu=cfg.tpu,
+        name=name,
+        region=cfg.region,
+        marin_workspace=cfg.marin_workspace,
+        wait_timeout_s=cfg.wait_timeout_s,
+        timeout_hours=cfg.timeout_hours,
+        wait_ready=not no_wait_ready,
+    )
+    execute_run(provider_factory, cfg, output_dir, limit, extra_eval_args, python_bin)
 
 
 if __name__ == "__main__":

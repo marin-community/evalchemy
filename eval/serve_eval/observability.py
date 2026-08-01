@@ -50,9 +50,12 @@ def configure(endpoint: str | None, *, run_id: str, model: str, provider: str, t
                 "tasks": ",".join(tasks),
             },
         )
-    except Exception:
+    except Exception as error:
         # Telemetry is explicitly best-effort and must not change the eval path.
-        logger.warning("telemetry configuration failed; continuing without telemetry")
+        logger.warning(
+            "telemetry configuration failed (%s); continuing without telemetry",
+            type(error).__name__,
+        )
         return
 
 
@@ -60,6 +63,9 @@ def shutdown() -> None:
     """Attempt a bounded final export without changing the runner outcome."""
     deadline = time.monotonic() + SHUTDOWN_TIMEOUT
     try:
+        # Rigging shutdown sets its stop flag before joining. The exporter then
+        # abandons records after the current batch, so wait on its public resident
+        # count first; a public flush primitive would replace this poll.
         status = telemetry.runtime_status()
         while status.configured and status.queued_records:
             remaining = deadline - time.monotonic()
@@ -67,12 +73,12 @@ def shutdown() -> None:
                 break
             time.sleep(min(_DRAIN_POLL_INTERVAL, remaining))
             status = telemetry.runtime_status()
-    except Exception:
-        logger.warning("telemetry drain status failed; continuing shutdown")
+    except Exception as error:
+        logger.warning("telemetry drain status failed (%s); continuing shutdown", type(error).__name__)
     try:
         telemetry.shutdown(max(0.0, deadline - time.monotonic()))
-    except Exception:
-        logger.warning("telemetry shutdown failed; evaluation outcome is unchanged")
+    except Exception as error:
+        logger.warning("telemetry shutdown failed (%s); evaluation outcome is unchanged", type(error).__name__)
 
 
 def run_started(output_dir: str) -> None:
@@ -140,7 +146,7 @@ def results_persisted(results_path: str) -> None:
     telemetry.event("results_persisted", {"results_path": results_path})
 
 
-def task_results(results: EvalResults, tasks: list[str]) -> None:
+def record_task_results(results: EvalResults, tasks: list[str]) -> None:
     for task in tasks:
         samples = results.sample_count(task)
         if samples is not None:
