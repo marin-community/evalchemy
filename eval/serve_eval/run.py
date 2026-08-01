@@ -33,7 +33,7 @@ from evalchemy_config import materialize_eval_args
 from rigging import telemetry
 
 from eval.serve_eval.config import RunConfig
-from eval.serve_eval.providers import ServedModel, api_root, build_provider
+from eval.serve_eval.providers import PHASE_DURATION, ServedModel, api_root, build_provider
 from eval.serve_eval.results import EvalResults
 
 logger = logging.getLogger("eval.serve_eval")
@@ -43,7 +43,6 @@ _DEFAULT_CONFIG = os.path.join(_REPO_ROOT, "eval", "serve_eval", "configs", "qwe
 _SHUTDOWN_TIMEOUT = 2.0
 _DRAIN_POLL_INTERVAL = 0.01
 _SNAPSHOT_GAUGE_ATTRIBUTES = telemetry.snapshot_attributes("gauge", telemetry.CURRENT_SNAPSHOT)
-_PHASE_DURATION = telemetry.histogram("phase_duration_seconds", unit="s")
 _WORK_COMPLETED = telemetry.gauge("work_completed", unit="{item}")
 _SECONDS_PER_TRIAL = telemetry.gauge("seconds_per_trial", unit="s/trial")
 
@@ -85,7 +84,7 @@ def _measure_evaluation() -> Iterator[_EvaluationPhase]:
         attributes = {"phase": "evaluation", "outcome": outcome}
         if phase.exit_code is not None:
             attributes["exit_code"] = str(phase.exit_code)
-        _PHASE_DURATION.record(phase.duration_seconds, attributes=attributes)
+        PHASE_DURATION.record(phase.duration_seconds, attributes=attributes)
 
 
 def configure_telemetry(
