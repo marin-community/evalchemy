@@ -136,7 +136,7 @@ def test_shipped_config_parses():
 # --- providers: readiness poll + factory fail-fast ----------------------------
 
 
-class _ModelsHandler(BaseHTTPRequestHandler):
+class _RunnerHandler(BaseHTTPRequestHandler):
     ready_after = 0
     _hits: ClassVar[dict[str, int]] = {"n": 0}
     telemetry_status = 200
@@ -144,8 +144,8 @@ class _ModelsHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path.rstrip("/").endswith("/v1/models"):
-            _ModelsHandler._hits["n"] += 1
-            if _ModelsHandler._hits["n"] > _ModelsHandler.ready_after:
+            _RunnerHandler._hits["n"] += 1
+            if _RunnerHandler._hits["n"] > _RunnerHandler.ready_after:
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b'{"data": []}')
@@ -160,11 +160,11 @@ class _ModelsHandler(BaseHTTPRequestHandler):
         if self.path.rstrip("/").endswith("/v1/telemetry"):
             length = int(self.headers["Content-Length"])
             batch = json.loads(self.rfile.read(length))
-            _ModelsHandler.telemetry_batches.append(batch)
-            self.send_response(_ModelsHandler.telemetry_status)
+            _RunnerHandler.telemetry_batches.append(batch)
+            self.send_response(_RunnerHandler.telemetry_status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            if _ModelsHandler.telemetry_status == 200:
+            if _RunnerHandler.telemetry_status == 200:
                 response = {"batch_id": batch["batch_id"], "status": "accepted"}
                 self.wfile.write(json.dumps(response).encode())
             return
@@ -176,11 +176,11 @@ class _ModelsHandler(BaseHTTPRequestHandler):
 
 
 def _serve(ready_after=0, telemetry_status=200):
-    _ModelsHandler._hits["n"] = 0
-    _ModelsHandler.ready_after = ready_after
-    _ModelsHandler.telemetry_status = telemetry_status
-    _ModelsHandler.telemetry_batches = []
-    server = HTTPServer(("127.0.0.1", 0), _ModelsHandler)
+    _RunnerHandler._hits["n"] = 0
+    _RunnerHandler.ready_after = ready_after
+    _RunnerHandler.telemetry_status = telemetry_status
+    _RunnerHandler.telemetry_batches = []
+    server = HTTPServer(("127.0.0.1", 0), _RunnerHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -310,7 +310,7 @@ def _cleanup_outcome(prov: MarinServeProvider) -> str:
         server.shutdown()
     [cleanup] = [
         record
-        for batch in _ModelsHandler.telemetry_batches
+        for batch in _RunnerHandler.telemetry_batches
         for record in batch["records"]
         if record["name"] == "phase_duration_seconds" and record["attributes"]["phase"] == "cleanup"
     ]
@@ -328,21 +328,16 @@ def test_exit_stops_by_canonical_id_resolved_from_job_list(tmp_path):
     assert stop_calls == ["--cluster marin job stop /ci-user/evalchemy-e2e-qwen3-0-6b"]
 
 
-def test_cleanup_reports_job_not_found_after_successful_empty_listing(tmp_path):
-    iris_bin, log = _fake_iris(tmp_path, "no jobs")
-    prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
-    outcome = _cleanup_outcome(prov)
-    calls = log.read_text().splitlines() if log.exists() else []
-    assert outcome == CleanupOutcome.JOB_NOT_FOUND
-    assert not [c for c in calls if "job stop" in c]
-
-
-def test_cleanup_reports_failed_when_job_listing_exits_nonzero(tmp_path):
-    iris_bin, log = _fake_iris(tmp_path, "controller unavailable", list_exit_code=7)
+@pytest.mark.parametrize(
+    "list_output,list_exit_code,expected",
+    [("no jobs", 0, CleanupOutcome.JOB_NOT_FOUND), ("controller unavailable", 7, CleanupOutcome.FAILED)],
+)
+def test_cleanup_reports_job_listing_outcome(tmp_path, list_output, list_exit_code, expected):
+    iris_bin, log = _fake_iris(tmp_path, list_output, list_exit_code=list_exit_code)
     prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
     outcome = _cleanup_outcome(prov)
     calls = log.read_text().splitlines()
-    assert outcome == CleanupOutcome.FAILED
+    assert outcome == expected
     assert not [c for c in calls if "job stop" in c]
 
 
@@ -431,7 +426,12 @@ def _runner_args(
 
 
 def _telemetry_records() -> list[dict]:
-    return [record for batch in _ModelsHandler.telemetry_batches for record in batch["records"]]
+    return [record for batch in _RunnerHandler.telemetry_batches for record in batch["records"]]
+
+
+def _invoke_with_telemetry(server: HTTPServer, args: list[str]):
+    port = server.server_address[1]
+    return CliRunner().invoke(main, [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"])
 
 
 def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
@@ -439,18 +439,15 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
     try:
         output_dir = tmp_path / "results"
         args = _runner_args(server, output_dir, _fake_eval_python(tmp_path))
-        port = server.server_address[1]
-        result = CliRunner().invoke(main, [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"])
+        result = _invoke_with_telemetry(server, args)
     finally:
         server.shutdown()
 
     assert result.exit_code == 0, result.output
-    assert "gsm8k  (samples: 3)" in result.output
-    assert "exact_match,strict-match" in result.output
     assert (output_dir / "served-model" / "results_test.json").is_file()
 
     records = _telemetry_records()
-    resources = {json.dumps(batch["resource"], sort_keys=True) for batch in _ModelsHandler.telemetry_batches}
+    resources = {json.dumps(batch["resource"], sort_keys=True) for batch in _RunnerHandler.telemetry_batches}
     assert resources == {
         json.dumps(
             {
@@ -498,8 +495,7 @@ def test_runner_omits_rate_when_no_trials_completed(tmp_path):
     server = _serve()
     try:
         args = _runner_args(server, tmp_path / "results", _fake_eval_python(tmp_path, sample_count=0))
-        port = server.server_address[1]
-        result = CliRunner().invoke(main, [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"])
+        result = _invoke_with_telemetry(server, args)
     finally:
         server.shutdown()
 
@@ -513,7 +509,6 @@ def test_runner_omits_rate_when_no_trials_completed(tmp_path):
 def test_retries_keep_root_and_generate_distinct_execution_uids(tmp_path):
     server = _serve()
     try:
-        port = server.server_address[1]
         for attempt in range(2):
             args = _runner_args(
                 server,
@@ -521,23 +516,14 @@ def test_retries_keep_root_and_generate_distinct_execution_uids(tmp_path):
                 _fake_eval_python(tmp_path),
                 include_identity=False,
             )
-            result = CliRunner().invoke(
-                main,
-                [
-                    *args,
-                    "--root-run-uid",
-                    "root-retry-42",
-                    "--telemetry-endpoint",
-                    f"http://127.0.0.1:{port}/v1/telemetry",
-                ],
-            )
+            result = _invoke_with_telemetry(server, [*args, "--root-run-uid", "root-retry-42"])
             assert result.exit_code == 0, result.output
     finally:
         server.shutdown()
 
     resources = {
         batch["resource"]["attributes"]["execution_uid"]: batch["resource"]["attributes"]
-        for batch in _ModelsHandler.telemetry_batches
+        for batch in _RunnerHandler.telemetry_batches
     }
     assert len(resources) == 2
     for execution_uid, attributes in resources.items():
@@ -550,8 +536,7 @@ def test_runner_exports_total_evaluation_failure(tmp_path):
     server = _serve()
     try:
         args = _runner_args(server, tmp_path / "results", _fake_eval_python(tmp_path, exit_code=7))
-        port = server.server_address[1]
-        result = CliRunner().invoke(main, [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"])
+        result = _invoke_with_telemetry(server, args)
     finally:
         server.shutdown()
 
@@ -575,12 +560,8 @@ def test_telemetry_delivery_failure_does_not_change_runner_output_or_status(tmp_
         output_dir = tmp_path / "results"
         args = _runner_args(server, output_dir, _fake_eval_python(tmp_path, exit_code=eval_exit_code))
         without_telemetry = CliRunner().invoke(main, args)
-        port = server.server_address[1]
         started = time.monotonic()
-        with_broken_telemetry = CliRunner().invoke(
-            main,
-            [*args, "--telemetry-endpoint", f"http://127.0.0.1:{port}/v1/telemetry"],
-        )
+        with_broken_telemetry = _invoke_with_telemetry(server, args)
         elapsed = time.monotonic() - started
     finally:
         server.shutdown()

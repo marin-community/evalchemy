@@ -34,7 +34,6 @@ from typing import List, Optional
 from rigging import telemetry
 
 logger = logging.getLogger("eval.serve_eval.providers")
-_PHASE_DURATION = telemetry.histogram("phase_duration_seconds", unit="s")
 
 # Once vLLM is ready, marin-serve prints a capability URL:
 #     base_url   https://iris.oa.dev/proxy/t/<token>/serve.<name>/v1
@@ -324,7 +323,7 @@ class MarinServeProvider(Provider):
                 pass
             self._master_fd = None
         outcome = self._stop_iris_job()
-        _PHASE_DURATION.record(
+        telemetry.histogram("phase_duration_seconds", unit="s").record(
             time.monotonic() - started,
             attributes={"phase": "cleanup", "outcome": outcome},
         )

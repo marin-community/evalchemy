@@ -25,6 +25,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from typing import Dict, List, Optional, Union
 
 import click
@@ -61,18 +62,24 @@ class _EvaluationPhase:
     exit_code: int | None = None
 
 
+class _EvaluationOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
 @contextmanager
 def _measure_evaluation() -> Iterator[_EvaluationPhase]:
     phase = _EvaluationPhase()
     started = time.monotonic()
-    outcome = "failed"
+    outcome = _EvaluationOutcome.FAILED
     try:
         yield phase
     except KeyboardInterrupt:
-        outcome = "interrupted"
+        outcome = _EvaluationOutcome.INTERRUPTED
         raise
     else:
-        outcome = "succeeded"
+        outcome = _EvaluationOutcome.SUCCEEDED
     finally:
         phase.duration_seconds = time.monotonic() - started
         attributes = {"phase": "evaluation", "outcome": outcome}
@@ -103,29 +110,20 @@ def configure_telemetry(
     }
     if serving_job_id is not None:
         attributes["serving_job_id"] = serving_job_id
-    try:
-        telemetry.configure(endpoint=endpoint, service="evalchemy", attributes=attributes)
-    except Exception as error:
-        logger.warning("telemetry configuration failed (%s); continuing without telemetry", type(error).__name__)
+    telemetry.configure(endpoint=endpoint, service="evalchemy", attributes=attributes)
 
 
 def shutdown_telemetry() -> None:
     """Give telemetry one bounded opportunity to drain without changing the run."""
     deadline = time.monotonic() + _SHUTDOWN_TIMEOUT
-    try:
+    status = telemetry.runtime_status()
+    while status.configured and status.queued_records:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(_DRAIN_POLL_INTERVAL, remaining))
         status = telemetry.runtime_status()
-        while status.configured and status.queued_records:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(_DRAIN_POLL_INTERVAL, remaining))
-            status = telemetry.runtime_status()
-    except Exception as error:
-        logger.warning("telemetry drain status failed (%s); continuing shutdown", type(error).__name__)
-    try:
-        telemetry.shutdown(max(0.0, deadline - time.monotonic()))
-    except Exception as error:
-        logger.warning("telemetry shutdown failed (%s); evaluation outcome is unchanged", type(error).__name__)
+    telemetry.shutdown(max(0.0, deadline - time.monotonic()))
 
 
 def _record_completed_work(results: EvalResults, tasks: list[str], evaluation_duration: float) -> None:
@@ -225,6 +223,7 @@ def build_eval_argv(
 
 
 def run_eval(argv: List[str]) -> float:
+    """Run the evaluation child and return its critical-path wall time in seconds."""
     logger.info("running eval.eval:\n  %s", " ".join(argv))
     with _measure_evaluation() as phase:
         result = subprocess.run(argv, cwd=_REPO_ROOT)  # noqa: S603 - operator-supplied args

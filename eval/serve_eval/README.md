@@ -76,6 +76,7 @@ The runner exports total evaluation `phase_duration_seconds`, terminal per-task 
 total `work_completed` trials (`unit={item}`, `work_kind=trial`), and a run-level
 `seconds_per_trial` only for a nonzero terminal total. Multiple tasks can share the child
 process, so it does not claim per-task duration, per-request data, or live sample data.
+Marin-serve teardown records the same phase metric with `phase=cleanup` and its outcome.
 
 Marin must inject a reachable, authorized endpoint; Evalchemy does not discover Finelog
 or credentials. Export and the two-second shutdown are best-effort and cannot change
