@@ -2,10 +2,11 @@
 
 Sources the canonical openai/gsm8k dataset (MIT) for questions and gold
 answers, and OpenAssistant/oasst2 (Apache-2.0) for history exchanges --
-off-domain chat pairs filtered to exclude mathematical content, so history
-conditions measure distraction without few-shot contamination (same-domain
-GSM8K history was observed to *help* weak models: solved exemplars act as
-few-shot demonstrations). Writes
+general off-domain chat pairs, so history conditions measure distraction
+without few-shot contamination (same-domain GSM8K history was observed to
+*help* weak models: solved exemplars act as few-shot demonstrations). The
+pool is not content-filtered; math-adjacent chat is a small fraction of
+oasst2 and history sampling is seeded independently of item content. Writes
 
     data/gsm8k_clean.jsonl      the unperturbed reference
     data/gsm8k_perturbed.jsonl  one perturbed instance per (item, condition)
@@ -39,8 +40,6 @@ from pathlib import Path
 
 from datasets import load_dataset
 
-import re
-
 from eval.chat_benchmarks.GSM8KPerturbed.src.perturbations import (
     CONDITIONS,
     HISTORY_CONDITIONS,
@@ -52,18 +51,13 @@ from eval.chat_benchmarks.GSM8KPerturbed.src.perturbations import (
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DEFAULT_SEED = 20260731
 
-# Off-domain history pool filters: keep conversational English Q/A exchanges
-# of moderate length with essentially no numeric or mathematical content, so
-# "irrelevant history" cannot double as few-shot math demonstrations.
-_DIGITS = re.compile(r"\d")
-_MATHY = re.compile(r"(?i)\b(math|calculat|equation|arithmetic|solve for|sum of|multiply|divide)\b|[=+*/^]")
-
 
 def build_history_pool() -> list:
     """Deterministic pool of off-domain (question, answer, message_id) exchanges.
 
     Root English prompts from OpenAssistant/oasst2 paired with their
-    best-ranked English assistant reply, in dataset order.
+    best-ranked English assistant reply, in dataset order; length-bounded
+    only, no content filtering.
     """
     rows = load_dataset("OpenAssistant/oasst2", split="train")
     children: dict = {}
@@ -82,8 +76,6 @@ def build_history_pool() -> list:
         best = min(replies, key=lambda c: c["rank"] if c["rank"] is not None else 99)
         question, answer = root["text"], best["text"]
         if not (40 <= len(question) <= 400 and 80 <= len(answer) <= 900):
-            continue
-        if len(_DIGITS.findall(question + answer)) > 2 or _MATHY.search(question + answer):
             continue
         pool.append({"question": question, "answer": answer, "message_id": best["message_id"]})
     return pool
@@ -111,7 +103,7 @@ def main() -> None:
             "seed": args.seed,
             "perturbations_per_item": args.perturbations_per_item,
             "source": "openai/gsm8k (main) test split for items; OpenAssistant/oasst2 train split "
-            "(root prompt + best reply, filtered off-domain) for history exchanges",
+            "(root prompt + best reply, length-bounded) for history exchanges",
             "conditions": CONDITIONS,
         }
     }

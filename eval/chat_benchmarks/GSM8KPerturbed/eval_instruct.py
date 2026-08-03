@@ -8,8 +8,7 @@ One invocation runs two tasks from checked-in static data (no network access):
                      noise conditions rewrite only the question text (HELM
                      invariance transforms plus a CMUdict homophone swap);
                      history conditions prepend unrelated off-domain chat
-                     exchanges (OpenAssistant/oasst2, math-filtered) as
-                     prior chat turns
+                     exchanges (OpenAssistant/oasst2) as prior chat turns
 
 Reported metrics: clean accuracy, and per-condition PAIRED comparisons --
 each perturbed instance is graded against the clean run of the same item
