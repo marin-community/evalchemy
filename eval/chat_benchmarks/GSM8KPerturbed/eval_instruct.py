@@ -55,6 +55,9 @@ Please show your final answer in the `answer` field, e.g.,`"answer": "42"`.
 ```
 """
 
+# lm-eval-harness gsm8k "flexible-extract" convention: last number-like token.
+FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
+
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 TASK_FILES = {"gsm8k-clean": "gsm8k_clean.jsonl", "gsm8k-perturbed": "gsm8k_perturbed.jsonl"}
 NUMBER_RE = re.compile(r"-?\d+(\.\d+)?")
@@ -110,6 +113,18 @@ def _scan_json(s: str, take_last: bool) -> Optional[dict]:
                         return parsed
                     found = parsed
     return found
+
+
+def extract_flexible_answer(text: str) -> Optional[str]:
+    """lm-eval's flexible-extract: the last number-like token in the output.
+
+    Reported alongside the JSON metric as a format-free secondary: divergence
+    between the two localizes format breakdown vs. wrong math.
+    """
+    matches = FLEXIBLE_RE.findall(text)
+    if not matches:
+        return None
+    return matches[-1][0] or matches[-1][1]
 
 
 def sanitize_numeric(answer: str) -> str:
@@ -193,8 +208,11 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
                 answer = extract_json_answer(record["output"])
                 record["no_answer"] = answer is None
                 record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+                flexible = extract_flexible_answer(record["output"])
+                record["flexible_correct"] = flexible is not None and numeric_match(flexible, record["answer"])
             eval_results[task] = _accuracy(records)
             eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
+            eval_results[f"{task}_flexible"] = _flexible_accuracy(records)
             if task == "gsm8k-perturbed":
                 eval_results.update(self._per_condition(records))
         temp_dir_obj.cleanup()
@@ -210,6 +228,7 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             prefix = f"gsm8k-perturbed:{condition}"
             out[prefix] = _accuracy(items)
             out[f"{prefix}_no_answer"] = _no_answer_rate(items)
+            out[f"{prefix}_flexible"] = _flexible_accuracy(items)
             changed = [i for i in items if i.get("changed")]
             if changed and len(changed) != len(items):
                 out[f"{prefix}_changed_only"] = _accuracy(changed)
@@ -225,3 +244,7 @@ def _accuracy(records: List[Dict[str, Any]]) -> float:
 
 def _no_answer_rate(records: List[Dict[str, Any]]) -> float:
     return 100.0 * sum(1 for r in records if r["no_answer"]) / len(records)
+
+
+def _flexible_accuracy(records: List[Dict[str, Any]]) -> float:
+    return 100.0 * sum(1 for r in records if r["flexible_correct"]) / len(records)
