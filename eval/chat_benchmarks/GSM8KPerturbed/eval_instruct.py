@@ -15,12 +15,11 @@ and changed-only / spoken-number slices. Data provenance (exact generation
 command and parameters) is the meta line of each data file; see
 data_prep/generate.py and src/perturbations.py.
 
-Prompting follows ZeroEval's open-ended QA protocol (JSON reasoning/answer
-output) to give outputs a consistent shape; grading uses lm-eval-harness's
-gsm8k flexible-extract convention (last number-like token, sanitized numeric
-match), aligning with the prior Marin chat-mode GSM8K measurement
-(marin-community/marin#7321). On format-compliant outputs the two agree
-99.85% (2/1319 divergences).
+Prompting and grading follow lm-eval-harness's gsm8k conventions, zero-shot
+through the chat template: the "Question: ... Answer:" prompt and
+flexible-extract grading (last number-like token, sanitized numeric match) --
+the exact protocol of the prior Marin chat-mode GSM8K measurement
+(marin-community/marin#7321).
 
 Design: marin-community/marin#7776 (part of marin-community/marin#7090).
 """
@@ -37,26 +36,10 @@ from lm_eval.api.model import LM
 
 from eval.task import BaseBenchmark
 
-# ZeroEval's open-ended QA template (github.com/WildEval/ZeroEval, Apache-2.0).
-PROMPT_TEMPLATE = """
-## Question:
-
-{question}
-
-
-## Instruction
-
-Please answer this question by first reasoning and then providing your answer.
-Present your reasoning and solution in the following json format.
-Please show your final answer in the `answer` field, e.g.,`"answer": "42"`.
-
-```json
-{
-    "reasoning": "___",
-    "answer": "___"
-}
-```
-"""
+# lm-eval-harness's gsm8k prompt, sent zero-shot through the chat template --
+# the protocol of the prior Marin chat-mode GSM8K measurement
+# (marin-community/marin#7321).
+PROMPT_TEMPLATE = "Question: {question}\nAnswer:"
 
 # lm-eval-harness gsm8k "flexible-extract" convention: last number-like token.
 FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
