@@ -178,7 +178,8 @@ def misspellings(text: str, rng: Random, prob: float) -> str:
     return _MISSPELL_PATTERN.sub(sub, text)
 
 
-def lowercase(text: str, rng: Random) -> str:
+def lowercase(text: str, _rng: Random) -> str:
+    """`_rng` is unused; the parameter exists for the NOISE_CONDITIONS signature."""
     return text.lower()
 
 
@@ -243,15 +244,15 @@ _WORD_RE = re.compile(r"[A-Za-z]+(?:['’][A-Za-z]+)?")
 
 
 @functools.cache
-def _homophone_map() -> dict:
+def _homophone_map() -> dict[str, list[str]]:
     """word -> [exact homophones], built by inverting CMUdict pronunciations."""
     import cmudict  # noqa: PLC0415  (optional dependency, loaded on first use)
 
-    by_pron: dict = {}
+    by_pron: dict[tuple, set[str]] = {}
     for word, pron in cmudict.entries():
         if word.isalpha():
             by_pron.setdefault(tuple(pron), set()).add(word)
-    homophone_map: dict = {}
+    homophone_map: dict[str, set[str]] = {}
     for words in by_pron.values():
         if len(words) > 1:
             for w in words:
@@ -291,7 +292,7 @@ HISTORY_CONDITIONS = {"history_4": 4, "history_16": 16}
 CONDITIONS = list(NOISE_CONDITIONS) + list(HISTORY_CONDITIONS)
 
 
-def assign_conditions(n_items: int, seed: int, perturbations_per_item: int = 1) -> list:
+def assign_conditions(n_items: int, seed: int, perturbations_per_item: int = 1) -> list[list[str]]:
     """Seeded stratified assignment: each item gets `perturbations_per_item`
     distinct conditions; each condition covers ~n_items/len(CONDITIONS) items
     per round."""
@@ -333,7 +334,7 @@ def perturb_question(question: str, condition: str, seed: int) -> PerturbedQuest
     )
 
 
-def history_indices(n_train: int, item_index: int, n_exchanges: int, seed: int) -> list:
+def history_indices(n_train: int, item_index: int, n_exchanges: int, seed: int) -> list[int]:
     """Seeded train-split picks; longer histories extend shorter ones."""
     rng = Random(seed * 100003 + item_index)
     return rng.sample(range(n_train), max(HISTORY_CONDITIONS.values()))[:n_exchanges]
