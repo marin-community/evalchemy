@@ -31,7 +31,6 @@ Design: marin-community/marin#7776 (part of marin-community/marin#7090).
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 from datasets import load_dataset
@@ -95,42 +94,35 @@ def main() -> None:
         f.write(json.dumps(meta) + "\n")
         for ind, (item, conditions) in enumerate(zip(test, assigned)):
             for condition in conditions:
+                # Field order matches the committed data files byte-for-byte.
                 record = {
                     "id": f"gsm8k-test-#{ind}::{condition}",
                     "condition": condition,
                     "original_question": item["question"],
                     "answer": gold_answer(item["answer"]),
+                    "seed": args.seed,
+                    "question": item["question"],
+                    "changed": True,
+                    "number_words_affected": False,
+                    "history_train_indices": None,
+                    "history_exchanges": None,
                 }
                 if condition in HISTORY_CONDITIONS:
                     idxs = history_indices(len(train), ind, HISTORY_CONDITIONS[condition], args.seed)
-                    record.update(
-                        {
-                            "seed": args.seed,
-                            "question": item["question"],
-                            "changed": True,
-                            "number_words_affected": False,
-                            "history_train_indices": idxs,
-                            "history_exchanges": [
-                                {"question": train[i]["question"], "answer": train[i]["answer"]} for i in idxs
-                            ],
-                        }
-                    )
+                    record["history_train_indices"] = idxs
+                    record["history_exchanges"] = [
+                        {"question": train[i]["question"], "answer": train[i]["answer"]} for i in idxs
+                    ]
                 else:
                     p = perturb_question(item["question"], condition, args.seed + ind)
-                    record.update(
-                        {
-                            "seed": p.seed,
-                            "question": p.text,
-                            "changed": p.changed,
-                            "number_words_affected": p.number_words_affected,
-                            "history_train_indices": None,
-                            "history_exchanges": None,
-                        }
-                    )
+                    record["seed"] = args.seed + ind
+                    record["question"] = p.text
+                    record["changed"] = p.changed
+                    record["number_words_affected"] = p.number_words_affected
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_lines += 1
     print(f"wrote {DATA_DIR}/gsm8k_clean.jsonl ({len(test)} items) and gsm8k_perturbed.jsonl ({n_lines} instances)")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

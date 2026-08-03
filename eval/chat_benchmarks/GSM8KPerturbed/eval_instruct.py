@@ -28,8 +28,7 @@ import json
 import logging
 import os
 import re
-import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
@@ -45,23 +44,26 @@ PROMPT_TEMPLATE = "Question: {question}\nAnswer:"
 FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-TASK_FILES = {"gsm8k-clean": "gsm8k_clean.jsonl", "gsm8k-perturbed": "gsm8k_perturbed.jsonl"}
+CLEAN_TASK = "gsm8k-clean"
+PERTURBED_TASK = "gsm8k-perturbed"
+TASK_FILES = {CLEAN_TASK: "gsm8k_clean.jsonl", PERTURBED_TASK: "gsm8k_perturbed.jsonl"}
 NUMBER_RE = re.compile(r"-?\d+(\.\d+)?")
 
 
 def load_static_records(filename: str) -> List[Dict[str, Any]]:
-    """Read a checked-in data file, skipping its provenance meta line."""
-    records = []
+    """Read a checked-in data file; line 1 is the provenance meta header."""
     with open(os.path.join(DATA_DIR, filename)) as f:
-        for line in f:
-            record = json.loads(line)
-            if "meta" not in record:
-                records.append(record)
-    return records
+        header = json.loads(f.readline())
+        assert "meta" in header, f"{filename} must start with its provenance meta line"
+        return [json.loads(line) for line in f]
 
 
 def extract_flexible_answer(text: str) -> Optional[str]:
-    """lm-eval's flexible-extract: the last number-like token in the output."""
+    """lm-eval's flexible-extract: the last number-like token in the output.
+
+    Faithful to the harness convention, a digitless token like ".." still
+    counts as an (incorrect) answer rather than no-answer.
+    """
     matches = FLEXIBLE_RE.findall(text)
     if not matches:
         return None
@@ -69,14 +71,8 @@ def extract_flexible_answer(text: str) -> Optional[str]:
 
 
 def sanitize_numeric(answer: str) -> str:
-    """ZeroEval's math sanitization: strip $/commas, evaluate plain fractions."""
-    answer = answer.replace("$", "").replace(",", "").strip()
-    if "/" in answer:
-        try:
-            answer = str(float(eval(answer)))  # noqa: S307 - "a/b" strings from our own regex-checked answers
-        except Exception:
-            pass
-    return answer
+    """Strip currency symbols and thousands separators before comparison."""
+    return answer.replace("$", "").replace(",", "").strip()
 
 
 def numeric_match(model_answer: str, gold: str) -> bool:
@@ -97,12 +93,19 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.debug = debug
 
-    def _build_instances(self, model: LM, records: List[Dict[str, Any]], idx_offset: int) -> List[Instance]:
-        # Instance indices are offset per task: the resume store keys units by
-        # (benchmark, problem_idx), so the clean and perturbed tasks must not
-        # reuse indices or a resumed run replays clean outputs as perturbed.
+    def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
+        """Key resume units by the record's globally unique id.
+
+        The base key is (benchmark, instance index); with two tasks both
+        numbering instances from zero, a resumed run would replay clean
+        outputs as perturbed. Record ids ("gsm8k-test-#N" vs
+        "gsm8k-test-#N::<condition>") make collisions impossible.
+        """
+        return {"task": task_name, "problem_id": str(instance.doc["id"])}
+
+    def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
         instances = []
-        for idx, record in enumerate(records, start=idx_offset):
+        for idx, record in enumerate(records):
             messages = []
             for exchange in record.get("history_exchanges") or []:
                 messages.append({"role": "user", "content": exchange["question"]})
@@ -120,50 +123,54 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             )
         return instances
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        results: Dict[str, Any] = {"temp_dir_obj": temp_dir_obj}
-        for task_index, (task, filename) in enumerate(TASK_FILES.items()):
+    def generate_responses(self, model: LM) -> Optional[Dict[str, Any]]:
+        examples: List[Dict[str, Any]] = []
+        for task, filename in TASK_FILES.items():
             records = load_static_records(filename)
             if self.debug:
                 records = records[:10]
+            for record in records:
+                record["task"] = task
             self.logger.info(f"Generating responses for {task} ({len(records)} instances)...")
-            outputs = self.compute(model, self._build_instances(model, records, idx_offset=task_index * 100_000))
+            outputs = self.compute(model, self._build_instances(model, records))
             if model.rank != 0:
                 continue
             for record, output in zip(records, outputs):
                 record["output"] = output
-            output_path = os.path.join(temp_dir_obj.name, f"{task}.json")
-            with open(output_path, "w") as f:
-                json.dump(records, f)
-            results[task] = output_path
-        return results
+            examples.extend(records)
+        if model.rank != 0:
+            return None
+        # The {"examples": [...]} convention feeds BaseBenchmark.to_samples, so
+        # per-sample records (--log_samples, wandb) work without an override.
+        return {"examples": examples}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        temp_dir_obj = results.pop("temp_dir_obj")
+    def evaluate_responses(self, results: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+        if results is None:  # non-primary ranks
+            return None
         eval_results: Dict[str, float] = {}
-        for task, filepath in results.items():
-            with open(filepath) as f:
-                records = json.load(f)
-            for record in records:
-                answer = extract_flexible_answer(record["output"])
-                record["no_answer"] = answer is None
-                record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+        for record in results["examples"]:
+            answer = extract_flexible_answer(record["output"])
+            record["model_answer"] = answer
+            record["no_answer"] = answer is None
+            record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+        for task in TASK_FILES:
+            records = [r for r in results["examples"] if r["task"] == task]
+            if not records:
+                continue
             eval_results[task] = _accuracy(records)
             eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
-            if task == "gsm8k-perturbed":
-                eval_results.update(self._per_condition(records))
-        temp_dir_obj.cleanup()
+            if task == PERTURBED_TASK:
+                eval_results.update(self._per_condition(records, task))
         return eval_results
 
     @staticmethod
-    def _per_condition(records: List[Dict[str, Any]]) -> Dict[str, float]:
+    def _per_condition(records: List[Dict[str, Any]], task: str) -> Dict[str, float]:
         by_condition: Dict[str, List[Dict[str, Any]]] = {}
         for record in records:
             by_condition.setdefault(record["condition"], []).append(record)
         out: Dict[str, float] = {}
         for condition, items in sorted(by_condition.items()):
-            prefix = f"gsm8k-perturbed:{condition}"
+            prefix = f"{task}:{condition}"
             out[prefix] = _accuracy(items)
             out[f"{prefix}_no_answer"] = _no_answer_rate(items)
             changed = [i for i in items if i.get("changed")]

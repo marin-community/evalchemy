@@ -187,7 +187,7 @@ def extra_space(text: str, rng: Random, max_spaces: int = 3) -> str:
     return re.sub(r" +", lambda _: " " * rng.randint(1, max_spaces), text)
 
 
-def contraction(text: str, rng: Random) -> str:
+def contraction(text: str, _rng: Random) -> str:
     def cont(m: re.Match) -> str:
         match = m.group(1)
         contracted = REVERSE_CONTRACTION_MAP.get(match, REVERSE_CONTRACTION_MAP.get(match.lower()))
@@ -283,9 +283,9 @@ def number_words_affected(original: str, perturbed: str) -> bool:
 NOISE_CONDITIONS = {
     "misspellings": lambda t, r: misspellings(t, r, prob=0.2),
     "lowercase": lowercase,
-    "extra_space": lambda t, r: extra_space(t, r, max_spaces=3),
-    "typos": lambda t, r: typos(t, r, prob=0.05),
-    "homophones": lambda t, r: homophones(t, r, prob=0.1),
+    "extra_space": extra_space,
+    "typos": typos,
+    "homophones": homophones,
     "mild_mix": mild_mix,
 }
 HISTORY_CONDITIONS = {"history_4": 4, "history_16": 16}
@@ -308,7 +308,7 @@ def assign_conditions(n_items: int, seed: int, perturbations_per_item: int = 1) 
 
 @dataclasses.dataclass(frozen=True)
 class PerturbedQuestion:
-    """One noise-condition instance plus the metadata scoring slices on.
+    """A perturbed question plus the metadata scoring slices on.
 
     `changed` lets scoring separate real perturbations from no-ops (which
     otherwise dilute per-condition deltas); `number_words_affected` marks
@@ -316,25 +316,26 @@ class PerturbedQuestion:
     """
 
     text: str
-    condition: str
-    seed: int
     changed: bool
     number_words_affected: bool
 
 
 def perturb_question(question: str, condition: str, seed: int) -> PerturbedQuestion:
-    """Apply a noise condition; returns the instance record for scoring."""
+    """Apply a noise condition; returns the perturbed text plus slice metadata."""
     text = NOISE_CONDITIONS[condition](question, Random(seed))
     return PerturbedQuestion(
         text=text,
-        condition=condition,
-        seed=seed,
         changed=text != question,
         number_words_affected=number_words_affected(question, text),
     )
 
 
+# Prime multiplier decorrelating per-item history RNG streams from the noise
+# seeds; load-bearing for reproducing the checked-in data.
+_HISTORY_SEED_PRIME = 100003
+
+
 def history_indices(n_train: int, item_index: int, n_exchanges: int, seed: int) -> list[int]:
     """Seeded train-split picks; longer histories extend shorter ones."""
-    rng = Random(seed * 100003 + item_index)
+    rng = Random(seed * _HISTORY_SEED_PRIME + item_index)
     return rng.sample(range(n_train), max(HISTORY_CONDITIONS.values()))[:n_exchanges]
