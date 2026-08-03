@@ -15,9 +15,12 @@ and changed-only / spoken-number slices. Data provenance (exact generation
 command and parameters) is the meta line of each data file; see
 data_prep/generate.py and src/perturbations.py.
 
-Prompting and grading follow ZeroEval's open-ended QA protocol (JSON
-reasoning/answer output, sanitized numeric match), reimplemented here so the
-benchmark is self-contained.
+Prompting follows ZeroEval's open-ended QA protocol (JSON reasoning/answer
+output) to give outputs a consistent shape; grading uses lm-eval-harness's
+gsm8k flexible-extract convention (last number-like token, sanitized numeric
+match), aligning with the prior Marin chat-mode GSM8K measurement
+(marin-community/marin#7321). On format-compliant outputs the two agree
+99.85% (2/1319 divergences).
 
 Design: marin-community/marin#7776 (part of marin-community/marin#7090).
 """
@@ -74,53 +77,8 @@ def load_static_records(filename: str) -> List[Dict[str, Any]]:
     return records
 
 
-def extract_json_answer(text: str) -> Optional[str]:
-    """Return the `answer` field of the first or last complete JSON object."""
-    for candidate in (_first_json(text), _last_json(text)):
-        if candidate is not None and "answer" in candidate:
-            return str(candidate["answer"])
-    return None
-
-
-def _first_json(s: str) -> Optional[dict]:
-    return _scan_json(s, take_last=False)
-
-
-def _last_json(s: str) -> Optional[dict]:
-    return _scan_json(s, take_last=True)
-
-
-def _scan_json(s: str, take_last: bool) -> Optional[dict]:
-    stack: List[int] = []
-    start = None
-    found = None
-    for i, char in enumerate(s):
-        if char == "{":
-            stack.append(i)
-            if start is None:
-                start = i
-        elif char == "}" and stack:
-            stack.pop()
-            if not stack:
-                snippet = s[start : i + 1]
-                start = None
-                try:
-                    parsed = json.loads(snippet.replace("\n", ""))
-                except json.JSONDecodeError:
-                    parsed = None
-                if parsed is not None:
-                    if not take_last:
-                        return parsed
-                    found = parsed
-    return found
-
-
 def extract_flexible_answer(text: str) -> Optional[str]:
-    """lm-eval's flexible-extract: the last number-like token in the output.
-
-    Reported alongside the JSON metric as a format-free secondary: divergence
-    between the two localizes format breakdown vs. wrong math.
-    """
+    """lm-eval's flexible-extract: the last number-like token in the output."""
     matches = FLEXIBLE_RE.findall(text)
     if not matches:
         return None
@@ -205,14 +163,11 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             with open(filepath) as f:
                 records = json.load(f)
             for record in records:
-                answer = extract_json_answer(record["output"])
+                answer = extract_flexible_answer(record["output"])
                 record["no_answer"] = answer is None
                 record["correct"] = answer is not None and numeric_match(answer, record["answer"])
-                flexible = extract_flexible_answer(record["output"])
-                record["flexible_correct"] = flexible is not None and numeric_match(flexible, record["answer"])
             eval_results[task] = _accuracy(records)
             eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
-            eval_results[f"{task}_flexible"] = _flexible_accuracy(records)
             if task == "gsm8k-perturbed":
                 eval_results.update(self._per_condition(records))
         temp_dir_obj.cleanup()
@@ -228,7 +183,6 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             prefix = f"gsm8k-perturbed:{condition}"
             out[prefix] = _accuracy(items)
             out[f"{prefix}_no_answer"] = _no_answer_rate(items)
-            out[f"{prefix}_flexible"] = _flexible_accuracy(items)
             changed = [i for i in items if i.get("changed")]
             if changed and len(changed) != len(items):
                 out[f"{prefix}_changed_only"] = _accuracy(changed)
@@ -244,7 +198,3 @@ def _accuracy(records: List[Dict[str, Any]]) -> float:
 
 def _no_answer_rate(records: List[Dict[str, Any]]) -> float:
     return 100.0 * sum(1 for r in records if r["no_answer"]) / len(records)
-
-
-def _flexible_accuracy(records: List[Dict[str, Any]]) -> float:
-    return 100.0 * sum(1 for r in records if r["flexible_correct"]) / len(records)
