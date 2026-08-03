@@ -1,7 +1,11 @@
 """Generate the GSM8KPerturbed static datasets.
 
-Sources the canonical openai/gsm8k dataset (MIT): the test split for
-questions and gold answers, the train split for history exchanges. Writes
+Sources the canonical openai/gsm8k dataset (MIT) for questions and gold
+answers, and OpenAssistant/oasst2 (Apache-2.0) for history exchanges --
+off-domain chat pairs filtered to exclude mathematical content, so history
+conditions measure distraction without few-shot contamination (same-domain
+GSM8K history was observed to *help* weak models: solved exemplars act as
+few-shot demonstrations). Writes
 
     data/gsm8k_clean.jsonl      the unperturbed reference
     data/gsm8k_perturbed.jsonl  one perturbed instance per (item, condition)
@@ -21,8 +25,8 @@ Instance fields:
     answer                gold final answer (the value after "#### ")
     changed               question != original_question
     number_words_affected spoken-number homophone swap occurred
-    history_train_indices openai/gsm8k train indices for provenance
-                          (history conditions only, else null)
+    history_source_ids    oasst2 message ids of the sampled exchanges, for
+                          provenance (history conditions only, else null)
     history_exchanges     the exact prepended Q/A pairs, embedded so the
                           benchmark runs fully offline
 
@@ -35,6 +39,8 @@ from pathlib import Path
 
 from datasets import load_dataset
 
+import re
+
 from eval.chat_benchmarks.GSM8KPerturbed.src.perturbations import (
     CONDITIONS,
     HISTORY_CONDITIONS,
@@ -45,6 +51,42 @@ from eval.chat_benchmarks.GSM8KPerturbed.src.perturbations import (
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 DEFAULT_SEED = 20260731
+
+# Off-domain history pool filters: keep conversational English Q/A exchanges
+# of moderate length with essentially no numeric or mathematical content, so
+# "irrelevant history" cannot double as few-shot math demonstrations.
+_DIGITS = re.compile(r"\d")
+_MATHY = re.compile(r"(?i)\b(math|calculat|equation|arithmetic|solve for|sum of|multiply|divide)\b|[=+*/^]")
+
+
+def build_history_pool() -> list:
+    """Deterministic pool of off-domain (question, answer, message_id) exchanges.
+
+    Root English prompts from OpenAssistant/oasst2 paired with their
+    best-ranked English assistant reply, in dataset order.
+    """
+    rows = load_dataset("OpenAssistant/oasst2", split="train")
+    children: dict = {}
+    roots = []
+    for row in rows:
+        if row["parent_id"] is None:
+            if row["role"] == "prompter" and row["lang"] == "en":
+                roots.append(row)
+        else:
+            children.setdefault(row["parent_id"], []).append(row)
+    pool = []
+    for root in roots:
+        replies = [c for c in children.get(root["message_id"], []) if c["role"] == "assistant" and c["lang"] == "en"]
+        if not replies:
+            continue
+        best = min(replies, key=lambda c: c["rank"] if c["rank"] is not None else 99)
+        question, answer = root["text"], best["text"]
+        if not (40 <= len(question) <= 400 and 80 <= len(answer) <= 900):
+            continue
+        if len(_DIGITS.findall(question + answer)) > 2 or _MATHY.search(question + answer):
+            continue
+        pool.append({"question": question, "answer": answer, "message_id": best["message_id"]})
+    return pool
 
 
 def gold_answer(solution: str) -> str:
@@ -68,13 +110,15 @@ def main() -> None:
             f"--seed {args.seed} --perturbations-per-item {args.perturbations_per_item}",
             "seed": args.seed,
             "perturbations_per_item": args.perturbations_per_item,
-            "source": "openai/gsm8k (main): test split for items, train split for history exchanges",
+            "source": "openai/gsm8k (main) test split for items; OpenAssistant/oasst2 train split "
+            "(root prompt + best reply, filtered off-domain) for history exchanges",
             "conditions": CONDITIONS,
         }
     }
 
     test = load_dataset("openai/gsm8k", "main", split="test")
-    train = load_dataset("openai/gsm8k", "main", split="train")
+    pool = build_history_pool()
+    print(f"off-domain history pool: {len(pool)} exchanges")
     assigned = assign_conditions(len(test), args.seed, args.perturbations_per_item)
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -104,14 +148,14 @@ def main() -> None:
                     "question": item["question"],
                     "changed": True,
                     "number_words_affected": False,
-                    "history_train_indices": None,
+                    "history_source_ids": None,
                     "history_exchanges": None,
                 }
                 if condition in HISTORY_CONDITIONS:
-                    idxs = history_indices(len(train), ind, HISTORY_CONDITIONS[condition], args.seed)
-                    record["history_train_indices"] = idxs
+                    idxs = history_indices(len(pool), ind, HISTORY_CONDITIONS[condition], args.seed)
+                    record["history_source_ids"] = [pool[i]["message_id"] for i in idxs]
                     record["history_exchanges"] = [
-                        {"question": train[i]["question"], "answer": train[i]["answer"]} for i in idxs
+                        {"question": pool[i]["question"], "answer": pool[i]["answer"]} for i in idxs
                     ]
                 else:
                     p = perturb_question(item["question"], condition, args.seed + ind)

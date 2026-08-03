@@ -4,8 +4,8 @@ Noise transforms are adapted from HELM's invariance perturbations
 (stanford-crfm/helm, Apache-2.0, src/helm/benchmark/augmentations/) and are
 byte-identical to the originals under a shared random.Random. The homophone
 swap follows NL-Augmenter's close_homophones_swap (MIT) using exact CMUdict
-pronunciation matches. History conditions prepend seeded, unrelated GSM8K
-train-split exchanges as prior chat turns.
+pronunciation matches. History conditions prepend seeded, unrelated off-domain chat
+exchanges (OpenAssistant/oasst2) as prior chat turns.
 
 Only the question text is perturbed; templates, answer-format instructions,
 and anything the extractor keys on are never touched.
@@ -336,6 +336,6 @@ _HISTORY_SEED_PRIME = 100003
 
 
 def history_indices(n_train: int, item_index: int, n_exchanges: int, seed: int) -> list[int]:
-    """Seeded train-split picks; longer histories extend shorter ones."""
+    """Seeded history-pool picks; longer histories extend shorter ones."""
     rng = Random(seed * _HISTORY_SEED_PRIME + item_index)
     return rng.sample(range(n_train), max(HISTORY_CONDITIONS.values()))[:n_exchanges]

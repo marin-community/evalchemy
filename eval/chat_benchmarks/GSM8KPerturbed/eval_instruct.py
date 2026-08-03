@@ -7,11 +7,16 @@ One invocation runs two tasks from checked-in static data (no network access):
     gsm8k-perturbed  one seeded condition per item (data/gsm8k_perturbed.jsonl):
                      noise conditions rewrite only the question text (HELM
                      invariance transforms plus a CMUdict homophone swap);
-                     history conditions prepend unrelated GSM8K train-split
-                     exchanges as prior chat turns
+                     history conditions prepend unrelated off-domain chat
+                     exchanges (OpenAssistant/oasst2, math-filtered) as
+                     prior chat turns
 
-Reported metrics: clean accuracy, per-condition accuracy and no-answer rate,
-and changed-only / spoken-number slices. Data provenance (exact generation
+Reported metrics: clean accuracy, and per-condition PAIRED comparisons --
+each perturbed instance is graded against the clean run of the same item
+(matched by id), so per-condition deltas are free of subset-composition
+noise. Per condition: accuracy, clean-subset accuracy, paired delta,
+harmed/helped counts, and no-answer rate, plus changed-only and
+spoken-number slices. Data provenance (exact generation
 command and parameters) is the meta line of each data file; see
 data_prep/generate.py and src/perturbations.py.
 
@@ -153,6 +158,7 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             record["model_answer"] = answer
             record["no_answer"] = answer is None
             record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+        clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
         for task in TASK_FILES:
             records = [r for r in results["examples"] if r["task"] == task]
             if not records:
@@ -160,19 +166,38 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             eval_results[task] = _accuracy(records)
             eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
             if task == PERTURBED_TASK:
-                eval_results.update(self._per_condition(records, task))
+                eval_results.update(self._per_condition(records, task, clean_correct))
         return eval_results
 
     @staticmethod
-    def _per_condition(records: List[Dict[str, Any]], task: str) -> Dict[str, float]:
+    def _per_condition(records: List[Dict[str, Any]], task: str, clean_correct: Dict[str, bool]) -> Dict[str, float]:
+        """Paired per-condition metrics.
+
+        Each condition covers a different item subset, so comparing a
+        condition's accuracy against overall clean accuracy conflates the
+        perturbation effect with subset difficulty (observed at +/-5-8pp).
+        Every metric here therefore pairs each instance with the clean run
+        of the same item: `_clean_subset` is clean accuracy over exactly the
+        condition's items and `_paired_delta` is the condition's effect.
+        `_harmed`/`_helped` count items whose verdict flipped.
+        """
         by_condition: Dict[str, List[Dict[str, Any]]] = {}
         for record in records:
             by_condition.setdefault(record["condition"], []).append(record)
         out: Dict[str, float] = {}
         for condition, items in sorted(by_condition.items()):
             prefix = f"{task}:{condition}"
+            paired = [
+                (i, clean_correct[i["id"].split("::")[0]]) for i in items if i["id"].split("::")[0] in clean_correct
+            ]
             out[prefix] = _accuracy(items)
             out[f"{prefix}_no_answer"] = _no_answer_rate(items)
+            if paired:
+                clean_subset = 100.0 * sum(1 for _, c in paired if c) / len(paired)
+                out[f"{prefix}_clean_subset"] = clean_subset
+                out[f"{prefix}_paired_delta"] = out[prefix] - clean_subset
+                out[f"{prefix}_harmed"] = float(sum(1 for i, c in paired if c and not i["correct"]))
+                out[f"{prefix}_helped"] = float(sum(1 for i, c in paired if i["correct"] and not c))
             changed = [i for i in items if i.get("changed")]
             if changed and len(changed) != len(items):
                 out[f"{prefix}_changed_only"] = _accuracy(changed)
