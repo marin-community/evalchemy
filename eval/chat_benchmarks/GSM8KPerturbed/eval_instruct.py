@@ -141,9 +141,12 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.debug = debug
 
-    def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
+    def _build_instances(self, model: LM, records: List[Dict[str, Any]], idx_offset: int) -> List[Instance]:
+        # Instance indices are offset per task: the resume store keys units by
+        # (benchmark, problem_idx), so the clean and perturbed tasks must not
+        # reuse indices or a resumed run replays clean outputs as perturbed.
         instances = []
-        for idx, record in enumerate(records):
+        for idx, record in enumerate(records, start=idx_offset):
             messages = []
             for exchange in record.get("history_exchanges") or []:
                 messages.append({"role": "user", "content": exchange["question"]})
@@ -164,12 +167,12 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         temp_dir_obj = tempfile.TemporaryDirectory()
         results: Dict[str, Any] = {"temp_dir_obj": temp_dir_obj}
-        for task, filename in TASK_FILES.items():
+        for task_index, (task, filename) in enumerate(TASK_FILES.items()):
             records = load_static_records(filename)
             if self.debug:
                 records = records[:10]
             self.logger.info(f"Generating responses for {task} ({len(records)} instances)...")
-            outputs = self.compute(model, self._build_instances(model, records))
+            outputs = self.compute(model, self._build_instances(model, records, idx_offset=task_index * 100_000))
             if model.rank != 0:
                 continue
             for record, output in zip(records, outputs):
