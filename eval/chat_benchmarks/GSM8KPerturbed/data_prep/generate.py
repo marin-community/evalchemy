@@ -82,9 +82,13 @@ def main() -> None:
     with open(DATA_DIR / "gsm8k_clean.jsonl", "w") as f:
         f.write(json.dumps(meta) + "\n")
         for ind, item in enumerate(test):
-            f.write(json.dumps(
-                {"id": f"gsm8k-test-#{ind}", "question": item["question"], "answer": gold_answer(item["answer"])},
-                ensure_ascii=False) + "\n")
+            f.write(
+                json.dumps(
+                    {"id": f"gsm8k-test-#{ind}", "question": item["question"], "answer": gold_answer(item["answer"])},
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
 
     n_lines = 0
     with open(DATA_DIR / "gsm8k_perturbed.jsonl", "w") as f:
@@ -99,26 +103,30 @@ def main() -> None:
                 }
                 if condition in HISTORY_CONDITIONS:
                     idxs = history_indices(len(train), ind, HISTORY_CONDITIONS[condition], args.seed)
-                    record.update({
-                        "seed": args.seed,
-                        "question": item["question"],
-                        "changed": True,
-                        "number_words_affected": False,
-                        "history_train_indices": idxs,
-                        "history_exchanges": [
-                            {"question": train[i]["question"], "answer": train[i]["answer"]} for i in idxs
-                        ],
-                    })
+                    record.update(
+                        {
+                            "seed": args.seed,
+                            "question": item["question"],
+                            "changed": True,
+                            "number_words_affected": False,
+                            "history_train_indices": idxs,
+                            "history_exchanges": [
+                                {"question": train[i]["question"], "answer": train[i]["answer"]} for i in idxs
+                            ],
+                        }
+                    )
                 else:
                     p = perturb_question(item["question"], condition, args.seed + ind)
-                    record.update({
-                        "seed": p.seed,
-                        "question": p.text,
-                        "changed": p.changed,
-                        "number_words_affected": p.number_words_affected,
-                        "history_train_indices": None,
-                        "history_exchanges": None,
-                    })
+                    record.update(
+                        {
+                            "seed": p.seed,
+                            "question": p.text,
+                            "changed": p.changed,
+                            "number_words_affected": p.number_words_affected,
+                            "history_train_indices": None,
+                            "history_exchanges": None,
+                        }
+                    )
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 n_lines += 1
     print(f"wrote {DATA_DIR}/gsm8k_clean.jsonl ({len(test)} items) and gsm8k_perturbed.jsonl ({n_lines} instances)")
