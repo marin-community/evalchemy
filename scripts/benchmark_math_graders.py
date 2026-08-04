@@ -50,7 +50,8 @@ def main() -> None:
     print(f"one-time sympy + ANTLR init: {(time.perf_counter() - start) * 1e3:.1f} ms\n")
 
     for name, grader, solution_field, reference_field in GRADERS:
-        minerva_math._sympy_parses.cache_clear()
+        if grader is minerva_math:
+            minerva_math._sympy_parses.cache_clear()
 
         start = time.perf_counter()
         grades = [grader.grade(r["problem"], r[solution_field], r["reference_answer"]) for r in records]
