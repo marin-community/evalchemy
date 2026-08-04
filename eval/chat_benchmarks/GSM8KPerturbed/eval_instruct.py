@@ -20,14 +20,20 @@ command and parameters) is the meta line of each data file; see
 data_prep/generate.py and src/perturbations.py.
 
 Prompting and grading follow lm-eval-harness's gsm8k conventions, zero-shot
-through the chat template: the "Question: ... Answer:" prompt and
-flexible-extract grading (last number-like token, sanitized numeric match) --
-the exact protocol of the prior Marin chat-mode GSM8K measurement
-(marin-community/marin#7321).
+through the chat template, with one addition: the prompt asks the model to
+conclude with "The answer is N", and grading anchors on that phrase (last
+occurrence), falling back to flexible-extract (last number-like token) when
+absent. Pure flexible-extract mis-graded 28% of clean-vs-perturbed verdict
+flips on a chatty weak model -- correct answers followed by restated
+premises ("... the same distance of 480 miles") lose the last-number race --
+and the artifact concentrated in history conditions, inflating their
+measured damage. The `_unanchored` rate reports how often the fallback was
+needed.
 
 Design: marin-community/marin#7776 (part of marin-community/marin#7090).
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -39,11 +45,17 @@ from lm_eval.api.model import LM
 
 from eval.task import BaseBenchmark
 
-# lm-eval-harness's gsm8k prompt, sent zero-shot through the chat template --
-# the protocol of the prior Marin chat-mode GSM8K measurement
-# (marin-community/marin#7321).
-PROMPT_TEMPLATE = "Question: {question}\nAnswer:"
+# lm-eval-harness's zero-shot gsm8k prompt plus an answer anchor (the
+# convention of lm-eval's gsm8k_cot filters). The anchor makes extraction
+# robust to trailing restatements; the prior Marin chat-mode measurement
+# (marin-community/marin#7321) used the bare prompt with flexible-extract.
+PROMPT_TEMPLATE = (
+    "Question: {question}\n"
+    'Answer the question, then conclude with "The answer is N" where N is the final numeric answer.'
+)
 
+# Anchored extraction (lm-eval gsm8k_cot convention), last occurrence wins.
+ANCHORED_RE = re.compile(r"(?i)the answer is \$?(-?[0-9][0-9.,]*)")
 # lm-eval-harness gsm8k "flexible-extract" convention: last number-like token.
 FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
 
@@ -62,16 +74,18 @@ def load_static_records(filename: str) -> List[Dict[str, Any]]:
         return [json.loads(line) for line in f]
 
 
-def extract_flexible_answer(text: str) -> Optional[str]:
-    """lm-eval's flexible-extract: the last number-like token in the output.
-
-    Faithful to the harness convention, a digitless token like ".." still
-    counts as an (incorrect) answer rather than no-answer.
-    """
+def extract_answer(text: str) -> tuple:
+    """Return (answer, anchored): anchored "The answer is N" when present,
+    else lm-eval's flexible-extract fallback (last number-like token, where a
+    digitless token like ".." still counts as an incorrect answer rather than
+    no-answer, faithful to the harness convention)."""
+    anchored = ANCHORED_RE.findall(text)
+    if anchored:
+        return anchored[-1], True
     matches = FLEXIBLE_RE.findall(text)
     if not matches:
-        return None
-    return matches[-1][0] or matches[-1][1]
+        return None, False
+    return matches[-1][0] or matches[-1][1], False
 
 
 def sanitize_numeric(answer: str) -> str:
@@ -98,14 +112,18 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         self.debug = debug
 
     def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
-        """Key resume units by the record's globally unique id.
+        """Key resume units by record id plus a hash of the rendered prompt.
 
         The base key is (benchmark, instance index); with two tasks both
         numbering instances from zero, a resumed run would replay clean
         outputs as perturbed. Record ids ("gsm8k-test-#N" vs
-        "gsm8k-test-#N::<condition>") make collisions impossible.
+        "gsm8k-test-#N::<condition>") make collisions impossible, and the
+        prompt hash invalidates stored outputs whenever the data or the
+        prompt template changes -- without it, a resumed run silently
+        replays outputs generated from different prompts.
         """
-        return {"task": task_name, "problem_id": str(instance.doc["id"])}
+        prompt_sha = hashlib.sha256(json.dumps(instance.args[0], sort_keys=True, default=str).encode()).hexdigest()[:12]
+        return {"task": task_name, "problem_id": str(instance.doc["id"]), "prompt_sha": prompt_sha}
 
     def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
         instances = []
@@ -153,8 +171,9 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             return None
         eval_results: Dict[str, float] = {}
         for record in results["examples"]:
-            answer = extract_flexible_answer(record["output"])
+            answer, anchored = extract_answer(record["output"])
             record["model_answer"] = answer
+            record["anchored"] = anchored
             record["no_answer"] = answer is None
             record["correct"] = answer is not None and numeric_match(answer, record["answer"])
         clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
@@ -164,6 +183,7 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
                 continue
             eval_results[task] = _accuracy(records)
             eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
+            eval_results[f"{task}_unanchored"] = 100.0 * sum(1 for r in records if not r["anchored"]) / len(records)
             if task == PERTURBED_TASK:
                 eval_results.update(self._per_condition(records, task, clean_correct))
         return eval_results
