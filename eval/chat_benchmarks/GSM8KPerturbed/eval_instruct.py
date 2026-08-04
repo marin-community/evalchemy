@@ -55,7 +55,7 @@ PROMPT_TEMPLATE = (
 )
 
 # Anchored extraction (lm-eval gsm8k_cot convention), last occurrence wins.
-ANCHORED_RE = re.compile(r"(?i)the answer is \$?(-?[0-9][0-9.,]*)")
+ANCHORED_RE = re.compile(r"(?i)the answer is \$?(-?[0-9][0-9,]*(?:\.[0-9]+)?)")
 # lm-eval-harness gsm8k "flexible-extract" convention: last number-like token.
 FLEXIBLE_RE = re.compile(r"(-?[$0-9.,]{2,})|(-?[0-9]+)")
 
