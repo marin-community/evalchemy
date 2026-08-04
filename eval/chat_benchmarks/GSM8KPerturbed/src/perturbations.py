@@ -335,7 +335,7 @@ def perturb_question(question: str, condition: str, seed: int) -> PerturbedQuest
 _HISTORY_SEED_PRIME = 100003
 
 
-def history_indices(n_train: int, item_index: int, n_exchanges: int, seed: int) -> list[int]:
+def history_indices(n_pool: int, item_index: int, n_exchanges: int, seed: int) -> list[int]:
     """Seeded history-pool picks; longer histories extend shorter ones."""
     rng = Random(seed * _HISTORY_SEED_PRIME + item_index)
-    return rng.sample(range(n_train), max(HISTORY_CONDITIONS.values()))[:n_exchanges]
+    return rng.sample(range(n_pool), max(HISTORY_CONDITIONS.values()))[:n_exchanges]
