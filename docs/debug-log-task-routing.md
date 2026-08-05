@@ -30,6 +30,22 @@ import the new routing symbols. Reinstalling the local package with `uv sync
 and sample-logging tests passed. The repository lint gate and full pytest suite
 also passed.
 
+## Hypothesis 2
+
+The regression test belongs in the core suite because it imports `eval.eval`
+and its lm-eval dependency, which the intentionally minimal e2e environment
+does not install.
+
+## Changes to make
+
+Move the routing regression from `tests/e2e/` to the core `tests/` suite.
+
+## Results
+
+CI confirmed the e2e environment failed at collection with `ModuleNotFoundError:
+No module named 'lm_eval'`, before it could run the routing assertions.
+The moved core routing test and the full local pytest suite passed.
+
 ## Future work
 
 - [ ] None.
