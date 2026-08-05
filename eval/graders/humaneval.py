@@ -141,9 +141,9 @@ _DISABLED_SHUTIL_CALLS = ("rmtree", "move", "chown")
 def reliability_guard(maximum_memory_bytes=None):
     """Disable destructive calls so a candidate cannot damage the host.
 
-    Returns a callable that puts everything back, which the caller invokes only
-    after the candidate has finished -- restoring earlier would hand the
-    candidate the calls this is meant to withhold.
+    Returns a callable that restores the patched `os`/`shutil`/`subprocess` symbols,
+    which the caller invokes only after the candidate has finished -- restoring
+    earlier would hand the candidate the calls this is meant to withhold.
 
     Not a security sandbox: it blocks accidents and casual misbehavior, not a
     determined escape. Run untrusted code in a real sandbox as well.
@@ -175,7 +175,7 @@ def reliability_guard(maximum_memory_bytes=None):
                 saved.append((module, name, getattr(module, name)))
                 setattr(module, name, None)
 
-    __builtins__["help"] = None
+    builtins.help = None
 
     import sys
 
