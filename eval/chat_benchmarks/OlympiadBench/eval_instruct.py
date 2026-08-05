@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import re
@@ -18,10 +17,8 @@ from eval.task import BaseBenchmark
 # the explicit "Mark your solution with \boxed" instruction makes answer extraction reliable.
 PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
 
-DEFAULT_DATA_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "olympiadbench.jsonl"
-)
-DEFAULT_DATASET = "lmms-lab/olympiadbench"
+DEFAULT_DATASET = "lmms-lab/OlympiadBench"
+DEFAULT_DATASET_REVISION = "c24a1391397fcfe50afaea9210d2c29066494b69"
 DEFAULT_SPLIT = "test_en"
 
 
@@ -127,8 +124,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = DEFAULT_DATA_FILE,
         dataset_name: str = DEFAULT_DATASET,
+        dataset_revision: str = DEFAULT_DATASET_REVISION,
         dataset_split: str = DEFAULT_SPLIT,
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
@@ -142,9 +139,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         Initialize OlympiadBench benchmark.
 
         Args:
-            data_file: Local JSONL with the offline sample (id, problem, answer, subject, ...).
-                Used when it exists on disk; otherwise the HF dataset is loaded.
-            dataset_name: HuggingFace dataset to fall back to when ``data_file`` is absent.
+            dataset_name: Hugging Face dataset containing OlympiadBench.
+            dataset_revision: Immutable Hugging Face dataset revision.
             dataset_split: Split to load from HF (``test_en`` is the text-only English split).
             debug: If set, only evaluate on 2 examples.
             seed: Random seed for reproducibility. Default is [0, 1234, 1234, 1234] for lm-eval-harness.
@@ -160,8 +156,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             num_samples=num_samples,
             pass_at_k=pass_at_k,
         )
-        self.data_file = data_file
         self.dataset_name = dataset_name
+        self.dataset_revision = dataset_revision
         self.dataset_split = dataset_split
         self.debug = debug
         self.seed = seed
@@ -315,22 +311,12 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         return results
 
     def load_questions(self) -> List[Dict[str, Any]]:
-        """Load OlympiadBench questions from the local JSONL, falling back to HF.
-
-        The local data file is preferred so the benchmark works fully offline (clusters
-        without outbound internet). When it is absent, the HF dataset is loaded and the
-        same record shape (id, problem, answer, subject, unit) is projected from it.
-        """
-        if os.path.exists(self.data_file):
-            with open(self.data_file, "r") as f:
-                questions = [json.loads(x) for x in f]
-            self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
-        else:
-            questions = self._load_from_hf()
-            self.logger.info(
-                f"Loaded {len(questions)} questions from HF dataset "
-                f"{self.dataset_name}[{self.dataset_split}]"
-            )
+        """Load the scorable English text-only OlympiadBench questions from Hugging Face."""
+        questions = self._load_from_hf()
+        self.logger.info(
+            f"Loaded {len(questions)} questions from HF dataset "
+            f"{self.dataset_name}@{self.dataset_revision}[{self.dataset_split}]"
+        )
 
         if self.debug:
             questions = questions[:2]
@@ -341,25 +327,25 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         return questions
 
     def _load_from_hf(self) -> List[Dict[str, Any]]:
-        """Project the HF dataset into the local JSONL record shape."""
+        """Project the HF dataset into the benchmark record shape."""
         from datasets import load_dataset
 
-        ds = load_dataset(self.dataset_name, split=self.dataset_split)
         cache_dir = os.environ.get("HF_HUB_CACHE")
-        if cache_dir:
-            ds = load_dataset(
-                self.dataset_name, split=self.dataset_split, cache_dir=cache_dir
-            )
+        ds = load_dataset(
+            self.dataset_name,
+            split=self.dataset_split,
+            revision=self.dataset_revision,
+            cache_dir=cache_dir,
+        )
 
         out: List[Dict[str, Any]] = []
         for ex in ds:
-            # Skip multimodal problems (require images we cannot serve in text-only eval).
-            if ex.get("images"):
+            source = ex.get("source") or ""
+            if "_TO_" not in source:
                 continue
             final_answer = ex.get("final_answer")
             if not final_answer:
                 continue
-            source = ex.get("source") or ""
             subject = (
                 "mathematics"
                 if "maths" in source
