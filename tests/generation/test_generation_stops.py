@@ -45,5 +45,5 @@ def test_generation_task_overrides_take_precedence():
     humaneval_stops = task_manager.task_index["humaneval"].cfg["generation_kwargs"][
         "until"
     ]
-    assert "You are an AI assistant" in gsm8k_stops
+    assert "\nYou are an AI assistant" in gsm8k_stops
     assert "\nAssistant:" in humaneval_stops

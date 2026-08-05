@@ -12,6 +12,13 @@ END_OF_TURN_SEQUENCES = (
     "\nuser\n",
     "\nAssistant:",
 )
+HUMANEVAL_STOP_SEQUENCES = (
+    "\nclass",
+    "\ndef",
+    "\n#",
+    "\nif",
+    "\nprint",
+) + END_OF_TURN_SEQUENCES
 
 
 def truncate_at_stop(text: str, stops: tuple[str, ...] = END_OF_TURN_SEQUENCES) -> str:

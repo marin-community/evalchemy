@@ -11,6 +11,8 @@ metric_list:
     higher_is_better: true
     k: [1]
 generation_kwargs:
+  # YAML task configs cannot import Python constants. Keep this list aligned with
+  # eval.generation_stops.HUMANEVAL_STOP_SEQUENCES.
   until:
     - "\nclass"
     - "\ndef"

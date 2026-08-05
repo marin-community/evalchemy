@@ -1,12 +1,4 @@
-from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
-
-HUMANEVAL_STOP_SEQUENCES = (
-    "\nclass",
-    "\ndef",
-    "\n#",
-    "\nif",
-    "\nprint",
-) + END_OF_TURN_SEQUENCES
+from eval.generation_stops import HUMANEVAL_STOP_SEQUENCES, truncate_at_stop
 
 
 def pass_at_k(
@@ -14,6 +6,7 @@ def pass_at_k(
     predictions: list[list[str]],
     k: list[int] | int | None = None,
 ):
+    # lm_eval's HumanEval module executes a code-eval probe at import time.
     from lm_eval.tasks.humaneval.utils import pass_at_k as upstream_pass_at_k
 
     return upstream_pass_at_k(references, predictions, k)
