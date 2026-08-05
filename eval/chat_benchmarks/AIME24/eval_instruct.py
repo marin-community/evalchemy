@@ -8,6 +8,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
 
+from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -85,6 +86,7 @@ class AIME24Benchmark(BaseBenchmark):
                             "max_new_tokens": self.max_new_tokens,
                             "temperature": 0.7,
                             "seed": seed,
+                            "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
@@ -182,7 +184,7 @@ class AIME24Benchmark(BaseBenchmark):
             str: Extracted final answer. Returns empty string if no answer found in \boxed.
         """
         try:
-            answer = remove_boxed(last_boxed_only_string(output))
+            answer = remove_boxed(last_boxed_only_string(truncate_at_stop(output)))
             return answer
         except:
             return ""

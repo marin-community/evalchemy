@@ -8,8 +8,7 @@
 #
 # This file overrides the upstream `drop` task because evalchemy loads it via
 # `include_path` (see eval/eval.py -> DEFAULT_LM_EVAL_INCLUDE_DIR), and include_path task
-# configs take precedence over the packaged defaults. Generation is unchanged; the fix is
-# purely scoring-side.
+# configs take precedence over the packaged defaults.
 task: drop
 dataset_path: EleutherAI/drop
 output_type: generate_until
@@ -28,7 +27,7 @@ should_decontaminate: true
 doc_to_decontamination_query: "{{passage}} {{question}}"
 generation_kwargs:
   until:
-    - "."
+    - "\n"
 filter_list:
   - name: extract_answer
     filter:
@@ -45,4 +44,4 @@ metric_list:
     aggregation: mean
     higher_is_better: true
 metadata:
-  version: 3.1
+  version: 3.2
