@@ -109,6 +109,7 @@ def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
         task_manager=_CustomTaskManager(task_name, benchmark),
         pretrain_task_manager=_EmptyPretrainTaskManager(),
         task_list=[task_name],
+        task_routes={task_name: "Evalchemy chat benchmark"},
         batch_sizes_list=[1],
         args=_args(),
     )
@@ -175,6 +176,7 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
         task_manager=type("Custom", (), {"tasks": {}})(),
         pretrain_task_manager=pretrain,
         task_list=["gsm8k"],
+        task_routes={"gsm8k": "lm-eval"},
         batch_sizes_list=[1],
         args=args,
     )
@@ -192,6 +194,7 @@ def test_log_samples_unscored_task_writes_no_placeholder(tmp_path: Path):
         task_manager=_CustomTaskManager("IFEval", benchmark),
         pretrain_task_manager=_EmptyPretrainTaskManager(),
         task_list=["IFEval"],
+        task_routes={"IFEval": "Evalchemy chat benchmark"},
         batch_sizes_list=[1],
         args=_args(),
     )
