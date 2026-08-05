@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import difflib
 import json
 import logging
 import os
@@ -57,6 +58,44 @@ _BIT_CAP = 15_000
 # answer-extraction filter_list — no run-config change required. A user-supplied
 # --include_path still wins (it is appended last).
 DEFAULT_LM_EVAL_INCLUDE_DIR = os.path.join(os.path.dirname(__file__), "lm_eval_tasks")
+CHAT_BENCHMARK_ROUTE = "Evalchemy chat benchmark"
+LM_EVAL_ROUTE = "lm-eval"
+
+
+def resolve_task_routes(
+    task_list: List[str], task_manager: InstructTaskManager, pretrain_task_manager: PretrainTaskManager
+) -> Dict[str, str]:
+    """Resolve each selected task to the registry that will evaluate it."""
+    task_routes: Dict[str, str] = {}
+    unknown_tasks: List[str] = []
+    available_tasks = sorted(set(task_manager.tasks) | set(pretrain_task_manager.all_tasks))
+
+    for task in dict.fromkeys(task_list):
+        if task in task_manager.tasks:
+            task_routes[task] = CHAT_BENCHMARK_ROUTE
+        elif task in pretrain_task_manager.all_tasks:
+            task_routes[task] = LM_EVAL_ROUTE
+        else:
+            unknown_tasks.append(task)
+
+    if unknown_tasks:
+        suggestions = {
+            task: difflib.get_close_matches(task, available_tasks, n=3) for task in unknown_tasks
+        }
+        suggestion_text = "; ".join(
+            f"{task} (did you mean: {', '.join(matches)})"
+            for task, matches in suggestions.items()
+            if matches
+        )
+        message = f"Unknown evaluation tasks: {', '.join(unknown_tasks)}."
+        if suggestion_text:
+            message = f"{message} Close matches: {suggestion_text}."
+        raise ValueError(message)
+
+    for task, route in task_routes.items():
+        utils.eval_logger.info("%s -> %s", task, route)
+
+    return task_routes
 
 
 def handle_non_serializable_extended(o):
@@ -195,6 +234,7 @@ def evaluate(
     task_manager: InstructTaskManager,
     pretrain_task_manager: PretrainTaskManager,
     task_list: List[str],
+    task_routes: Dict[str, str],
     batch_sizes_list: List[int],
     verbosity: str = "INFO",
     args=None,
@@ -212,6 +252,8 @@ def evaluate(
             Manager for pre-training evaluation tasks.
         task_list (List[str]):
             List of task names to evaluate the model on.
+        task_routes (Dict[str, str]):
+            Registry selected for each task.
         batch_sizes_list (List[int]):
             List of batch sizes for each task.
         verbosity (str, optional):
@@ -229,16 +271,17 @@ def evaluate(
     eval_logger = utils.eval_logger
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
 
-    # Split tasks between benchmark and pretrain
-    benchmark_tasks = [t for t in task_list if t in task_manager.tasks]
-    benchmark_batch_sizes = [b for (t, b) in zip(task_list, batch_sizes_list) if t in task_manager.tasks]
-    pretrain_tasks = [t for t in task_list if t in pretrain_task_manager.all_tasks]
-    pretrain_batch_sizes = [b for (t, b) in zip(task_list, batch_sizes_list) if t in pretrain_task_manager.all_tasks]
-
-    unknown_tasks = set(task_list).difference(set(benchmark_tasks)).difference(set(pretrain_tasks))
-
-    if len(unknown_tasks) > 0:
-        raise ValueError(f"Tasks {unknown_tasks} are not recognized.")
+    # Split tasks according to the registry resolved before model initialization.
+    benchmark_tasks = [task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE]
+    benchmark_batch_sizes = [
+        batch_size
+        for task, batch_size in zip(task_list, batch_sizes_list)
+        if task_routes[task] == CHAT_BENCHMARK_ROUTE
+    ]
+    pretrain_tasks = [task for task in task_list if task_routes[task] == LM_EVAL_ROUTE]
+    pretrain_batch_sizes = [
+        batch_size for task, batch_size in zip(task_list, batch_sizes_list) if task_routes[task] == LM_EVAL_ROUTE
+    ]
 
     if benchmark_tasks:
         eval_logger.info(f"Benchmark tasks to evaluate: {benchmark_tasks}")
@@ -474,6 +517,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         limits.max_length if limits.max_length is not None else "default",
         limits.max_tokens if limits.max_tokens is not None else "default",
     )
+    utils.eval_logger.setLevel(getattr(logging, args.verbosity))
 
     # Initialize tasks
     task_manager = InstructTaskManager(
@@ -493,25 +537,23 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     if args.include_path:
         _include_paths.append(args.include_path)
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=_include_paths)
+    task_routes = resolve_task_routes(task_list, task_manager, pretrain_task_manager)
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 
     # Only check for OpenAI API keys if at least one task requires an annotator model
     # TODO: Should we just skip the evaluation that requires the annotator model if the annotator model is not set or fail completely?
     if args.annotator_model in LIST_OPENAI_MODELS and any(
-        task_manager.requires_annotator_model(task) for task in task_list
+        task_manager.requires_annotator_model(task)
+        for task in task_list
+        if task_routes[task] == CHAT_BENCHMARK_ROUTE
     ):
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError(
                 f"Please set OPENAI_API_KEY to allow usage of {args.annotator_model}"
-                f"to evaluate the following tasks: {[task for task in task_list if task_manager.requires_annotator_model(task)]}"
+                "to evaluate the following tasks: "
+                f"{[task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE and task_manager.requires_annotator_model(task)]}"
             )
-
-    # Check if any task is not in either task manager
-    if any(task not in task_manager.tasks and task not in pretrain_task_manager.all_tasks for task in task_list):
-        raise ValueError(
-            f"The following tasks could not be found: {[task for task in task_list if task not in task_manager.tasks and task not in pretrain_task_manager.all_tasks]}"
-        )
 
     # Initialize model
     try:
@@ -563,6 +605,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         task_manager=task_manager,
         pretrain_task_manager=pretrain_task_manager,
         task_list=task_list,
+        task_routes=task_routes,
         batch_sizes_list=batch_sizes_list,
         verbosity=args.verbosity,
         args=args,

@@ -743,7 +743,6 @@ class TaskManager:
         if task_name in self.list_of_tasks_that_require_annotator_model:
             return True
         if task_name not in self.tasks:
-            self.logger.warning(f"Task not found: {task_name}")
             return False
 
         task_cls = self.tasks[task_name]
