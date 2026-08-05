@@ -21,21 +21,7 @@ metric_list:
       - "(?s).*#### "
       - "\\.$"
 generation_kwargs:
-  # YAML task configs cannot import Python constants. Keep these model turn markers
-  # aligned with eval.generation_stops.END_OF_TURN_SEQUENCES.
-  until:
-    - "Question:"
-    - "\nQ:"
-    - "\n[Question]"
-    - "\nYou are an AI assistant"
-    - "\nUser:"
-    - "\nuser\n"
-    - "\nAssistant:"
-    - "</s>"
-    - "<|im_end|>"
-    - "<|eot_id|>"
-    - "<|end_of_text|>"
-    - "<|endoftext|>"
+  until: !function eval.generation_stops.GSM8K_STOP_SEQUENCES
   do_sample: false
   temperature: 0.0
 repeats: 1
