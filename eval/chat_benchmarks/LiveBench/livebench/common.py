@@ -35,6 +35,10 @@ LIVE_BENCH_CATEGORIES = [
 LIVE_BENCH_RELEASES = {"2024-07-26", "2024-06-24", "2024-08-31", "2024-11-25"}
 
 
+def model_display_name(model_name: str) -> str:
+    return get_model(model_name).display_name
+
+
 @dataclasses.dataclass
 class MatchSingle:
     """
@@ -213,7 +217,7 @@ def load_model_answers(answer_dir: str):
 
     for filename in filenames:
         model_name = os.path.basename(filename)[: -len(".jsonl")]
-        model_name = get_model(model_name).display_name
+        model_name = model_display_name(model_name)
         answer = {}
         with open(filename) as fin:
             for line in fin:

@@ -1,6 +1,5 @@
 import json
 import os
-import torch
 import numpy as np
 import random
 import re
@@ -11,6 +10,13 @@ import tiktoken
 def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
     random.seed(seed)
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch":
+            raise
+        os.environ["PYTHONHASHSEED"] = str(seed)
+        return
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     # When running on the CuDNN backend, two further options must be set

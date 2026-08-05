@@ -30,8 +30,6 @@ import gc
 # suppress warnings
 import warnings
 
-import torch
-
 warnings.filterwarnings("ignore")
 
 CruxEval_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -56,6 +54,12 @@ def cleanup_resources():
 
     # Force garbage collection
     gc.collect()
+    try:
+        import torch
+    except ModuleNotFoundError as exc:
+        if exc.name != "torch":
+            raise
+        return
     torch.cuda.empty_cache()
 
 

@@ -3,6 +3,10 @@
 import sys
 from pathlib import Path
 
+import datasets
+from lm_eval.tasks import TaskManager
+from lm_eval.utils import apply_template
+
 # The evalchemy `eval` package is copied into site-packages, not editable-installed, so
 # put this worktree first on the path to import the in-tree fix under test.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -11,7 +15,12 @@ if str(_REPO_ROOT) not in sys.path:
 
 from lm_eval.tasks.drop.utils import process_results  # noqa: E402
 
-from eval.lm_eval_tasks.drop.utils import drop_answer_extraction_filter, extract_drop_short_answer  # noqa: E402
+from eval.lm_eval_tasks.drop.utils import (  # noqa: E402
+    drop_answer_extraction_filter,
+    extract_drop_short_answer,
+    process_docs,
+)
+from eval.regression.lm_eval_task_contracts import mapping_key_target_violation  # noqa: E402
 
 # A realistic no-template completion: the model restates the passage/question and only
 # incidentally contains the gold number ("42"). This is what the DROP metric actually
@@ -24,6 +33,20 @@ VERBOSE_COMPLETION = (
 )
 
 GOLD_NUMBER_DOC = {"answers": [("42",)]}
+
+RAW_DROP_DOC = {
+    "query_id": "fixture",
+    "passage": "The team scored 42 points.",
+    "question": "How many points did the team score?",
+    "answer": {
+        "number": "42",
+        "date": {"day": "", "month": "", "year": ""},
+        "spans": [],
+        "worker_id": "worker",
+        "hit_id": "hit",
+    },
+    "validated_answers": {"number": [], "date": [], "spans": []},
+}
 
 
 def _f1(doc, results):
@@ -109,6 +132,22 @@ def test_no_answer_present_does_not_fabricate():
     assert _f1(GOLD_NUMBER_DOC, _filter_one(comp)) < 0.1
 
 
+def test_drop_target_renders_processed_answers_not_raw_answer_keys():
+    """The override scores the normalized DROP gold, not Jinja's mapping-key join."""
+    task_manager = TaskManager(include_path=[str(_REPO_ROOT / "eval" / "lm_eval_tasks")])
+    config = task_manager.task_index["drop"].cfg
+    processed = process_docs(datasets.Dataset.from_list([RAW_DROP_DOC]))[0]
+    rendered = apply_template(config["doc_to_target"], processed)
+    malformed = apply_template("{{ answer|join(',')}}", processed)
+
+    assert rendered == "42"
+    assert mapping_key_target_violation(processed, rendered) is None
+    violation = mapping_key_target_violation(processed, malformed)
+    assert violation is not None
+    assert violation.field_path == "answer"
+    assert violation.target == malformed
+
+
 # --------------------------------------------------------------------------------------
 # Filter plumbing + robustness.
 # --------------------------------------------------------------------------------------
@@ -139,3 +178,4 @@ def test_override_yaml_takes_precedence():
     assert entry is not None and entry.yaml_path is not None
     # The resolved `drop` config must be OUR override file, not the packaged one.
     assert Path(entry.yaml_path).resolve() == (Path(DEFAULT_LM_EVAL_INCLUDE_DIR) / "drop" / "drop.yaml").resolve()
+    assert entry.cfg["generation_kwargs"]["until"] == ["\n"]

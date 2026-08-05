@@ -23,6 +23,9 @@
 # PINNED-FIRST: this pushes ONLY the immutable :evalchemy-gpu-<gitsha> tag. Promote the
 # floating :evalchemy-gpu (crane tag) separately, AFTER a live eval smoke produces a real
 # score, so a botched build cannot break other users' evalchemy-gpu jobs.
+# Do not enable xtrace until after the GHCR credential has been consumed below:
+# shell expansion of the required-env checks would otherwise copy DOCKER_TOKEN
+# into the durable Iris task log.
 set -euo pipefail
 
 : "${DOCKER_USER_ID:?}"

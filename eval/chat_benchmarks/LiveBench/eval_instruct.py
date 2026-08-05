@@ -27,8 +27,8 @@ from eval.chat_benchmarks.LiveBench.livebench.common import (
     reorg_answer_file,
 )
 from eval.chat_benchmarks.LiveBench.livebench.gen_ground_truth_judgment import gen_judgments
+from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import get_conversation_template
 from eval.task import BaseBenchmark
-from eval.chat_benchmarks.LiveBench.livebench.model import get_conversation_template
 
 
 class LiveBenchBenchmark(BaseBenchmark):

@@ -12,7 +12,7 @@ is the regression gate's job — see `eval/regression/`.
 ## Install
 
 ```bash
-uv sync --no-dev --python 3.11 --extra serve-eval   # evalchemy + the runner (vLLM-free)
+uv sync --no-dev --python 3.12 --extra serve-eval   # evalchemy + the runner (vLLM-free)
 
 # marin-serve provider only -- an isolated tool, since marin-core can't co-resolve
 # with evalchemy's deps:
@@ -53,6 +53,34 @@ flags and `E2E_*` env vars override it). Two providers:
 Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
 `tokenizer_backend=huggingface,tokenized_requests=False` (the served model tokenizes;
 lm-eval keeps a HF tokenizer only for length bookkeeping).
+
+## Telemetry
+
+Telemetry is disabled unless a Finelog ingestion URL is provided:
+
+```bash
+uv run python -m eval.serve_eval.run --provider endpoint \
+    --base-url http://localhost:8000/v1 \
+    --telemetry-endpoint https://finelog.example/v1/telemetry \
+    --root-run-uid qwen3-math \
+    --execution-uid qwen3-math-attempt-1
+```
+
+`FINELOG_TELEMETRY_ENDPOINT`, `EVAL_ROOT_RUN_UID`, `EVAL_EXECUTION_UID`, and
+`EVAL_SERVING_JOB_ID` are the environment equivalents. Keep `root_run_uid` stable for a
+logical effort and use a new `execution_uid` for each invocation or retry; standalone
+runs generate both independently. Optional `serving_job_id` joins Marin-owned
+`service=vllm` records when the Iris job ID is already known.
+
+The runner exports total evaluation `phase_duration_seconds`, terminal per-task and
+total `work_completed` trials (`unit={item}`, `work_kind=trial`), and a run-level
+`seconds_per_trial` only for a nonzero terminal total. Multiple tasks can share the child
+process, so it does not claim per-task duration, per-request data, or live sample data.
+Marin-serve teardown records the same phase metric with `phase=cleanup` and its outcome.
+
+Marin must inject a reachable, authorized endpoint; Evalchemy does not discover Finelog
+or credentials. Export and the two-second shutdown are best-effort and cannot change
+evaluation output or exit status.
 
 To gate a run's scores against a checked-in spec, hand the output dir to the gate:
 

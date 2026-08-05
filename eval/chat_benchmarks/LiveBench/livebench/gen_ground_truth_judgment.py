@@ -16,7 +16,6 @@ import numpy as np
 from tqdm import tqdm
 
 # todo: find a better solution than all these imports.
-from livebench.model.api_models import get_model
 from livebench.process_results.data_analysis.tablereformat.utils import table_process_results
 from livebench.process_results.data_analysis.cta.utils import cta_process_results
 from livebench.process_results.data_analysis.tablejoin.utils import joinmap_process_results
@@ -44,6 +43,7 @@ from livebench.common import (
     MatchSingle,
     get_categories_tasks,
     LIVE_BENCH_DATA_SUPER_PATH,
+    model_display_name,
 )
 
 
@@ -374,7 +374,7 @@ if __name__ == "__main__":
             if args.model_display_name is not None:
                 model_list.append(args.model_display_name[i])
             else:
-                model_list.append(get_model(model_name).display_name)
+                model_list.append(model_display_name(model_name))
 
     if args.question_source == "huggingface":
         categories, tasks = get_categories_tasks(args.bench_name)

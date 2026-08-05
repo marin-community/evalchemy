@@ -10,13 +10,11 @@ authors = [
     { name = "Your Name", email = "your.email@example.com" },
 ]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
 
@@ -50,7 +48,7 @@ dependencies = [
 
     # Runtime tokenizer / chat-template for API models. lm-eval 0.4.x imports symbols
     # transformers 5 removed, so cap below it.
-    "transformers<5",
+    "transformers>=4.31,<5",
     # Slow-tokenizer backends for common models.
     "sentencepiece",
     "protobuf",
@@ -95,8 +93,9 @@ dev = [
 
 # The serve-and-eval runner (eval/serve_eval/): the run/validate CLIs use click,
 # parse results/spec JSON with pydantic, and load the run config (qwen-tiny.yaml) with
-# pydantic-settings. An optional extra, not base deps -- base evalchemy evaluates fine
-# without the runner, and this keeps a plain `uv sync` lean. The regression gate
+# pydantic-settings. marin-rigging exports bounded, best-effort lifecycle records to
+# Finelog without pulling marin-core. This is an optional extra, not a base dependency:
+# base evalchemy evaluates fine without the runner. The regression gate
 # (eval/regression/) reuses these same deps.
 #
 # s3fs gives fsspec an s3:// backend so an endpoint-eval job can route its result
@@ -111,6 +110,7 @@ serve-eval = [
     "pydantic-settings>=2",
     "pyyaml",
     "s3fs",
+    "marin-rigging>=0.2.67.dev30673006835",
 ]
 
 # Postgres driver for the --use_database result-tracking path only. DATABASE_URL
@@ -134,24 +134,23 @@ database = [
 # Benchmarks the lean base already covers get an EMPTY extra (see the block further down),
 # so `evalchemy[<any benchmark dir>]` is uniformly valid. `benchmarks` is the union of them
 # all. Each non-empty extra is verified in ISOLATION (base + that one extra, nothing else)
-# by scripts/ci/check_benchmark_extras.py -- a dep that goes missing fails there, in CI,
-# not at eval time. torch lands here (not base) because it is a module-level import of a
-# handful of benchmarks only (MTBench/MixEval/alpaca_eval/CruxEval/BigCodeBench/LiveBench).
+# by scripts/ci/check_benchmark_extras.py -- a dep that goes missing or pulls torch fails
+# there, in CI, not at eval time. Local inference installs torch through the `vllm` extra;
+# benchmark extras cover endpoint generation and grading only.
 # `fschat`/`alpaca-eval` resolve from the vendored copies via [tool.uv.sources] for a
 # workspace `uv sync`; a git/uvx install falls back to the PyPI packages.
-bigcodebench = ["torch", "fire", "regex", "tree_sitter", "tree-sitter-python", "pqdm"]
-cruxeval = ["torch"]
+bigcodebench = ["fire", "regex", "tree_sitter", "tree-sitter-python", "pqdm"]
+cruxeval = []
 humaneval = ["fire"]
 humanevalplus = ["fire"]
 ifeval = ["nltk", "langdetect", "absl-py", "immutabledict"]
-# LiveBench loads fastchat's model adapter (torch, psutil, accelerate via fschat), a
-# vendored IFEval judge (langdetect, immutabledict, nltk), and its vendored lcb_runner
-# code-exec grader imports pyext at module load; the penfever py3 fork is the only pyext
-# that imports under Python 3.
+ifbench = ["nltk", "emoji", "syllapy"]
+# LiveBench's FastChat adapter registry selects conversation templates without importing
+# its torch-backed local model loaders. Its vendored IFEval judge needs
+# langdetect/immutabledict/nltk, and the lcb_runner code-exec grader imports pyext at
+# module load; the penfever py3 fork is the only pyext that imports under Python 3.
 livebench = [
-    "torch",
     "psutil",
-    "accelerate",
     "fschat",
     "shortuuid",
     "nltk",
@@ -163,14 +162,15 @@ livebench = [
 ]
 mbpp = ["fire"]
 mbppplus = ["fire"]
-# fschat's llm_judge/model adapter imports anthropic, psutil and accelerate at module load.
-mtbench = ["torch", "fschat", "accelerate", "anthropic", "psutil", "shortuuid"]
-mixeval = ["torch", "nltk", "prettytable"]
+# MTBench's torch-free llm_judge path imports anthropic and FastChat's conversation
+# templates. FastChat's local model adapter remains available when `vllm` supplies torch.
+mtbench = ["fschat", "anthropic", "psutil", "shortuuid"]
+mixeval = ["nltk", "prettytable"]
 multiple = ["fire", "regex", "tree_sitter"]
 repobench = ["fuzzywuzzy", "codebleu"]
 swebench = ["swebench>=3.0.4"]
 wildbench = ["jsonlines", "cohere", "anthropic", "reka-api", "together"]
-alpaca-eval = ["torch", "alpaca-eval", "patsy"]
+alpaca-eval = ["alpaca-eval", "patsy"]
 zeroeval = ["google-generativeai", "cohere", "anthropic", "reka-api", "together"]
 
 # Empty extras: these benchmark dirs import nothing beyond the lean base (their graders
@@ -185,7 +185,11 @@ aiw = []
 amc23 = []
 codeelo = []
 codeforces = []
+financebench = []
 gpqadiamond = []
+# GSM8KPerturbed's run-time deps are covered by the lean base; dataset
+# regeneration additionally needs `datasets` and `cmudict` (see data_prep/generate.py).
+gsm8kperturbed = []
 hle = []
 hmmt = []
 jeebench = []
@@ -202,7 +206,7 @@ olympiadbench = []
 # (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
 # ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
 benchmarks = [
-    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,gpqadiamond,hle,hmmt,humaneval,humanevalplus,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,financebench,gpqadiamond,gsm8kperturbed,hle,hmmt,humaneval,humanevalplus,ifbench,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
@@ -229,8 +233,10 @@ benchmarks = [
 
 # Local vLLM inference engine. Needed only to serve/evaluate models locally
 # (`--model vllm`); NOT needed to evaluate against a served OpenAI-compatible
-# endpoint. Split out of the base deps so a CPU-only install stays lean.
+# endpoint. accelerate keeps the vendored FastChat model adapters available once
+# torch is installed. Split these out of the base deps so a CPU-only install stays lean.
 vllm = [
+    "accelerate",
     "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
 ]
 
@@ -251,6 +257,7 @@ alpaca-eval = { path = "eval/chat_benchmarks/alpaca_eval" }
 [tool.hatch.build.targets.wheel.force-include]
 "eval" = "eval"
 "database" = "database"
+"packages/evalchemy-config/src/evalchemy_config" = "evalchemy_config"
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -287,8 +294,12 @@ include = [
     "eval/serve_eval/**",
     "eval/regression/**",
     "eval/lm_eval_tasks/**",
+    "eval/graders/**",
     "tests/e2e/**",
     "tests/drop/**",
+    "tests/graders/**",
+    "scripts/benchmarks/**",
+    "packages/evalchemy-config/**",
     "scripts/ci/**",
     "infra/**",
 ]

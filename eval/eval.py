@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import difflib
 import json
 import logging
 import os
@@ -38,15 +39,16 @@ from lm_eval.tasks import TaskManager as PretrainTaskManager
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from lm_eval.utils import handle_non_serializable as _orig_handle
 
-from eval import robust_api  # noqa: F401  # patch lm-eval async batch: a single request error scores as a miss, not a whole-batch abort
-from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # register curator model
-from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # register precomputed_hf model
-from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # register upload_to_hf model
+# Register the async-batch robustness patch before any model adapter is built.
+from eval import robust_api  # noqa: F401
+from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
+from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
+from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
+from eval.limits import resolve_evaluation_limits
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import TaskManager as InstructTaskManager
-
 
 _BIT_CAP = 15_000
 
@@ -56,6 +58,44 @@ _BIT_CAP = 15_000
 # answer-extraction filter_list — no run-config change required. A user-supplied
 # --include_path still wins (it is appended last).
 DEFAULT_LM_EVAL_INCLUDE_DIR = os.path.join(os.path.dirname(__file__), "lm_eval_tasks")
+CHAT_BENCHMARK_ROUTE = "Evalchemy chat benchmark"
+LM_EVAL_ROUTE = "lm-eval"
+
+
+def resolve_task_routes(
+    task_list: List[str], task_manager: InstructTaskManager, pretrain_task_manager: PretrainTaskManager
+) -> Dict[str, str]:
+    """Resolve each selected task to the registry that will evaluate it."""
+    task_routes: Dict[str, str] = {}
+    unknown_tasks: List[str] = []
+    available_tasks = sorted(set(task_manager.tasks) | set(pretrain_task_manager.all_tasks))
+
+    for task in dict.fromkeys(task_list):
+        if task in task_manager.tasks:
+            task_routes[task] = CHAT_BENCHMARK_ROUTE
+        elif task in pretrain_task_manager.all_tasks:
+            task_routes[task] = LM_EVAL_ROUTE
+        else:
+            unknown_tasks.append(task)
+
+    if unknown_tasks:
+        suggestions = {
+            task: difflib.get_close_matches(task, available_tasks, n=3) for task in unknown_tasks
+        }
+        suggestion_text = "; ".join(
+            f"{task} (did you mean: {', '.join(matches)})"
+            for task, matches in suggestions.items()
+            if matches
+        )
+        message = f"Unknown evaluation tasks: {', '.join(unknown_tasks)}."
+        if suggestion_text:
+            message = f"{message} Close matches: {suggestion_text}."
+        raise ValueError(message)
+
+    for task, route in task_routes.items():
+        utils.eval_logger.info("%s -> %s", task, route)
+
+    return task_routes
 
 
 def handle_non_serializable_extended(o):
@@ -139,15 +179,21 @@ def setup_custom_parser():
     )
     parser.add_argument(
         "--max_tokens",
-        type=str,
+        type=int,
         default=None,
-        help="Maximum length of model generatd tokens.",
+        help="Canonical maximum generated tokens for every Evalchemy benchmark.",
+    )
+    parser.add_argument(
+        "--max_length",
+        type=int,
+        default=None,
+        help="Canonical total model context length for every Evalchemy benchmark.",
     )
 
     parser.add_argument(
         "--config",
         type=str,
-        help="Path to config yaml. Overwrites --batch_size, --tasks, --annotator_model, and --max_tokens",
+        help="Path to config yaml. Overwrites --batch_size, --tasks, --annotator_model, --max_length, and --max_tokens",
     )
     parser.add_argument(
         "--debug",
@@ -188,6 +234,7 @@ def evaluate(
     task_manager: InstructTaskManager,
     pretrain_task_manager: PretrainTaskManager,
     task_list: List[str],
+    task_routes: Dict[str, str],
     batch_sizes_list: List[int],
     verbosity: str = "INFO",
     args=None,
@@ -205,6 +252,8 @@ def evaluate(
             Manager for pre-training evaluation tasks.
         task_list (List[str]):
             List of task names to evaluate the model on.
+        task_routes (Dict[str, str]):
+            Registry selected for each task.
         batch_sizes_list (List[int]):
             List of batch sizes for each task.
         verbosity (str, optional):
@@ -222,16 +271,17 @@ def evaluate(
     eval_logger = utils.eval_logger
     eval_logger.setLevel(getattr(logging, f"{verbosity}"))
 
-    # Split tasks between benchmark and pretrain
-    benchmark_tasks = [t for t in task_list if t in task_manager.tasks]
-    benchmark_batch_sizes = [b for (t, b) in zip(task_list, batch_sizes_list) if t in task_manager.tasks]
-    pretrain_tasks = [t for t in task_list if t in pretrain_task_manager.all_tasks]
-    pretrain_batch_sizes = [b for (t, b) in zip(task_list, batch_sizes_list) if t in pretrain_task_manager.all_tasks]
-
-    unknown_tasks = set(task_list).difference(set(benchmark_tasks)).difference(set(pretrain_tasks))
-
-    if len(unknown_tasks) > 0:
-        raise ValueError(f"Tasks {unknown_tasks} are not recognized.")
+    # Split tasks according to the registry resolved before model initialization.
+    benchmark_tasks = [task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE]
+    benchmark_batch_sizes = [
+        batch_size
+        for task, batch_size in zip(task_list, batch_sizes_list)
+        if task_routes[task] == CHAT_BENCHMARK_ROUTE
+    ]
+    pretrain_tasks = [task for task in task_list if task_routes[task] == LM_EVAL_ROUTE]
+    pretrain_batch_sizes = [
+        batch_size for task, batch_size in zip(task_list, batch_sizes_list) if task_routes[task] == LM_EVAL_ROUTE
+    ]
 
     if benchmark_tasks:
         eval_logger.info(f"Benchmark tasks to evaluate: {benchmark_tasks}")
@@ -419,7 +469,10 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         args.tasks = ",".join([t["task_name"] for t in tasks_yaml["tasks"]])
         batch_sizes_list = [int(t["batch_size"]) if t["batch_size"] != "auto" else "auto" for t in tasks_yaml["tasks"]]
         args.annotator_model = tasks_yaml.get("annotator_model", args.annotator_model)
-        args.max_tokens = int(tasks_yaml.get("max_tokens", args.max_tokens))
+        if "max_length" in tasks_yaml:
+            args.max_length = tasks_yaml["max_length"]
+        if "max_tokens" in tasks_yaml:
+            args.max_tokens = tasks_yaml["max_tokens"]
     else:
         batch_sizes_list = [
             int(args.batch_size) if args.batch_size != "auto" else args.batch_size
@@ -455,10 +508,22 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         model_name = args.model_name
         args.model_args = update_model_args_with_name(args.model_args or "", model_name)
 
+    # Resolve once before either benchmark family or the model is initialized.
+    # Native lm-eval receives ``model_args`` / ``gen_kwargs``; custom chat
+    # benchmarks receive the same values from the task manager below.
+    limits = resolve_evaluation_limits(args)
+    utils.eval_logger.info(
+        "Evaluation limits: max_length=%s max_tokens=%s",
+        limits.max_length if limits.max_length is not None else "default",
+        limits.max_tokens if limits.max_tokens is not None else "default",
+    )
+    utils.eval_logger.setLevel(getattr(logging, args.verbosity))
+
     # Initialize tasks
     task_manager = InstructTaskManager(
         annotator_model=args.annotator_model,
-        max_tokens=int(args.max_tokens) if args.max_tokens else None,
+        max_length=limits.max_length,
+        max_tokens=limits.max_tokens,
         debug=args.debug,
         seed=args.seed,
         task_list=task_list,
@@ -472,25 +537,23 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     if args.include_path:
         _include_paths.append(args.include_path)
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=_include_paths)
+    task_routes = resolve_task_routes(task_list, task_manager, pretrain_task_manager)
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 
     # Only check for OpenAI API keys if at least one task requires an annotator model
     # TODO: Should we just skip the evaluation that requires the annotator model if the annotator model is not set or fail completely?
     if args.annotator_model in LIST_OPENAI_MODELS and any(
-        task_manager.requires_annotator_model(task) for task in task_list
+        task_manager.requires_annotator_model(task)
+        for task in task_list
+        if task_routes[task] == CHAT_BENCHMARK_ROUTE
     ):
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError(
                 f"Please set OPENAI_API_KEY to allow usage of {args.annotator_model}"
-                f"to evaluate the following tasks: {[task for task in task_list if task_manager.requires_annotator_model(task)]}"
+                "to evaluate the following tasks: "
+                f"{[task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE and task_manager.requires_annotator_model(task)]}"
             )
-
-    # Check if any task is not in either task manager
-    if any(task not in task_manager.tasks and task not in pretrain_task_manager.all_tasks for task in task_list):
-        raise ValueError(
-            f"The following tasks could not be found: {[task for task in task_list if task not in task_manager.tasks and task not in pretrain_task_manager.all_tasks]}"
-        )
 
     # Initialize model
     try:
@@ -542,6 +605,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         task_manager=task_manager,
         pretrain_task_manager=pretrain_task_manager,
         task_list=task_list,
+        task_routes=task_routes,
         batch_sizes_list=batch_sizes_list,
         verbosity=args.verbosity,
         args=args,
@@ -648,9 +712,7 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "model": (
             args.model
             if isinstance(args.model, str)
-            else args.model.config._name_or_path
-            if hasattr(args.model, "config")
-            else type(args.model).__name__
+            else args.model.config._name_or_path if hasattr(args.model, "config") else type(args.model).__name__
         ),
         "model_args": args.model_args,
         "tasks": args.tasks,
@@ -659,7 +721,16 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "use_cache": args.use_cache,
         "limit": args.limit,
         "annotator_model": args.annotator_model,
-        "max_tokens": args.max_tokens if args.max_tokens is not None else "default",
+        "max_length": getattr(args, "max_length", None) if getattr(args, "max_length", None) is not None else "default",
+        "max_tokens": getattr(args, "max_tokens", None) if getattr(args, "max_tokens", None) is not None else "default",
+        "evaluation_limits": {
+            "max_length": (
+                getattr(args, "max_length", None) if getattr(args, "max_length", None) is not None else "default"
+            ),
+            "max_tokens": (
+                getattr(args, "max_tokens", None) if getattr(args, "max_tokens", None) is not None else "default"
+            ),
+        },
         # "bootstrap_iters": args.bootstrap_iters,
         "gen_kwargs": args.gen_kwargs,
         "random_seed": args.seed[0],
@@ -754,6 +825,7 @@ def handle_evaluation_output(
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "
+        f"max_length: {getattr(args, 'max_length', None)}, max_tokens: {getattr(args, 'max_tokens', None)}, "
         f"limit: {args.limit}, num_fewshot: {args.num_fewshot}, annotator_model: {args.annotator_model}, "
         f"batch_size: {args.batch_size}{f' ({batch_sizes})' if batch_sizes else ''}"
     )

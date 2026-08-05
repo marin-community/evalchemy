@@ -1,0 +1,52 @@
+name: Publish Evalchemy config artifact
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-evalchemy-config
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the config-only wheel
+        run: uv build --wheel --out-dir dist packages/evalchemy-config
+      - name: Build the immutable release manifest
+        run: >-
+          uv run --no-project --with ./packages/evalchemy-config
+          python scripts/ci/build_evalchemy_config_manifest.py
+          --wheel dist/evalchemy_config-*.whl
+          --revision "$GITHUB_SHA"
+          --repository "$GITHUB_REPOSITORY"
+          --output dist/evalchemy-config-manifest.json
+      - name: Check whether this schema is already published
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$(python -c 'import json; print(json.load(open("dist/evalchemy-config-manifest.json"))["release_tag"])')"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable release assets
+        if: steps.release.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ steps.release.outputs.tag }}"
+          dist/evalchemy_config-*.whl dist/evalchemy-config-manifest.json
+          --target "$GITHUB_SHA"
+          --title "Evalchemy config ${{ steps.release.outputs.tag }}"
+          --notes "Typed Evalchemy evaluation-schema artifact for $GITHUB_SHA."
+          --latest=false

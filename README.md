@@ -76,14 +76,14 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone git@github.com:mlfoundations/evalchemy.git
 cd evalchemy
 
-# Create the environment from the lockfile (base install; Python 3.11).
+# Create the environment from the lockfile (base install; Python 3.12).
 # The vendored fschat dependency resolves automatically via [tool.uv.sources].
-uv sync --python 3.11
+uv sync --python 3.12
 #   make install         # equivalent, plus pre-commit hooks
 
 # The base install is vLLM-free (evaluation against served/API models needs no
 # local inference engine). To also install the local vLLM backend (`--model vllm`):
-uv sync --python 3.11 --extra vllm
+uv sync --python 3.12 --extra vllm
 
 # alpaca_eval is still an editable add-on:
 uv pip install -e eval/chat_benchmarks/alpaca_eval
@@ -127,6 +127,7 @@ uv run huggingface-cli login
   - **LiveBench**: [A benchmark for LLMs designed with test set contamination and objective evaluation in mind](https://livebench.ai/#/)
   - **GPQA Diamond**: [A Graduate-Level Google-Proof Q&A Benchmark](https://huggingface.co/datasets/Idavidrein/gpqa)
   - **Alice in Wonderland**: [Simple Tasks Showing Complete Reasoning Breakdown in LLMs](https://arxiv.org/abs/2406.02061)
+  - **FinanceBench**: [Financial document Q&A (10-K, 10-Q, earnings calls)](https://github.com/patronus-ai/financebench), graded with an LLM-as-judge (SimpleQA-style correct/incorrect/not_attempted). Each question ships with the supporting passage from the source filing as in-prompt document context.
   - **Arena-Hard-Auto** (Coming soon): [Automatic evaluation tool for instruction-tuned LLMs](https://github.com/lmarena/arena-hard-auto)
   - **SWE-Bench** (Coming soon): [Evaluating large language models on real-world software issues](https://github.com/princeton-nlp/SWE-bench)
   - **SafetyBench** (Coming soon): [Evaluating the safety of LLMs](https://github.com/thu-coai/SafetyBench)
@@ -159,6 +160,14 @@ The results will be written out in `output_path`. If you have `jq` [installed](h
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
 - `--output_path`: Directory to save evaluation results
+- `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
+- `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
+
+Use `--max_length` and `--max_tokens` rather than embedding these values in
+`--model_args` or `--gen_kwargs`. The older spellings (`max_model_len` and
+`max_gen_toks` / `max_new_tokens`) remain accepted for compatibility, but
+conflicting values fail before evaluation rather than producing path-dependent
+results. Resolved limits are written to result metadata.
 
 Example running multiple benchmarks:
 ```bash
@@ -172,7 +181,7 @@ python -m eval.eval \
 
 **Config shortcuts**: 
 
-To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
+To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments, and may set the canonical `max_length` and `max_tokens` fields. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
 
 ```bash
 python -m eval.eval \

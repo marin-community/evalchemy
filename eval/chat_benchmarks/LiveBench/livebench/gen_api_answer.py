@@ -24,7 +24,8 @@ from livebench.common import (
 )
 from livebench.model.completions import chat_completion_openai
 
-from livebench.model import Model, get_model
+from livebench.model.api_models import get_model
+from livebench.model.models import Model
 
 
 def get_answer(
