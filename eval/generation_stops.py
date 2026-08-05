@@ -1,8 +1,4 @@
-"""Stop policies shared by Python benchmarks and declarative lm-eval tasks.
-
-Despite its name, lm-eval's ``!function`` YAML tag imports any module attribute,
-so task configs can reference these lists directly.
-"""
+"""Shared stop policies for generation and scoring."""
 
 from collections.abc import Sequence
 
@@ -20,6 +16,8 @@ END_OF_TURN_SEQUENCES: tuple[str, ...] = (
     "\nuser\n",
     "\nAssistant:",
 )
+# lm-eval imports these through its ``!function`` YAML tag and requires ``until``
+# to be a list. Its task factory deep-copies the config before models may append EOS.
 GSM8K_STOP_SEQUENCES: list[str] = [
     "Question:" if stop == "\nQuestion:" else stop
     for stop in END_OF_TURN_SEQUENCES
