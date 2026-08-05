@@ -18,6 +18,7 @@ HUMANEVAL_STOP_SEQUENCES = (
     "\n#",
     "\nif",
     "\nprint",
+    "\n```",
 ) + END_OF_TURN_SEQUENCES
 
 

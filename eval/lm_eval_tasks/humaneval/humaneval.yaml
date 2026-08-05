@@ -19,6 +19,7 @@ generation_kwargs:
     - "\n#"
     - "\nif"
     - "\nprint"
+    - "\n```"
     - "\nYou are an AI assistant"
     - "\nQuestion:"
     - "\nQ:"

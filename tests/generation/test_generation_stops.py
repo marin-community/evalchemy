@@ -23,9 +23,9 @@ def test_math_graders_ignore_boxed_answers_from_a_repeated_turn():
     assert MATH500Benchmark.extract_answer(None, output) == "17"
 
 
-def test_humaneval_discards_a_repeated_assistant_turn():
+def test_humaneval_discards_a_closing_code_fence():
     docs = [{"prompt": "def answer():\n"}]
-    responses = [["    return 42\nAssistant:\nHere is another answer"]]
+    responses = [["    return 42\n```\nAssistant:\nHere is another answer"]]
     assert build_predictions(responses, docs) == [["def answer():\n    return 42"]]
 
 
@@ -47,3 +47,4 @@ def test_generation_task_overrides_take_precedence():
     ]
     assert "\nYou are an AI assistant" in gsm8k_stops
     assert "\nAssistant:" in humaneval_stops
+    assert "\n```" in humaneval_stops
