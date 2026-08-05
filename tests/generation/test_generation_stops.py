@@ -1,11 +1,16 @@
 from pathlib import Path
 
 from lm_eval.tasks import TaskManager
+from lm_eval.tasks._yaml_loader import load_yaml
 
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.eval import DEFAULT_LM_EVAL_INCLUDE_DIR
-from eval.generation_stops import truncate_at_stop
+from eval.generation_stops import (
+    GSM8K_STOP_SEQUENCES,
+    HUMANEVAL_STOP_SEQUENCES,
+    truncate_at_stop,
+)
 from eval.lm_eval_tasks.humaneval.scoring import build_predictions
 
 
@@ -29,10 +34,14 @@ def test_humaneval_discards_a_closing_code_fence():
     assert build_predictions(responses, docs) == [["def answer():\n    return 42"]]
 
 
-def test_generation_task_overrides_take_precedence():
+def test_generation_task_overrides_use_shared_stop_sequences():
     task_manager = TaskManager(include_path=[DEFAULT_LM_EVAL_INCLUDE_DIR])
 
-    for task_name in ("gsm8k", "humaneval"):
+    expected_stops = {
+        "gsm8k": GSM8K_STOP_SEQUENCES,
+        "humaneval": HUMANEVAL_STOP_SEQUENCES,
+    }
+    for task_name, stops in expected_stops.items():
         entry = task_manager.task_index[task_name]
         assert entry.yaml_path is not None
         assert (
@@ -40,11 +49,5 @@ def test_generation_task_overrides_take_precedence():
             .resolve()
             .is_relative_to(Path(DEFAULT_LM_EVAL_INCLUDE_DIR).resolve())
         )
-
-    gsm8k_stops = task_manager.task_index["gsm8k"].cfg["generation_kwargs"]["until"]
-    humaneval_stops = task_manager.task_index["humaneval"].cfg["generation_kwargs"][
-        "until"
-    ]
-    assert "\nYou are an AI assistant" in gsm8k_stops
-    assert "\nAssistant:" in humaneval_stops
-    assert "\n```" in humaneval_stops
+        config = load_yaml(entry.yaml_path, resolve_func=True)
+        assert config["generation_kwargs"]["until"] == stops
