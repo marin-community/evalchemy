@@ -38,12 +38,20 @@ Import for side effect (idempotent):
 from __future__ import annotations
 
 import logging
+from collections import Counter
 
+from eval.completion_response import (
+    CompletionClassification,
+    CompletionContentPolicy,
+    CompletionText,
+    completion_response_from_chat_choice,
+)
 from eval.limits import preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
 
 _PATCH_FLAG = "_marin_resilient_batch_patched"
+_COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 
@@ -183,5 +191,85 @@ def apply() -> bool:
     return True
 
 
+def apply_completion_normalization() -> bool:
+    """Preserve reasoning content returned by lm-eval's chat-completions adapter."""
+    try:
+        from lm_eval.models.openai_completions import LocalChatCompletion
+    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
+        logger.warning("completion normalization: could not import lm-eval chat adapter (%r); patch skipped.", exc)
+        return False
+
+    if getattr(LocalChatCompletion, _COMPLETION_PATCH_FLAG, False):
+        return True
+
+    original_init = LocalChatCompletion.__init__
+    original_generate_until = LocalChatCompletion.generate_until
+
+    def __init__(self, *args, completion_content_policy: str = "combine", **kwargs):
+        self.completion_content_policy = CompletionContentPolicy(completion_content_policy)
+        self.completion_responses = []
+        self.completion_response_summary = Counter()
+        self.completion_response_quality_invalid = False
+        original_init(self, *args, **kwargs)
+
+    def parse_generations(self, outputs, **kwargs):
+        if not isinstance(outputs, list):
+            outputs = [outputs]
+        generated = []
+        for output in outputs:
+            try:
+                choices = output["choices"]
+                parsed = [None] * len(choices)
+                for choice in choices:
+                    completion = completion_response_from_chat_choice(output, choice)
+                    self.completion_responses.append(completion)
+                    parsed[choice["index"]] = CompletionText(
+                        completion.normalized_content(self.completion_content_policy),
+                        completion,
+                        self.completion_content_policy,
+                    )
+            except (IndexError, KeyError, TypeError, ValueError) as exc:
+                # Preserve lm-eval's content-filter fallback for malformed choices.
+                logger.warning("completion normalization: could not parse generation (%s)", exc)
+                parsed = [""]
+            generated.extend(parsed)
+        return generated
+
+    def generate_until(self, requests, *args, **kwargs):
+        response_start = len(self.completion_responses)
+        generated = original_generate_until(self, requests, *args, **kwargs)
+        classifications = Counter(response.classification for response in self.completion_responses[response_start:])
+        self.completion_response_summary.update(classifications)
+        reasoning_only = sum(
+            self.completion_response_summary[classification]
+            for classification in (
+                CompletionClassification.REASONING_ONLY,
+                CompletionClassification.REASONING_ONLY_TRUNCATED,
+            )
+        )
+        total = sum(self.completion_response_summary.values())
+        self.completion_response_quality_invalid = total > 0 and reasoning_only / total >= 0.5
+        if classifications and reasoning_only:
+            logger.warning(
+                "completion normalization: %d/%d responses used reasoning without final content (%s)",
+                reasoning_only,
+                total,
+                dict(self.completion_response_summary),
+            )
+        if self.completion_response_quality_invalid:
+            logger.error(
+                "completion normalization: result quality is invalid because at least half of responses lacked final content"
+            )
+        return generated
+
+    LocalChatCompletion.__init__ = __init__
+    LocalChatCompletion.parse_generations = parse_generations
+    LocalChatCompletion.generate_until = generate_until
+    setattr(LocalChatCompletion, _COMPLETION_PATCH_FLAG, True)
+    logger.info("completion normalization: patched lm-eval local-chat-completions.")
+    return True
+
+
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
 _APPLIED = apply()
+_COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
