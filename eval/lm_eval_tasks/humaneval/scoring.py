@@ -1,4 +1,8 @@
+import evaluate as hf_evaluate
+
 from eval.generation_stops import HUMANEVAL_STOP_SEQUENCES, truncate_at_stop
+
+compute = hf_evaluate.load("code_eval")
 
 
 def pass_at_k(
@@ -6,10 +10,10 @@ def pass_at_k(
     predictions: list[list[str]],
     k: list[int] | int | None = None,
 ):
-    # lm_eval's HumanEval module executes a code-eval probe at import time.
-    from lm_eval.tasks.humaneval.utils import pass_at_k as upstream_pass_at_k
-
-    return upstream_pass_at_k(references, predictions, k)
+    assert k is not None
+    if isinstance(k, int):
+        k = [k]
+    return compute.compute(references=references, predictions=predictions, k=k)[0]
 
 
 def build_predictions(resps: list[list[str]], docs: list[dict]) -> list[list[str]]:

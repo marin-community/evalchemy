@@ -6,7 +6,7 @@ from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.eval import DEFAULT_LM_EVAL_INCLUDE_DIR
 from eval.generation_stops import truncate_at_stop
-from eval.lm_eval_tasks.humaneval.utils import build_predictions
+from eval.lm_eval_tasks.humaneval.scoring import build_predictions
 
 
 def test_truncate_at_earliest_turn_boundary():
