@@ -59,14 +59,11 @@ crane export gcr.io/kaniko-project/executor:latest - | tar -xf - -C / || true
 # --- 3. write the ghcr auth config AFTER the overlay (kaniko clobbers /kaniko otherwise) ---
 export DOCKER_CONFIG=/kaniko/.docker
 mkdir -p "$DOCKER_CONFIG"
-# Disable `set -x` around the secret so the base64 ghcr PAT is not echoed into the job log.
-{ set +x; } 2>/dev/null
 AUTH=$(printf '%s:%s' "$DOCKER_USER_ID" "$DOCKER_TOKEN" | base64 | tr -d '\n')
 cat > "$DOCKER_CONFIG/config.json" <<EOF
 {"auths":{"ghcr.io":{"auth":"${AUTH}"}}}
 EOF
 unset AUTH
-set -x
 
 # --- 4. run kaniko (pinned tag ONLY; floating :evalchemy-gpu promoted after a live smoke) ---
 exec /kaniko/executor \
