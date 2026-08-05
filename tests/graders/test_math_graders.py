@@ -21,7 +21,7 @@ import pytest
 from lm_eval.tasks.hendrycks_math import utils as reference_hendrycks
 from lm_eval.tasks.minerva_math import utils as reference_minerva
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
+REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 

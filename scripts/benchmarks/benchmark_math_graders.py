@@ -1,6 +1,6 @@
 """Time the self-contained MATH graders in eval/graders on the 100-problem benchmark.
 
-Reports single-CPU wall time for ``tests/data/math_grader_benchmark.jsonl``
+Reports single-CPU wall time for ``tests/graders/data/math_grader_benchmark.jsonl``
 and checks every verdict against the pinned lm-evaluation-harness ``v0.4.12``
 grade recorded in that fixture.
 
@@ -11,7 +11,7 @@ short answer for ``hendrycks_math``. Completions mix verbatim, equivalently
 reformatted, wrong, and malformed answers.
 
 Usage:
-    uv run python scripts/benchmark_math_graders.py
+    uv run python scripts/benchmarks/benchmark_math_graders.py
 """
 
 import argparse
@@ -21,13 +21,13 @@ import sys
 import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from eval.graders import hendrycks_math, minerva_math  # noqa: E402
 
-BENCHMARK = REPO / "tests/data/math_grader_benchmark.jsonl"
+BENCHMARK = REPO / "tests/graders/data/math_grader_benchmark.jsonl"
 
 GRADERS = [
     ("hendrycks_math", hendrycks_math, "hendrycks_solution", "hendrycks_reference_grade"),
