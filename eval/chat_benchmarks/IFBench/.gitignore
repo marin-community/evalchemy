@@ -1,0 +1,4 @@
+# NLTK downloads punkt / punkt_tab / stopwords / averaged_perceptron_tagger_eng
+# into this dir on first import of instructions_util.py (download_nltk_resources).
+# It is a runtime cache, not source -- do not commit.
+.nltk_data/
