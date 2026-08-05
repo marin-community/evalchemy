@@ -178,3 +178,4 @@ def test_override_yaml_takes_precedence():
     assert entry is not None and entry.yaml_path is not None
     # The resolved `drop` config must be OUR override file, not the packaged one.
     assert Path(entry.yaml_path).resolve() == (Path(DEFAULT_LM_EVAL_INCLUDE_DIR) / "drop" / "drop.yaml").resolve()
+    assert entry.cfg["generation_kwargs"]["until"] == ["\n"]
