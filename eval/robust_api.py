@@ -38,6 +38,7 @@ Import for side effect (idempotent):
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 
 from eval.completion_response import (
@@ -52,8 +53,10 @@ logger = logging.getLogger("eval.robust_api")
 
 _PATCH_FLAG = "_marin_resilient_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
+_OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
+_OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 
 
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
@@ -76,6 +79,11 @@ def request_failure_placeholder(exc: BaseException) -> str:
     if detail:
         detail = f": {detail[:_MAX_REQUEST_FAILURE_DETAIL]}"
     return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
+
+
+def openai_model_requires_fixed_generation(model: object) -> bool:
+    """Return whether an official OpenAI model rejects stops and temperature zero."""
+    return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
 
 
 def apply() -> bool:
@@ -284,6 +292,56 @@ def apply_completion_normalization() -> bool:
     return True
 
 
+def apply_openai_payload_controls() -> bool:
+    """Restrict OpenAI-specific generation controls to anchored OpenAI model names."""
+    try:
+        from lm_eval.models.openai_completions import OpenAIChatCompletion
+        from lm_eval.models.utils import handle_stop_sequences
+    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
+        logger.warning("OpenAI payload controls: could not import lm-eval adapter (%r); patch skipped.", exc)
+        return False
+
+    if getattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False):
+        return True
+
+    def _create_payload(
+        self,
+        messages,
+        generate=False,
+        gen_kwargs=None,
+        seed=1234,
+        eos="<|endoftext|>",
+        **kwargs,
+    ):
+        assert type(messages) is not str, "chat-completions require the --apply_chat_template flag."
+        request_kwargs = dict(gen_kwargs or {})
+        request_kwargs.pop("do_sample", False)
+        max_tokens = request_kwargs.pop("max_tokens", request_kwargs.pop("max_gen_toks", self._max_gen_toks))
+        temperature = request_kwargs.pop("temperature", 0)
+        stop = handle_stop_sequences(request_kwargs.pop("until", ["<|endoftext|>"]), eos)
+        if not isinstance(stop, (list, tuple)):
+            stop = [stop]
+        payload = {
+            "messages": messages,
+            "model": self.model,
+            "max_completion_tokens": max_tokens,
+            "temperature": temperature,
+            "stop": stop[:4],
+            "seed": seed,
+            **request_kwargs,
+        }
+        if openai_model_requires_fixed_generation(self.model):
+            payload.pop("stop")
+            payload["temperature"] = 1
+        return payload
+
+    OpenAIChatCompletion._create_payload = _create_payload
+    setattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, True)
+    logger.info("OpenAI payload controls: patched GPT-5 family matching.")
+    return True
+
+
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
 _APPLIED = apply()
 _COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
+_OPENAI_PAYLOAD_CONTROLS_APPLIED = apply_openai_payload_controls()
