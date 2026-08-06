@@ -56,6 +56,20 @@ _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 
 
+def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
+    """Return whether a generation run has too many unusable chat completions."""
+    total = sum(classifications.values())
+    missing_final = sum(
+        classifications[classification]
+        for classification in (
+            CompletionClassification.REASONING_ONLY,
+            CompletionClassification.REASONING_ONLY_TRUNCATED,
+            CompletionClassification.EMPTY,
+        )
+    )
+    return total > 0 and missing_final / total >= 0.5
+
+
 def request_failure_placeholder(exc: BaseException) -> str:
     """Return the artifact marker for an endpoint request that exhausted retries."""
     detail = " ".join(str(exc).split())
@@ -248,7 +262,7 @@ def apply_completion_normalization() -> bool:
             )
         )
         total = sum(self.completion_response_summary.values())
-        self.completion_response_quality_invalid = total > 0 and reasoning_only / total >= 0.5
+        self.completion_response_quality_invalid = completion_response_quality_invalid(self.completion_response_summary)
         if classifications and reasoning_only:
             logger.warning(
                 "completion normalization: %d/%d responses used reasoning without final content (%s)",
