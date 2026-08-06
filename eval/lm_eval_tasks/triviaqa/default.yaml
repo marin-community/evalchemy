@@ -1,0 +1,34 @@
+# TriviaQA override.
+#
+# Upstream stops at bare newline, period, or comma. Those tokens are legitimate
+# formatting and answer content for chat endpoints, so they can end generation
+# before the model exposes an answer. Keep the upstream prompt and scorer intact,
+# changing only server-side stops to shared end-of-turn boundaries.
+task: triviaqa
+dataset_path: mandarjoshi/trivia_qa
+dataset_name: rc.nocontext
+output_type: generate_until
+training_split: train
+validation_split: validation
+doc_to_text: "Question: {{question}}?\nAnswer:"
+doc_to_target: "{{answer.aliases}}"
+should_decontaminate: true
+doc_to_decontamination_query: question
+generation_kwargs:
+  until: !function eval.generation_stops.SHORT_ANSWER_STOP_SEQUENCES
+  do_sample: false
+  temperature: 0.0
+filter_list:
+  - name: remove_whitespace
+    filter:
+      - function: remove_whitespace
+      - function: take_first
+target_delimiter: " "
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_case: true
+    ignore_punctuation: true
+metadata:
+  version: 3.1
