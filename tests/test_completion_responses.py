@@ -14,7 +14,7 @@ from eval.completion_response import (
 )
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
-from lm_eval.models.openai_completions import LocalChatCompletion
+from lm_eval.models.openai_completions import LocalChatCompletion, OpenAIChatCompletion
 
 
 def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
@@ -22,6 +22,40 @@ def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
     adapter.completion_content_policy = policy
     adapter.completion_responses = []
     return adapter
+
+
+def _openai_adapter(model: str) -> OpenAIChatCompletion:
+    adapter = object.__new__(OpenAIChatCompletion)
+    adapter.model = model
+    adapter._max_gen_toks = 256
+    return adapter
+
+
+def _openai_payload(model: str) -> dict:
+    return _openai_adapter(model)._create_payload(
+        messages=[{"role": "user", "content": "Question"}],
+        gen_kwargs={
+            "do_sample": False,
+            "max_gen_toks": 32,
+            "temperature": 0,
+            "until": ["<|im_end|>", "\nQuestion:"],
+        },
+    )
+
+
+def test_gpt5_payload_uses_openai_provider_generation_controls():
+    payload = _openai_payload("gpt-5")
+
+    assert "stop" not in payload
+    assert payload["temperature"] == 1
+
+
+@pytest.mark.parametrize("model", ["qwen3.5-9b", "provider-model-5"])
+def test_non_openai_alias_with_five_retains_configured_generation_controls(model):
+    payload = _openai_payload(model)
+
+    assert payload["stop"][:2] == ["<|im_end|>", "\nQuestion:"]
+    assert payload["temperature"] == 0
 
 
 class _NativeBenchmark(BaseBenchmark):
