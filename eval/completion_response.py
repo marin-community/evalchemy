@@ -103,7 +103,12 @@ def completion_response_from_chat_choice(response: Mapping[str, Any], choice: Ma
         raise ValueError("OpenAI chat completion choice has a non-object message.")
 
     content = message.get("content")
-    reasoning_content = message.get("reasoning_content") or choice.get("reasoning_content") or choice.get("reasoning")
+    reasoning_content = (
+        message.get("reasoning_content")
+        or message.get("reasoning")
+        or choice.get("reasoning_content")
+        or choice.get("reasoning")
+    )
     if content is not None and not isinstance(content, str):
         raise ValueError("OpenAI chat completion content must be a string or null.")
     if reasoning_content is not None and not isinstance(reasoning_content, str):
