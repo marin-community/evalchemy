@@ -2,7 +2,7 @@
 
 import pytest
 
-from eval import gsm8k_extraction  # noqa: F401 - registers the task filter
+from eval import robust_api  # noqa: F401 - registers the task filter at CLI startup
 from lm_eval.api.instance import Instance
 from lm_eval.filters import build_filter_ensemble
 
