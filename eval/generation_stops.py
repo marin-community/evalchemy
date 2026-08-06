@@ -22,6 +22,7 @@ GSM8K_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "Question:" if stop == "\nQuestion:" else stop for stop in END_OF_TURN_SEQUENCES
 ]
 DROP_STOP_SEQUENCES: list[str] = list(END_OF_TURN_SEQUENCES)  # noqa: ml-module-globals
+SHORT_ANSWER_STOP_SEQUENCES: list[str] = list(END_OF_TURN_SEQUENCES)  # noqa: ml-module-globals
 HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\nclass",
     "\ndef",
