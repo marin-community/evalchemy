@@ -46,7 +46,6 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
-from eval import gsm8k_extraction  # noqa: F401  # register GSM8K's flexible extractor
 from eval.limits import preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")

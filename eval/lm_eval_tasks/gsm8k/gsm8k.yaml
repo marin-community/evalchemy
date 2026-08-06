@@ -34,7 +34,8 @@ filter_list:
       - function: "take_first"
   - name: "flexible-extract"
     filter:
-      - function: "gsm8k_flexible_extract"
+      - function: "custom"
+        filter_fn: !function utils.gsm8k_flexible_extraction_filter
       - function: "take_first"
 metadata:
   version: 3.2

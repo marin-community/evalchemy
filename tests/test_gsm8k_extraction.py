@@ -2,7 +2,7 @@
 
 import pytest
 
-from eval import robust_api  # noqa: F401 - registers the task filter at CLI startup
+from eval.lm_eval_tasks.gsm8k.utils import gsm8k_flexible_extraction_filter
 from lm_eval.api.instance import Instance
 from lm_eval.filters import build_filter_ensemble
 
@@ -13,7 +13,7 @@ def _flexible_extract(response: str) -> tuple[Instance, str]:
     pipeline = build_filter_ensemble(
         "flexible-extract",
         [
-            ("gsm8k_flexible_extract", {}),
+            ("custom", {"filter_fn": gsm8k_flexible_extraction_filter}),
             ("take_first", {}),
         ],
     )
