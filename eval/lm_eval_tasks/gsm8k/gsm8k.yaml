@@ -34,9 +34,7 @@ filter_list:
       - function: "take_first"
   - name: "flexible-extract"
     filter:
-      - function: "regex"
-        group_select: -1
-        regex_pattern: "(-?[$0-9.,]{2,})|(-?[0-9]+)"
+      - function: "gsm8k_flexible_extract"
       - function: "take_first"
 metadata:
-  version: 3.1
+  version: 3.2
