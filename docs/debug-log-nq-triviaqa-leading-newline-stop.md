@@ -46,3 +46,31 @@ half its successful chat responses are empty or reasoning-only-truncated.
 ## Future work
 
 - [ ] Run a bounded endpoint smoke before increasing a caller-supplied output budget.
+
+## Hypothesis 2
+
+After the safe stop fix, reasoning-capable chat models expose both their chain
+of thought and their final content. The default `remove_whitespace` filter
+passes that full transcript to exact-match scoring, so correct marked answers
+cannot match the raw gold target.
+
+## Changes to make
+
+- Establish an `Answer: <short answer>` response contract in each task and its
+  few-shot examples.
+- Replace the whitespace-only filter with a shared flexible extractor that
+  selects the last line-level answer marker and rejects unmarked transcripts.
+
+## Results
+
+The regression initially passes the combined reasoning transcript to exact-match
+and fails on both NQ-Open and TriviaQA. The shared extractor now selects the
+last line-level `Answer:`, `Final Answer:`, or legacy `A:` marker after
+truncating a repeated turn boundary. Completions without a marker score as
+`[invalid]`; the extractor does not search unmarked reasoning for a likely
+answer.
+
+Both tasks now prompt and few-shot with `Answer: <short answer>` while their
+gold targets remain unchanged. The focused regression passes 16 tests,
+including a reasoning-and-final chat response, punctuation, repeated turns,
+and an unmarked transcript.
