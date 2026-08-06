@@ -19,9 +19,9 @@ END_OF_TURN_SEQUENCES: tuple[str, ...] = (
 # lm-eval imports these through its ``!function`` YAML tag and requires ``until``
 # to be a list. Its task factory deep-copies the config before models may append EOS.
 GSM8K_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
-    "Question:" if stop == "\nQuestion:" else stop
-    for stop in END_OF_TURN_SEQUENCES
+    "Question:" if stop == "\nQuestion:" else stop for stop in END_OF_TURN_SEQUENCES
 ]
+DROP_STOP_SEQUENCES: list[str] = list(END_OF_TURN_SEQUENCES)  # noqa: ml-module-globals
 HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\nclass",
     "\ndef",

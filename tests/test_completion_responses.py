@@ -1,5 +1,6 @@
 """Regression coverage for OpenAI-compatible reasoning responses."""
 
+from collections import Counter
 import json
 
 import pytest
@@ -46,6 +47,20 @@ def test_local_chat_completion_preserves_reasoning_when_final_content_is_null():
 
     assert generated == ["2 + 2 = 4"]
     assert isinstance(generated[0], CompletionText)
+
+
+def test_successful_empty_chat_responses_invalidate_result_quality():
+    responses = [
+        completion_response_from_chat_choice(
+            {"id": f"chatcmpl-{index}", "usage": {"completion_tokens": 2}},
+            {"index": 0, "finish_reason": "stop", "message": {"content": None}},
+        )
+        for index in range(3)
+    ]
+
+    classifications = Counter(response.classification for response in responses)
+
+    assert robust_api.completion_response_quality_invalid(classifications)
 
 
 @pytest.mark.parametrize(

@@ -15,19 +15,18 @@ output_type: generate_until
 training_split: train
 validation_split: validation
 process_docs: !function utils.process_docs
-doc_to_text: "{{passage}} {{question}}"
+doc_to_text: "{{passage}} {{question}}\nRespond with exactly \"Answer: <short answer>\"."
 # ``process_docs`` normalizes the raw DROP answer dictionary into ``answers``.  The
 # raw ``answer`` field remains present after Dataset.map, so rendering it here silently
 # joins its dictionary keys ("number,date,spans,worker_id,hit_id") instead of the gold.
 # Each normalized candidate is a list of spans; few-shot prompting uses the first gold.
-doc_to_target: "{{ answers[0]|join(',')}}"
-target_delimiter: ""
+doc_to_target: "Answer: {{ answers[0]|join(',')}}"
+target_delimiter: "\n"
 process_results: !function utils.process_results
 should_decontaminate: true
 doc_to_decontamination_query: "{{passage}} {{question}}"
 generation_kwargs:
-  until:
-    - "\n"
+  until: !function eval.generation_stops.DROP_STOP_SEQUENCES
 filter_list:
   - name: extract_answer
     filter:
@@ -44,4 +43,4 @@ metric_list:
     aggregation: mean
     higher_is_better: true
 metadata:
-  version: 3.2
+  version: 3.3

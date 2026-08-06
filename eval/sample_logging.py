@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from eval.completion_response import CompletionText
-
+from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
 """Version of the stable JSONL record envelope emitted by ``--log_samples``."""
@@ -42,6 +42,9 @@ def canonicalize_samples(task_name: str, samples: Sequence[Mapping[str, Any]]) -
         completion_artifacts = _completion_artifacts(record["resps"])
         if completion_artifacts is not None:
             record["completion_responses"] = completion_artifacts
+        drop_extractions = _drop_extractions(record["filtered_resps"])
+        if drop_extractions is not None:
+            record["drop_extractions"] = drop_extractions
         canonical.append(record)
     return canonical
 
@@ -53,6 +56,16 @@ def _completion_artifacts(value: Any) -> Any | None:
     if isinstance(value, Sequence) and not isinstance(value, str):
         artifacts = [_completion_artifacts(item) for item in value]
         return artifacts if any(artifact is not None for artifact in artifacts) else None
+    return None
+
+
+def _drop_extractions(value: Any) -> Any | None:
+    """Mirror filtered-response nesting with DROP extraction classifications."""
+    if isinstance(value, DropAnswer):
+        return {"classification": value.classification}
+    if isinstance(value, Sequence) and not isinstance(value, str):
+        extractions = [_drop_extractions(item) for item in value]
+        return extractions if any(extraction is not None for extraction in extractions) else None
     return None
 
 

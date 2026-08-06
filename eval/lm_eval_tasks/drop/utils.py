@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from typing import Any
 
 # Re-export the upstream DROP task functions unchanged so drop.yaml can reference them
@@ -15,6 +16,8 @@ __all__ = [
     "process_docs",
     "process_results",
     "extract_drop_short_answer",
+    "extract_drop_answer",
+    "DropAnswer",
     "drop_answer_extraction_filter",
 ]
 
@@ -40,6 +43,25 @@ _DATE_RE = re.compile(
 _MARKER_RE = re.compile(
     r"(?i)(?:final\s+answer|answer)\s*(?:is|:|=|-|—)?\s*",
 )
+_ENTITY_RE = re.compile(r"\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b")
+
+
+class DropExtractionClassification(StrEnum):
+    MARKED = "marked"
+    ENTITY = "entity"
+    AMBIGUOUS = "ambiguous"
+    EMPTY = "empty"
+
+
+class DropAnswer(str):
+    """A scorer answer that records whether extraction was unambiguous."""
+
+    classification: DropExtractionClassification
+
+    def __new__(cls, value: str, classification: DropExtractionClassification) -> "DropAnswer":
+        answer = super().__new__(cls, value)
+        answer.classification = classification
+        return answer
 
 
 def _clean_number(tok: str) -> str:
@@ -80,11 +102,16 @@ def extract_drop_short_answer(text: Any) -> str:
     Returns:
         The extracted answer text.
     """
+    return str(extract_drop_answer(text))
+
+
+def extract_drop_answer(text: Any) -> DropAnswer:
+    """Extract an answer while retaining ambiguity metadata for sample logs."""
     if not isinstance(text, str):
-        return ""
+        return DropAnswer("", DropExtractionClassification.EMPTY)
     stripped = text.strip()
     if not stripped:
-        return ""
+        return DropAnswer("", DropExtractionClassification.EMPTY)
 
     # 1. Explicit answer marker -> tail after the LAST marker, first line only.
     markers = list(_MARKER_RE.finditer(stripped))
@@ -94,21 +121,13 @@ def extract_drop_short_answer(text: Any) -> str:
         # Trim a trailing sentence terminator so "42." -> "42".
         cand = _best_answer_in(tail_line)
         if cand:
-            return cand.rstrip(".").strip() or cand
+            return DropAnswer(cand.rstrip(".").strip() or cand, DropExtractionClassification.MARKED)
 
-    # 2. Date span anywhere.
-    date = _date_in(stripped)
-    if date:
-        return date
+    entities = _ENTITY_RE.findall(stripped)
+    if entities:
+        return DropAnswer(entities[-1], DropExtractionClassification.ENTITY)
 
-    # 3. Last number anywhere.
-    nums = _NUMBER_RE.findall(stripped)
-    if nums:
-        return _clean_number(nums[-1])
-
-    # 4. Fallback: last non-empty line, else the whole text.
-    lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
-    return lines[-1] if lines else stripped
+    return DropAnswer(stripped, DropExtractionClassification.AMBIGUOUS)
 
 
 def drop_answer_extraction_filter(resps: list[list[str]], docs: list[dict]) -> list[list[str]]:
@@ -121,4 +140,4 @@ def drop_answer_extraction_filter(resps: list[list[str]], docs: list[dict]) -> l
     Returns:
         Response samples with each completion replaced by its extracted answer.
     """
-    return [[extract_drop_short_answer(r) for r in resp] for resp in resps]
+    return [[extract_drop_answer(r) for r in resp] for resp in resps]
