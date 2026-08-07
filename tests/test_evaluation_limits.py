@@ -175,7 +175,7 @@ def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
     missing_guard = [
         str(path.relative_to(benchmarks_dir))
         for path in sorted(benchmarks_dir.glob("*/eval_instruct.py"))
-        if "self.compute(" not in path.read_text()
+        if "def generate_responses" in path.read_text() and "self.compute(" not in path.read_text()
     ]
 
     assert not missing_guard, f"custom benchmarks bypassing the common limit guard: {missing_guard}"

@@ -4,6 +4,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import (
@@ -18,6 +19,11 @@ from eval.task import BaseBenchmark
 # the explicit "Mark your solution with \boxed" instruction makes answer extraction reliable.
 PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
 
+# This is the hand-selected 30-example stratified export introduced in
+# https://github.com/marin-community/evalchemy/pull/24. It came from
+# lmms-lab/olympiadbench[test_en], but that export recorded neither an immutable
+# dataset revision nor the selection script. Keep it for historical comparison
+# only; `OlympiadBenchFull` is the reproducible benchmark.
 DEFAULT_DATA_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "data", "olympiadbench.jsonl"
 )
@@ -127,8 +133,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        data_file: str = DEFAULT_DATA_FILE,
+        data_file: Optional[str] = DEFAULT_DATA_FILE,
         dataset_name: str = DEFAULT_DATASET,
+        dataset_revision: Optional[str] = None,
         dataset_split: str = DEFAULT_SPLIT,
         debug: bool = False,
         seed: List[int] = [0, 1234, 1234, 1234],
@@ -137,15 +144,16 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         system_instruction: Optional[str] = None,
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
+        n_repeat: int = 10,
     ):
         """
         Initialize OlympiadBench benchmark.
 
         Args:
-            data_file: Local JSONL with the offline sample (id, problem, answer, subject, ...).
-                Used when it exists on disk; otherwise the HF dataset is loaded.
-            dataset_name: HuggingFace dataset to fall back to when ``data_file`` is absent.
-            dataset_split: Split to load from HF (``test_en`` is the text-only English split).
+            data_file: Local JSONL containing the legacy 30-example subset.
+            dataset_name: Source dataset identifier retained with the subset provenance.
+            dataset_revision: Source revision when loading a reproducible derived task.
+            dataset_split: Source dataset split.
             debug: If set, only evaluate on 2 examples.
             seed: Random seed for reproducibility. Default is [0, 1234, 1234, 1234] for lm-eval-harness.
             max_tokens: Max generation tokens. These are hard olympiad problems; default 32768.
@@ -153,6 +161,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model.
             num_samples: Number of completions per problem. 1 (default) = single-sample path.
             pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
+            n_repeat: Number of seeded repetitions for the subset's single-sample score.
         """
         super().__init__(
             logger=logger,
@@ -162,10 +171,12 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         )
         self.data_file = data_file
         self.dataset_name = dataset_name
+        self.dataset_revision = dataset_revision
         self.dataset_split = dataset_split
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
+        self.n_repeat = n_repeat
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -183,6 +194,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         # ---- native pass@k path: num_samples > 1 ----
         if self.num_samples > 1:
             return self._generate_pass_at_k(model, examples)
+
+        if self.n_repeat > 1:
+            return self._generate_repeated_responses(model, examples)
 
         # Prepare instances for model
         all_instances = []
@@ -222,6 +236,47 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             example["model_output"] = output
             example["model_answer"] = self.extract_answer(output)
 
+        return {"examples": examples}
+
+    def _generate_repeated_responses(
+        self, model: LM, examples: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Generate one deterministic completion per problem for each seeded repetition."""
+        all_outputs = []
+        for repeat_idx in range(self.n_repeat):
+            seed = [value + repeat_idx for value in self.seed]
+            all_instances = []
+            for idx, example in enumerate(examples):
+                messages = [
+                    {"role": "user", "content": PROMPT.format(problem=example["problem"])},
+                ]
+                templated_messages = self._prepare_messages(messages, model)
+                instance = Instance(
+                    "generate_until",
+                    example,
+                    (
+                        templated_messages,
+                        {
+                            "do_sample": False,
+                            "max_new_tokens": self.max_new_tokens,
+                            "temperature": 0.7,
+                            "seed": seed,
+                        },
+                    ),
+                    idx,
+                )
+                instance.repeat_idx = repeat_idx
+                all_instances.append(instance)
+
+            self.logger.info("Generating repeated responses for OlympiadBench...")
+            all_outputs.append(self.compute(model, all_instances))
+
+        if model.rank != 0:
+            return None
+
+        for example, outputs in zip(examples, zip(*all_outputs)):
+            example["model_outputs"] = list(outputs)
+            example["model_answers"] = [self.extract_answer(output) for output in outputs]
         return {"examples": examples}
 
     def _generate_pass_at_k(
@@ -294,7 +349,38 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                     "num_total": total,
                     "num_samples": self.num_samples,
                     "num_correct": num_correct,
+                    **self._dataset_provenance(total),
                     **pass_at_k_table,
+                }
+            )
+            return results
+
+        if self.n_repeat > 1:
+            all_results = []
+            for repeat_idx in range(self.n_repeat):
+                solved = sum(
+                    grade_answer(example["model_answers"][repeat_idx], example["answer"])
+                    for example in examples
+                )
+                all_results.append(
+                    {
+                        "repetition": repeat_idx + 1,
+                        "num_total": total,
+                        "num_solved": solved,
+                        "accuracy": solved / total,
+                    }
+                )
+
+            accuracies = [result["accuracy"] for result in all_results]
+            results.update(
+                {
+                    "num_total": total,
+                    "solved_avg": np.mean([result["num_solved"] for result in all_results]),
+                    "run_stats": all_results,
+                    "accuracy_avg": np.mean(accuracies),
+                    "accuracy_std_err": np.std(accuracies) / np.sqrt(self.n_repeat),
+                    "num_repeat": self.n_repeat,
+                    **self._dataset_provenance(total),
                 }
             )
             return results
@@ -309,28 +395,30 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 "num_total": total,
                 "num_solved": solved,
                 "accuracy": solved / total,
+                "accuracy_stderr": np.sqrt((solved / total) * (1 - solved / total) / (total - 1))
+                if total > 1
+                else 0.0,
+                **self._dataset_provenance(total),
             }
         )
 
         return results
 
-    def load_questions(self) -> List[Dict[str, Any]]:
-        """Load OlympiadBench questions from the local JSONL, falling back to HF.
+    def _dataset_provenance(self, total: int) -> Dict[str, Any]:
+        """Return source details persisted with each score artifact."""
+        return {
+            "dataset_name": self.dataset_name,
+            "dataset_revision": self.dataset_revision,
+            "dataset_split": self.dataset_split,
+            "dataset_num_samples": total,
+        }
 
-        The local data file is preferred so the benchmark works fully offline (clusters
-        without outbound internet). When it is absent, the HF dataset is loaded and the
-        same record shape (id, problem, answer, subject, unit) is projected from it.
-        """
-        if os.path.exists(self.data_file):
-            with open(self.data_file, "r") as f:
-                questions = [json.loads(x) for x in f]
-            self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
-        else:
-            questions = self._load_from_hf()
-            self.logger.info(
-                f"Loaded {len(questions)} questions from HF dataset "
-                f"{self.dataset_name}[{self.dataset_split}]"
-            )
+    def load_questions(self) -> List[Dict[str, Any]]:
+        """Load the bundled legacy OlympiadBench subset."""
+        assert self.data_file is not None
+        with open(self.data_file, "r") as f:
+            questions = [json.loads(x) for x in f]
+        self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
 
         if self.debug:
             questions = questions[:2]
@@ -344,22 +432,22 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         """Project the HF dataset into the local JSONL record shape."""
         from datasets import load_dataset
 
-        ds = load_dataset(self.dataset_name, split=self.dataset_split)
         cache_dir = os.environ.get("HF_HUB_CACHE")
-        if cache_dir:
-            ds = load_dataset(
-                self.dataset_name, split=self.dataset_split, cache_dir=cache_dir
-            )
+        ds = load_dataset(
+            self.dataset_name,
+            split=self.dataset_split,
+            revision=self.dataset_revision,
+            cache_dir=cache_dir,
+        )
 
         out: List[Dict[str, Any]] = []
         for ex in ds:
-            # Skip multimodal problems (require images we cannot serve in text-only eval).
-            if ex.get("images"):
+            source = ex.get("source") or ""
+            if "_TO_" not in source:
                 continue
             final_answer = ex.get("final_answer")
             if not final_answer:
                 continue
-            source = ex.get("source") or ""
             subject = (
                 "mathematics"
                 if "maths" in source

@@ -1168,7 +1168,7 @@ requires-dist = [
     { name = "cohere", marker = "extra == 'wildbench'" },
     { name = "cohere", marker = "extra == 'zeroeval'" },
     { name = "datasets" },
-    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mtbench", "mixeval", "multiple", "olympiadbench", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
+    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mtbench", "mixeval", "multiple", "olympiadbench", "olympiadbenchfull", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
     { name = "fire", marker = "extra == 'bigcodebench'" },
     { name = "fire", marker = "extra == 'humaneval'" },
     { name = "fire", marker = "extra == 'humanevalplus'" },
@@ -1230,7 +1230,7 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
 ]
-provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "olympiadbench", "benchmarks", "vllm"]
+provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "olympiadbench", "olympiadbenchfull", "benchmarks", "vllm"]
 
 [[package]]
 name = "evaluate"
