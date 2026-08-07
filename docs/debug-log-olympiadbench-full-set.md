@@ -37,6 +37,20 @@ tests/test_task_routing.py tests/test_evaluation_limits.py -q` passes 19 tests.
 `scripts/ci/check_benchmark_extras.py OlympiadBenchFull` also passes in its
 isolated, torch-free environment.
 
+## Hypothesis 2
+
+The E2E telemetry fake must decode zstd payloads emitted by the current
+`marin-rigging` dependency. Treating compressed bytes as JSON caused the
+otherwise unrelated harness CI failure.
+
+## Changes to make
+
+- Decode requests marked `Content-Encoding: zstd` in the E2E telemetry fake.
+
+## Results
+
+The exact CI command passes all 50 E2E tests after the fake decodes zstd.
+
 ## Future work
 
 - [ ] Rerun historical comparison sets with `OlympiadBenchFull`.

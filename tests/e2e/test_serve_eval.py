@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+import zstandard
 from click.testing import CliRunner
 from pydantic import ValidationError
 
@@ -159,7 +160,10 @@ class _RunnerHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         if self.path.rstrip("/").endswith("/v1/telemetry"):
             length = int(self.headers["Content-Length"])
-            batch = json.loads(self.rfile.read(length))
+            payload = self.rfile.read(length)
+            if self.headers.get("Content-Encoding") == "zstd":
+                payload = zstandard.ZstdDecompressor().decompress(payload)
+            batch = json.loads(payload)
             _RunnerHandler.telemetry_batches.append(batch)
             self.send_response(_RunnerHandler.telemetry_status)
             self.send_header("Content-Type", "application/json")
