@@ -43,6 +43,14 @@ _JOIN_GRACE = 1.0
 PASSED = "passed"
 TIMED_OUT = "timed out"
 
+# A failure message is candidate-controlled, and the pipe carrying it holds only
+# about 64 KiB before send() blocks. The parent is inside join() by then, so a
+# larger message would wedge the child until the join expires and leave a partial
+# frame behind. Upstream's manager process drains eagerly and does not care;
+# truncating keeps a single pipe viable. Only the message is clipped, never the
+# verdict, which is decided by comparison against PASSED.
+_MAX_OUTCOME_CHARS = 8192
+
 
 class TimeoutException(Exception):
     pass
@@ -202,7 +210,7 @@ def _run_candidate(check_program, connection, timeout):
         except TimeoutException:
             outcome = TIMED_OUT
         except BaseException as exc:  # noqa: BLE001  # any failure is a failed candidate
-            outcome = f"failed: {exc}"
+            outcome = f"failed: {exc}"[:_MAX_OUTCOME_CHARS]
 
         restore()
         # Reported from inside the sandbox, where upstream appends to its manager
@@ -227,7 +235,9 @@ def check_correctness(check_program: str, timeout: float = TIMEOUT) -> str:
     if receiver.poll():
         try:
             outcome = receiver.recv()
-        except EOFError:
+        except (EOFError, OSError):
+            # A child killed mid-write leaves a partial frame; score it a
+            # timeout rather than propagating into the caller's grade.
             outcome = TIMED_OUT
     receiver.close()
     return outcome

@@ -8,6 +8,11 @@ name: E2E CI
 #                    builder, the providers' URL handling + PTY capability-URL parse,
 #                    and the gate's pass/fail decisions -- using a stdlib HTTP stub
 #                    and a PTY. No model, no cluster.
+#   graders       -- always. Runs tests/graders, which check the self-contained
+#                    graders in eval/graders/ against the pinned lm-eval-harness.
+#                    Needs the base install (MATH and GSM8K re-run the reference
+#                    live); HumanEval executes candidates in child processes and
+#                    dominates the runtime. Pure CPU, no cluster.
 #   lean-install  -- always. Builds the wheel and runs the `eval` entry point, then
 #                    syncs the lean (torch-free) base env and asserts no torch/vllm/ray
 #                    leaked and every empty-extra benchmark imports. Pure CPU/pip.
@@ -55,6 +60,17 @@ jobs:
           --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click
           --with marin-rigging
           python -m pytest tests/e2e/ -q
+
+  graders:
+    # The graders reproduce lm-eval-harness verdicts, so the reference has to be
+    # installed for the tests to have anything to compare against.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run grader parity tests
+        run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
 
   lean-install:
     # Guard the lean (torch-free) base install: the wheel builds, the `eval` console

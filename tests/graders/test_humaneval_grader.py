@@ -3,9 +3,12 @@
 ``data/humaneval_grader_benchmark.jsonl`` carries the verdict the pinned
 lm-evaluation-harness ``v0.4.12`` produced for each of its 100 problems through
 ``evaluate.load("code_eval")``. Unlike the MATH and GSM8K tests, the reference is
-not re-run here: ``code_eval`` downloads a metric module from the Hub on first
-use and demands ``HF_ALLOW_CODE_EVAL=1``, so recording its verdicts keeps this
-suite hermetic.
+not re-run by default: ``code_eval`` downloads a metric module from the Hub on
+first use and demands ``HF_ALLOW_CODE_EVAL=1``, so recording its verdicts keeps
+this suite hermetic. ``scripts/benchmarks/build_humaneval_benchmark.py``
+regenerates them from a pinned dataset revision, and
+``test_matches_live_reference`` re-checks them against a real ``code_eval`` when
+``HF_ALLOW_CODE_EVAL=1`` is set.
 
 Every candidate runs in its own process, so this file is slower than its
 siblings. Most of that is the timeout candidates, which cost a full SIGALRM wait
@@ -13,10 +16,19 @@ in the reference and the port alike.
 """
 
 import json
+import os
 import pathlib
 import sys
+import time
 
 import pytest
+
+# Re-running the reference executes model-generated code and pulls a metric
+# module from the Hub, so it stays opt-in behind the same switch code_eval uses.
+requires_code_eval = pytest.mark.skipif(
+    os.environ.get("HF_ALLOW_CODE_EVAL") != "1",
+    reason="set HF_ALLOW_CODE_EVAL=1 to re-run the code_eval reference",
+)
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
@@ -48,6 +60,23 @@ def test_matches_harness_on_benchmark(benchmark):
     assert mismatched == []
 
 
+@requires_code_eval
+def test_matches_live_reference(benchmark):
+    """Confirm the recorded verdicts still match a real code_eval run."""
+    evaluate = pytest.importorskip("evaluate")
+    code_eval = evaluate.load("code_eval")
+
+    stale = []
+    for record in benchmark:
+        candidate = record["problem"] + record["solution"]
+        live = float(
+            code_eval.compute(references=[record["reference_answer"]], predictions=[[candidate]], k=[1])[0]["pass@1"]
+        )
+        if live != record["reference_grade"]:
+            stale.append((record["task_id"], record["kind"], record["reference_grade"], live))
+    assert stale == []
+
+
 def test_passing_candidate_scores_one():
     assert humaneval.grade(PROMPT, "    return a + b\n", TESTS) == 1.0
 
@@ -68,6 +97,17 @@ def test_candidate_is_joined_to_the_prompt():
 def test_nonterminating_candidate_times_out():
     outcome = humaneval.check_correctness("while True:\n    pass\n", timeout=0.5)
     assert outcome == humaneval.TIMED_OUT
+
+
+def test_large_failure_message_is_not_a_denial_of_service():
+    """A failure message is candidate-controlled and must not outgrow the pipe.
+
+    Past the pipe buffer the child would block in send(), the join would expire,
+    and the parent would kill it mid-write and read a partial frame.
+    """
+    start = time.perf_counter()
+    assert humaneval.grade(PROMPT, "    raise ValueError('x' * 70000)\n", TESTS) == 0.0
+    assert time.perf_counter() - start < 1.0
 
 
 def test_candidate_crash_does_not_take_down_the_grader():
