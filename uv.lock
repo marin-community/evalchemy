@@ -763,37 +763,37 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cublas" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-runtime" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cufft" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "sys_platform == 'linux'" },
+    { name = "nvidia-cufile" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-cupti" },
 ]
 curand = [
-    { name = "nvidia-curand", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-curand" },
 ]
 cusolver = [
-    { name = "nvidia-cusolver", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusolver" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cusparse" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvjitlink" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+    { name = "nvidia-nvtx" },
 ]
 
 [[package]]
@@ -997,6 +997,15 @@ wheels = [
 ]
 
 [[package]]
+name = "emoji"
+version = "2.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/78/0d2db9382c92a163d7095fc08efff7800880f830a152cfced40161e7638d/emoji-2.15.0.tar.gz", hash = "sha256:eae4ab7d86456a70a00a985125a03263a5eac54cd55e51d7e184b1ed3b6757e4", size = 615483, upload-time = "2025-09-21T12:13:02.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/5e/4b5aaaabddfacfe36ba7768817bd1f71a7a810a43705e531f3ae4c690767/emoji-2.15.0-py3-none-any.whl", hash = "sha256:205296793d66a89d88af4688fa57fd6496732eb48917a87175a023c8138995eb", size = 608433, upload-time = "2025-09-21T12:13:01.197Z" },
+]
+
+[[package]]
 name = "eval-type-backport"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1020,6 +1029,7 @@ dependencies = [
     { name = "protobuf" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "regex" },
     { name = "sentencepiece" },
     { name = "sqlalchemy" },
     { name = "transformers" },
@@ -1036,6 +1046,7 @@ benchmarks = [
     { name = "anthropic" },
     { name = "codebleu" },
     { name = "cohere" },
+    { name = "emoji" },
     { name = "fire" },
     { name = "fschat" },
     { name = "fuzzywuzzy" },
@@ -1054,6 +1065,7 @@ benchmarks = [
     { name = "reka-api" },
     { name = "shortuuid" },
     { name = "swebench" },
+    { name = "syllapy" },
     { name = "together" },
     { name = "tree-sitter" },
     { name = "tree-sitter-python" },
@@ -1080,6 +1092,11 @@ humaneval = [
 ]
 humanevalplus = [
     { name = "fire" },
+]
+ifbench = [
+    { name = "emoji" },
+    { name = "nltk" },
+    { name = "syllapy" },
 ]
 ifeval = [
     { name = "absl-py" },
@@ -1168,7 +1185,8 @@ requires-dist = [
     { name = "cohere", marker = "extra == 'wildbench'" },
     { name = "cohere", marker = "extra == 'zeroeval'" },
     { name = "datasets" },
-    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mtbench", "mixeval", "multiple", "olympiadbench", "olympiadbenchfull", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
+    { name = "emoji", marker = "extra == 'ifbench'" },
+    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifbench", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mtbench", "mixeval", "multiple", "olympiadbench", "olympiadbenchfull", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
     { name = "fire", marker = "extra == 'bigcodebench'" },
     { name = "fire", marker = "extra == 'humaneval'" },
     { name = "fire", marker = "extra == 'humanevalplus'" },
@@ -1192,6 +1210,7 @@ requires-dist = [
     { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12" },
     { name = "loguru" },
     { name = "marin-rigging", marker = "extra == 'serve-eval'", specifier = ">=0.2.67.dev30673006835" },
+    { name = "nltk", marker = "extra == 'ifbench'" },
     { name = "nltk", marker = "extra == 'ifeval'" },
     { name = "nltk", marker = "extra == 'livebench'" },
     { name = "nltk", marker = "extra == 'mixeval'" },
@@ -1213,6 +1232,7 @@ requires-dist = [
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "pyyaml", marker = "extra == 'serve-eval'" },
+    { name = "regex" },
     { name = "regex", marker = "extra == 'bigcodebench'" },
     { name = "regex", marker = "extra == 'multiple'" },
     { name = "reka-api", marker = "extra == 'wildbench'" },
@@ -1223,6 +1243,7 @@ requires-dist = [
     { name = "shortuuid", marker = "extra == 'mtbench'" },
     { name = "sqlalchemy" },
     { name = "swebench", marker = "extra == 'swebench'", specifier = ">=3.0.4" },
+    { name = "syllapy", marker = "extra == 'ifbench'" },
     { name = "together", marker = "extra == 'wildbench'" },
     { name = "together", marker = "extra == 'zeroeval'" },
     { name = "transformers", specifier = ">=4.31,<5" },
@@ -1230,7 +1251,7 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
 ]
-provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "olympiadbench", "olympiadbenchfull", "benchmarks", "vllm"]
+provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "olympiadbench", "olympiadbenchfull", "benchmarks", "vllm"]
 
 [[package]]
 name = "evaluate"
@@ -3189,7 +3210,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.19.0.56"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/84/26025437c1e6b61a707442184fa0c03d083b661adf3a3eecfd6d21677740/nvidia_cudnn_cu13-9.19.0.56-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:6ed29ffaee1176c612daf442e4dd6cfeb6a0caa43ddcbeb59da94953030b1be4", size = 433781201, upload-time = "2026-02-03T20:40:53.805Z" },
@@ -3211,7 +3232,7 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
@@ -3241,9 +3262,9 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-cusparse", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas" },
+    { name = "nvidia-cusparse" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
@@ -3255,7 +3276,7 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },
@@ -4844,6 +4865,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/24/e1/c997299ad7bf088876d30398203aa1eed7dec897670dc1aa35b1d748ffcc/swebench-4.1.0.tar.gz", hash = "sha256:5aaa6a92c2db1aa64892d28a47483ca46a45a15cf1d2df673d7744f71811dc9a", size = 134341, upload-time = "2025-09-11T02:58:00.447Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/36/67/981d8b642ac3eac7c8a7b7832ff8b2fb74f96b28b5fcd9a8979879e5c46d/swebench-4.1.0-py3-none-any.whl", hash = "sha256:1243776f720047cc9e20a427f7a52b75c13a07abda6154fb60fe77f82ec8af57", size = 157231, upload-time = "2025-09-11T02:57:58.953Z" },
+]
+
+[[package]]
+name = "syllapy"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c8/0c/32605cf1126804f5422c7b3266b8e4f77fdfc561fd1cb4cbbeb69eabe281/syllapy-0.8.0.tar.gz", hash = "sha256:8dbf266909fa8b62d3c16425200326809244253532631d774d2465663c4e7436", size = 28073, upload-time = "2026-08-01T17:48:16.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/04/31e44d11ce517ac39b87d0746bdd492f4c80770795b9a9e10c8eea722ffb/syllapy-0.8.0-py3-none-any.whl", hash = "sha256:eea0a65665ad6c980686785af3e588cfcc8d359d5975ba67b18dea9cef6b0425", size = 24882, upload-time = "2026-08-01T17:48:14.955Z" },
 ]
 
 [[package]]

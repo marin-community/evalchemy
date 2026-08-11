@@ -64,6 +64,12 @@ dependencies = [
     # HMMT grades via the vendored `matharena`, which imports loguru at module load;
     # kept in core so the math benchmarks (AIME/AMC/MATH500/HMMT) all import lean.
     "loguru",
+    # Vendored code graders (HumanEval/HumanEvalPlus/MBPPPlus evaluation.py) and the
+    # matharena grader (HMMT) `import regex` at module load. regex is already pulled
+    # transitively by tiktoken / transformers / nltk, but HMMT is a lean (empty-extra)
+    # benchmark, so its grader deps must live in core -- declaring it here keeps the
+    # import tracked rather than relying on a transitive edge that a resolver could drop.
+    "regex",
 
     # eval.eval_tracker imports database/ at module load (config.py runs load_dotenv();
     # utils.py builds a SQLAlchemy engine). The postgres DRIVER is only needed for
