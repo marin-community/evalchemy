@@ -14,6 +14,12 @@ name: E2E CI
 #   benchmark-extras -- always. Syncs each non-empty per-benchmark extra in isolation,
 #                    asserts the environment remains torch-free, and exec-imports its
 #                    benchmark. Pure CPU/pip, no cluster.
+#   vendored-grader-imports -- always. Static (no install) AST audit of the standalone
+#                    vendored graders (HumanEval(+)/MBPP(+)/MultiPLE `human_eval`/...
+#                    grader packages, HMMT `matharena`): traces the module-body import
+#                    chain each grader triggers and asserts every third-party import is
+#                    declared. Catches a dep that rides in transitively (regex via
+#                    tiktoken/transformers) and slips past the isolation import test.
 #   endpoint-eval -- only when the repo variable E2E_BASE_URL is set. An OPTIONAL
 #                    smoke of the runner against a real OpenAI-compatible endpoint
 #                    (serve-attach -> eval -> results). It does NOT gate scores, so
@@ -89,6 +95,20 @@ jobs:
         run: uv sync --python 3.12
       - name: Import every non-empty benchmark extra without torch
         run: uv run python scripts/ci/check_benchmark_extras.py
+
+  vendored-grader-imports:
+    # Static audit (no install, no network): the standalone vendored graders must declare
+    # every third-party module they import at module load. Guards the class of bug where a
+    # grader dep (e.g. regex) is only transitively reachable and slips past the isolated
+    # import test in benchmark-extras. Runs on every PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Audit vendored grader module-load imports
+        # ast + tomllib only, so an ephemeral env (no project install) is sufficient.
+        run: uv run --no-project --python 3.12 python scripts/ci/check_vendored_grader_imports.py
 
   endpoint-eval:
     if: ${{ vars.E2E_BASE_URL != '' }}
