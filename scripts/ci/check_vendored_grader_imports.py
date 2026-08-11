@@ -37,8 +37,11 @@ import re
 import sys
 import tomllib
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CHAT_BENCHMARKS_DIR = os.path.join(REPO_ROOT, "eval", "chat_benchmarks")
+# These siblings (also stdlib-only) are the canonical sources for the repo/benchmark-dir
+# roots and the PEP-685 extra-name normalizer; reuse them rather than re-deriving the
+# paths or the regex a third time.
+from check_lean_install import CHAT_BENCHMARKS_DIR, REPO_ROOT
+from check_benchmark_extras import normalize_extra
 
 # Standalone vendored grader packages: benchmark dir -> the top-level import name of the
 # vendored package. Each is a self-contained scorer (pass@k / math answer extraction)
@@ -92,18 +95,16 @@ def normalize_dep_name(spec: str) -> str:
 def declared_modules() -> tuple[set[str], dict[str, set[str]]]:
     """Return (base module names, {extra name -> module names declared by that extra})."""
     with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as f:
-        tj = tomllib.load(f)
-    base = {normalize_dep_name(d) for d in tj["project"]["dependencies"]}
+        pyproject = tomllib.load(f)
+    base = {normalize_dep_name(d) for d in pyproject["project"]["dependencies"]}
     extras = {
         name: {normalize_dep_name(d) for d in specs}
-        for name, specs in tj["project"]["optional-dependencies"].items()
+        for name, specs in pyproject["project"]["optional-dependencies"].items()
     }
     return base, extras
 
 
-def extra_name_for(benchmark_dir: str) -> str:
-    """PEP-685 extra name for a benchmark dir (matches check_benchmark_extras.py)."""
-    return re.sub(r"[-_.]+", "-", benchmark_dir).lower()
+
 
 
 def _module_body_imports(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
@@ -144,7 +145,7 @@ def _internal_submodule(node: ast.Import | ast.ImportFrom, pkg: str) -> str | No
     if node.level and node.level > 0:
         # Relative import: only same-package (level 1 from a top-level module). ``from .``
         # with module=None imports names directly; those names are themselves submodules
-        # only when they resolve to a file, handled by the caller via _resolve_submodule.
+        # only when they resolve to a file, handled by the caller via _submodule_file.
         return node.module  # may be None for ``from . import x``; caller walks names
     if node.module and (node.module == pkg or node.module.startswith(pkg + ".")):
         return node.module[len(pkg) + 1 :] if node.module != pkg else ""
@@ -173,10 +174,10 @@ def eval_instruct_import_roots(benchmark_dir: str, pkg: str) -> set[str]:
     """
     eval_path = os.path.join(CHAT_BENCHMARKS_DIR, benchmark_dir, "eval_instruct.py")
     roots: set[str] = set()
-    try:
-        tree = ast.parse(open(eval_path).read(), filename=eval_path)
-    except (OSError, SyntaxError):
-        return roots
+    # An unreadable or syntactically invalid eval_instruct.py is a real failure, not a
+    # reason to trace nothing and silently report OK -- surface it to the caller.
+    source = open(eval_path).read()
+    tree = ast.parse(source, filename=eval_path)
     for node in _module_body_imports(tree):
         sub = _internal_submodule(node, pkg)
         if sub is None:
@@ -214,10 +215,9 @@ def trace_grader_imports(benchmark_dir: str, pkg: str) -> tuple[set[str], set[st
                 unresolved.add(dotted)
             continue
         seen_files.add(path)
-        try:
-            tree = ast.parse(open(path).read(), filename=path)
-        except (OSError, SyntaxError):
-            continue
+        # A grader submodule that cannot be read or parsed would leave its imports
+        # unaudited and produce a false OK -- let the error propagate instead.
+        tree = ast.parse(open(path).read(), filename=path)
 
         for node in _module_body_imports(tree):
             sub = _internal_submodule(node, pkg)
@@ -251,7 +251,7 @@ def main() -> None:
     print("=== vendored grader module-load import audit ===")
     for benchmark_dir in sorted(VENDORED_GRADERS):
         pkg = VENDORED_GRADERS[benchmark_dir]
-        extra = extra_name_for(benchmark_dir)
+        extra = normalize_extra(benchmark_dir)
         allowed = base | extras.get(extra, set()) | TRUSTED_TRANSITIVE
         external, unresolved = trace_grader_imports(benchmark_dir, pkg)
         undeclared = sorted(m for m in external if m not in allowed)
