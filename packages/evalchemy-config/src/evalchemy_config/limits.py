@@ -12,9 +12,9 @@ then pass the same resolved values to native and custom benchmarks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import copy
 import json
+from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 MAX_OUTPUT_ALIASES = ("max_tokens", "max_new_tokens", "max_gen_toks")
@@ -111,7 +111,7 @@ def preflight_endpoint_generation(
     shares one endpoint generation kwargs dictionary, so it uses the largest
     rendered prompt in that batch.
     """
-    if context_length is None or gen_kwargs is None:
+    if tokenizer is None or context_length is None or gen_kwargs is None:
         return (dict(gen_kwargs) if gen_kwargs is not None else None, None, None)
     present = [(key, gen_kwargs[key]) for key in MAX_OUTPUT_ALIASES if key in gen_kwargs]
     if not present:

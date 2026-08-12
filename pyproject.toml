@@ -204,6 +204,7 @@ livecodebenchv5 = []
 livecodebenchv5-official = []
 math500 = []
 mmlupro = []
+nupa = ["ijson"]
 # OlympiadBench grades via lm-eval's hendrycks_math boxed-answer utils (in the lean base
 # via lm-eval[math]). The legacy subset is local; the pinned full text-only task loads
 # through datasets, also in the lean base, so neither needs an extra dependency.
@@ -214,7 +215,7 @@ olympiadbenchfull = []
 # (uv expands `evalchemy[...]` against this project's own extras), the same shape lm-eval
 # ships its `tasks` union in. `uv sync --extra benchmarks` gives you the whole tree.
 benchmarks = [
-    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,financebench,gpqadiamond,gsm8kperturbed,hle,hmmt,humaneval,humanevalplus,ifbench,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,olympiadbench,olympiadbenchfull,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
+    "evalchemy[aime24,aime25,aiw,amc23,bigcodebench,codeelo,codeforces,cruxeval,financebench,gpqadiamond,gsm8kperturbed,hle,hmmt,humaneval,humanevalplus,ifbench,ifeval,jeebench,livebench,livecodebench,livecodebenchv5,livecodebenchv5-official,math500,mbpp,mbppplus,mmlupro,mtbench,mixeval,multiple,nupa,olympiadbench,olympiadbenchfull,repobench,swebench,wildbench,alpaca-eval,zeroeval]",
 ]
 
 # --- Marin `marin-serve` (Iris) provider for the runner (eval/serve_eval/) -------
