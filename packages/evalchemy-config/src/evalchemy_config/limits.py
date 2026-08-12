@@ -174,7 +174,7 @@ def preflight_endpoint_generation(
     prompts cannot be counted accurately; their requested cap is left intact.
     Token-ID payloads remain countable without a tokenizer.
     """
-    if context_length is None or gen_kwargs is None:
+    if tokenizer is None or context_length is None or gen_kwargs is None:
         return (dict(gen_kwargs) if gen_kwargs is not None else None, None, None)
     present = [(key, gen_kwargs[key]) for key in MAX_OUTPUT_ALIASES if key in gen_kwargs]
     if not present:

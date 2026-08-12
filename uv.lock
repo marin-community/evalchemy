@@ -1053,6 +1053,7 @@ benchmarks = [
     { name = "fuzzywuzzy" },
     { name = "google-generativeai" },
     { name = "immutabledict" },
+    { name = "ijson" },
     { name = "jsonlines" },
     { name = "langdetect" },
     { name = "lark" },
@@ -1130,6 +1131,9 @@ mixeval = [
 mrcr = [
     { name = "tiktoken" },
 ]
+nupa = [
+    { name = "ijson" },
+]
 mtbench = [
     { name = "anthropic" },
     { name = "fschat" },
@@ -1191,7 +1195,7 @@ requires-dist = [
     { name = "cohere", marker = "extra == 'zeroeval'" },
     { name = "datasets" },
     { name = "emoji", marker = "extra == 'ifbench'" },
-    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifbench", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mrcr", "mtbench", "mixeval", "multiple", "olympiadbench", "olympiadbenchfull", "repobench", "simpleqa", "simpleqamini", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
+    { name = "evalchemy", extras = ["aime24", "aime25", "aiw", "amc23", "bigcodebench", "codeelo", "codeforces", "cruxeval", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "humaneval", "humanevalplus", "ifbench", "ifeval", "jeebench", "livebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mbpp", "mbppplus", "mmlupro", "mrcr", "mtbench", "mixeval", "multiple", "nupa", "olympiadbench", "olympiadbenchfull", "repobench", "simpleqa", "simpleqamini", "swebench", "wildbench", "alpaca-eval", "zeroeval"], marker = "extra == 'benchmarks'" },
     { name = "fire", marker = "extra == 'bigcodebench'" },
     { name = "fire", marker = "extra == 'humaneval'" },
     { name = "fire", marker = "extra == 'humanevalplus'" },
@@ -1206,6 +1210,7 @@ requires-dist = [
     { name = "huggingface-hub" },
     { name = "immutabledict", marker = "extra == 'ifeval'" },
     { name = "immutabledict", marker = "extra == 'livebench'" },
+    { name = "ijson", marker = "extra == 'nupa'" },
     { name = "isort", marker = "extra == 'dev'" },
     { name = "jsonlines", marker = "extra == 'wildbench'" },
     { name = "langdetect", marker = "extra == 'ifeval'" },
@@ -1258,7 +1263,7 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
 ]
-provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "olympiadbench", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
+provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa", "olympiadbench", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
 
 [[package]]
 name = "evaluate"
