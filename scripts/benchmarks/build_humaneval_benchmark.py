@@ -6,9 +6,10 @@ and a Hub download of the ``code_eval`` metric module -- neither of which
 belongs in the default test path. This script is how those verdicts are
 reproduced: pinned dataset revision in, pinned reference out.
 
-Deterministic given the same dataset revision and code_eval implementation. The
-only non-reproducible case would be a candidate whose runtime straddles the
-grader's timeout; the non-terminating bodies below are far past it, not near it.
+Both inputs are pinned -- the dataset revision and the code_eval Space revision --
+so a rerun grades the same candidates against the same reference. The only
+non-reproducible case would be a candidate whose runtime straddles the grader's
+timeout; the non-terminating bodies below are far past it, not near it.
 
 Usage:
     HF_ALLOW_CODE_EVAL=1 uv run python scripts/benchmarks/build_humaneval_benchmark.py
@@ -32,6 +33,12 @@ BENCHMARK = REPO / "tests/graders/data/humaneval_grader_benchmark.jsonl"
 
 DATASET = "openai/openai_humaneval"
 DATASET_REVISION = "7dce6050a7d6d172f3cc5c32aa97f52fa1a2e544"
+
+# code_eval is a Space on the Hub, so an unpinned load resolves to whatever is
+# published at the time. Pin it: the recorded verdicts are only reproducible
+# against the same reference implementation that produced them.
+CODE_EVAL = "code_eval"
+CODE_EVAL_REVISION = "262b7e74cf29a715d74f8b02ba1d6ef74e432333"
 
 FIELDS = ["kind", "task_id", "problem", "solution", "reference_answer", "reference_grade"]
 
@@ -81,7 +88,7 @@ def main() -> None:
     import datasets
     import evaluate
 
-    code_eval = evaluate.load("code_eval")
+    code_eval = evaluate.load(CODE_EVAL, revision=CODE_EVAL_REVISION)
     rows = list(datasets.load_dataset(DATASET, split="test", revision=DATASET_REVISION))
     records = build_records(rows, args.count)
 

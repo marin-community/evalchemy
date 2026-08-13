@@ -6,15 +6,16 @@ lm-evaluation-harness ``v0.4.12`` produced for each of its 100 problems through
 not re-run by default: ``code_eval`` downloads a metric module from the Hub on
 first use and demands ``HF_ALLOW_CODE_EVAL=1``, so recording its verdicts keeps
 this suite hermetic. ``scripts/benchmarks/build_humaneval_benchmark.py``
-regenerates them from a pinned dataset revision, and
-``test_matches_live_reference`` re-checks them against a real ``code_eval`` when
-``HF_ALLOW_CODE_EVAL=1`` is set.
+regenerates them from a pinned dataset revision against a pinned ``code_eval``
+revision, and ``test_matches_live_reference`` re-checks them against that same
+pinned reference when ``HF_ALLOW_CODE_EVAL=1`` is set.
 
 Every candidate runs in its own process, so this file is slower than its
 siblings. Most of that is the timeout candidates, which cost a full SIGALRM wait
 in the reference and the port alike.
 """
 
+import importlib.util
 import json
 import os
 import pathlib
@@ -37,6 +38,21 @@ if str(REPO) not in sys.path:
 from eval.graders import humaneval  # noqa: E402
 
 BENCHMARK = pathlib.Path(__file__).parent / "data" / "humaneval_grader_benchmark.jsonl"
+GENERATOR = REPO / "scripts/benchmarks/build_humaneval_benchmark.py"
+
+
+def _generator_module():
+    """Load the fixture generator by path; scripts/ is not an importable package.
+
+    The Hub pins live there and are read from it rather than restated here, so
+    the live check can only ever run against the revision the fixture was
+    recorded with.
+    """
+    spec = importlib.util.spec_from_file_location("build_humaneval_benchmark", GENERATOR)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # A complete, self-contained problem used by the behavior tests below.
 PROMPT = "def add(a, b):\n"
@@ -64,7 +80,10 @@ def test_matches_harness_on_benchmark(benchmark):
 def test_matches_live_reference(benchmark):
     """Confirm the recorded verdicts still match a real code_eval run."""
     evaluate = pytest.importorskip("evaluate")
-    code_eval = evaluate.load("code_eval")
+    # Pinned to the revision the fixture was generated against; an unpinned load
+    # would compare the recording to whatever code_eval the Hub serves today.
+    generator = _generator_module()
+    code_eval = evaluate.load(generator.CODE_EVAL, revision=generator.CODE_EVAL_REVISION)
 
     stale = []
     for record in benchmark:
