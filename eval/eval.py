@@ -48,7 +48,6 @@ from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
-from eval.serve_eval.validate_config import main as validate_config
 from eval.task import TaskManager as InstructTaskManager
 
 _BIT_CAP = 15_000
@@ -458,10 +457,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     Args:
         args: Command line arguments. If None, will parse from sys.argv
     """
-    if args is None and len(sys.argv) > 1 and sys.argv[1] == "validate-config":
-        validate_config(sys.argv[2:])
-        return
-
     # Parse arguments if not provided
     if not args:
         parser = setup_custom_parser()

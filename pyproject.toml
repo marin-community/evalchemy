@@ -86,8 +86,8 @@ Repository = "https://github.com/mlfoundations/evalchemy.git"
 # Console entry points for the eval CLI (two aliases, as upstream lm-eval ships).
 # `uvx --from git+https://github.com/marin-community/evalchemy eval ...` runs this.
 [project.scripts]
-eval = "eval.eval:cli_evaluate"
-evalchemy = "eval.eval:cli_evaluate"
+eval = "eval.serve_eval.cli:main"
+evalchemy = "eval.serve_eval.cli:main"
 
 [project.optional-dependencies]
 dev = [

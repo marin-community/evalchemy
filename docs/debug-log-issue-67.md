@@ -23,8 +23,9 @@ schema errors, and unknown task names through the public command boundary.
 
 `evalchemy validate-config` now loads portable YAML, checks its task names against
 the installed Evalchemy and lm-eval catalogs, and exits before model construction.
-The public-command regression tests cover valid YAML, an unknown task suggestion,
-and a forbidden schema field. All 12 portable-config E2E tests pass.
+The console dispatcher stays outside `eval.eval`, so validation also works in the
+dependency-light E2E harness. The public-command regression tests cover valid YAML,
+an unknown task suggestion, and a forbidden schema field.
 
 ## Future work
 

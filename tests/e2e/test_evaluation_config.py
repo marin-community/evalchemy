@@ -26,7 +26,7 @@ _ROOT = Path(__file__).parents[2]
 
 def _validate_config(path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "eval.eval", "validate-config", str(path)],
+        [sys.executable, "-m", "eval.serve_eval.cli", "validate-config", str(path)],
         cwd=_ROOT,
         capture_output=True,
         text=True,

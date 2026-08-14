@@ -17,12 +17,18 @@ _LM_EVAL_TASKS_DIR = Path(__file__).parents[1] / "lm_eval_tasks"
 
 def _available_tasks() -> set[str]:
     """Return task names registered by the installed Evalchemy and lm-eval catalogs."""
-    from lm_eval.tasks import TaskManager
-
     chat_tasks = {
         path.name for path in _CHAT_BENCHMARKS_DIR.iterdir() if (path / "eval_instruct.py").is_file()
     }
-    lm_eval_tasks = set(TaskManager("ERROR", include_path=[str(_LM_EVAL_TASKS_DIR)]).all_tasks)
+    try:
+        from lm_eval.tasks import TaskManager
+    except ModuleNotFoundError:
+        lm_eval_tasks = {
+            path.parent.name if path.name == "default.yaml" else path.stem
+            for path in _LM_EVAL_TASKS_DIR.rglob("*.yaml")
+        }
+    else:
+        lm_eval_tasks = set(TaskManager("ERROR", include_path=[str(_LM_EVAL_TASKS_DIR)]).all_tasks)
     return chat_tasks | lm_eval_tasks
 
 
