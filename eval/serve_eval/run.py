@@ -169,10 +169,12 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
     args: Dict[str, ModelArgValue] = {
         "model": served.model,
         "base_url": endpoint_url(served.base_url, adapter),
-        # The served model already tokenizes; keep requests as text and let lm-eval
-        # use a HF tokenizer only for length bookkeeping.
+        # Loglikelihood scoring slices echoed logprobs at lm-eval's local token
+        # boundary. The completions endpoint must therefore receive those exact
+        # token IDs; a text round trip can retokenize a leading-space target.
+        # Chat requests are message objects and stay text-based.
         "tokenizer_backend": "huggingface",
-        "tokenized_requests": False,
+        "tokenized_requests": adapter == LOCAL_COMPLETIONS,
     }
     if served.api_key is not None:
         args["api_key"] = served.api_key

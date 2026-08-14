@@ -51,8 +51,9 @@ flags and `E2E_*` env vars override it). Two providers:
   scoped token in the path, so no auth header or SSH tunnel is needed.
 
 Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
-`tokenizer_backend=huggingface,tokenized_requests=False` (the served model tokenizes;
-lm-eval keeps a HF tokenizer only for length bookkeeping).
+`tokenizer_backend=huggingface,tokenized_requests=False`. Plain completions use token-ID
+prompts so lm-eval's local continuation boundary stays aligned with the endpoint's echoed
+logprobs.
 
 ## Telemetry
 
