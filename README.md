@@ -191,6 +191,14 @@ python -m eval.eval \
     --config configs/light_gpt4omini0718.yaml
 ```
 
+Validate a portable Evalchemy configuration before launching an evaluation. This
+checks the installed schema and task catalog without loading a model or running a
+task:
+
+```bash
+evalchemy validate-config evaluation.yaml
+```
+
 We add several more command examples in [`eval/examples`](https://github.com/mlfoundations/Evalchemy/tree/main/eval/examples) to help you start using Evalchemy. 
 
 ## 🔧 Advanced Usage

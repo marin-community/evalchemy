@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,42 @@ from evalchemy_config import (
 )
 
 _ROOT = Path(__file__).parents[2]
+
+
+def _validate_config(path: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "eval.serve_eval.cli", "validate-config", str(path)],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_validate_config_accepts_portable_yaml_without_starting_an_evaluation(tmp_path):
+    config = tmp_path / "evaluation.yaml"
+    config.write_text("tasks:\n  - gsm8k\nmax_tokens: 512\n")
+
+    result = _validate_config(config)
+
+    assert result.returncode == 0, result.stderr
+    assert "valid evaluation config" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "contents, expected",
+    [
+        ("tasks:\n  - gsm8kk\n", "gsm8k"),
+        ("tasks:\n  - gsm8k\nunsupported_option: true\n", "unsupported_option"),
+    ],
+)
+def test_validate_config_rejects_invalid_portable_yaml(tmp_path, contents, expected):
+    config = tmp_path / "evaluation.yaml"
+    config.write_text(contents)
+
+    result = _validate_config(config)
+
+    assert result.returncode != 0
+    assert expected in result.stderr
 
 
 def test_shipped_flat_yaml_becomes_portable_evaluation_intent():

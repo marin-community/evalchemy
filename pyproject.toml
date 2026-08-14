@@ -60,6 +60,7 @@ dependencies = [
     "huggingface_hub",
     "openai",
     "numpy",
+    "pydantic>=2",
     "pyyaml",
     # HMMT grades via the vendored `matharena`, which imports loguru at module load;
     # kept in core so the math benchmarks (AIME/AMC/MATH500/HMMT) all import lean.
@@ -85,8 +86,8 @@ Repository = "https://github.com/mlfoundations/evalchemy.git"
 # Console entry points for the eval CLI (two aliases, as upstream lm-eval ships).
 # `uvx --from git+https://github.com/marin-community/evalchemy eval ...` runs this.
 [project.scripts]
-eval = "eval.eval:cli_evaluate"
-evalchemy = "eval.eval:cli_evaluate"
+eval = "eval.serve_eval.cli:main"
+evalchemy = "eval.serve_eval.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -112,7 +113,6 @@ dev = [
 # config -- it just needs the s3 filesystem installed, which the lean base omits.
 serve-eval = [
     "click>=8",
-    "pydantic>=2",
     "pydantic-settings>=2",
     "pyyaml",
     "s3fs",
