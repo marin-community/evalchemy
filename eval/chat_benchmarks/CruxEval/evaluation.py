@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import numpy as np
-from execution import check_correctness
+from .execution import check_correctness
 import json
 import argparse
 import re
