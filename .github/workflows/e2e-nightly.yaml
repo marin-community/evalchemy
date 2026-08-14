@@ -119,6 +119,24 @@ jobs:
           uv run python -m eval.regression.validate check --results e2e-out \
             --spec eval/regression/specs/qwen3-0.6b.json
 
+      - name: Collect Iris logs after a serving failure
+        if: failure()
+        # A readiness timeout leaves the Iris job alive. Retain its logs before the
+        # cleanup step stops it, otherwise capacity and runtime failures look alike.
+        run: |
+          mkdir -p e2e-out
+          id="${IRIS_JOB_ID:-}"
+          if [ -z "$id" ]; then
+            id=$(iris --cluster marin job list 2>/dev/null \
+              | grep -oE '/[^ /]+/evalchemy-e2e-qwen3-0-6b\b' | head -n1 || true)
+          fi
+          if [ -z "$id" ]; then
+            echo "no Iris job found for log collection" > e2e-out/iris-job.log
+          else
+            iris --cluster marin job logs "$id" > e2e-out/iris-job.log 2>&1 \
+              || echo "WARNING: failed to collect logs for $id" >> e2e-out/iris-job.log
+          fi
+
       - name: Stop any Iris job the run left behind
         if: always()
         # The provider stops its own job in a finally and marin-serve self-stops after
