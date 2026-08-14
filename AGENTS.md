@@ -61,7 +61,7 @@ uv tool install --prerelease allow "marin-core>=0.2.0.dev0"
 
 ```bash
 make test                       # uv run pytest (testpaths = tests/)
-uv run pytest tests/e2e -q      # the harness tests: no model, no cluster, seconds
+uv run --with zstandard python -m pytest tests/e2e -q  # no model, no cluster, seconds
 ```
 
 `tests/e2e/` covers the runner and the gate against a stdlib HTTP stub and a PTY, and

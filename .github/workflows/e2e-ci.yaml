@@ -63,7 +63,7 @@ jobs:
         run: >-
           uv run --no-project --python 3.12
           --with ./packages/evalchemy-config
-          --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click
+          --with pytest --with pyyaml --with pydantic --with pydantic-settings --with click --with zstandard
           --with marin-rigging
           python -m pytest tests/e2e/ -q
 
