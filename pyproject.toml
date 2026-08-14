@@ -60,6 +60,7 @@ dependencies = [
     "huggingface_hub",
     "openai",
     "numpy",
+    "pydantic>=2",
     "pyyaml",
     # HMMT grades via the vendored `matharena`, which imports loguru at module load;
     # kept in core so the math benchmarks (AIME/AMC/MATH500/HMMT) all import lean.
@@ -112,7 +113,6 @@ dev = [
 # config -- it just needs the s3 filesystem installed, which the lean base omits.
 serve-eval = [
     "click>=8",
-    "pydantic>=2",
     "pydantic-settings>=2",
     "pyyaml",
     "s3fs",
