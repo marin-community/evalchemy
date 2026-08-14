@@ -82,7 +82,7 @@ def _parse_model_args(text):
     return dict(pair.split("=", 1) for pair in text.split(","))
 
 
-def test_model_args_carry_v1_rooted_chat_url_and_no_tokenized_requests():
+def test_model_args_keep_chat_requests_as_text():
     served = ServedModel(base_url="http://127.0.0.1:8000/v1", model="served-model", api_key="k", tokenizer="tok")
     parsed = _parse_model_args(build_model_args(served, LOCAL_CHAT_COMPLETIONS, extra={"num_concurrent": 2}))
     assert parsed["base_url"] == "http://127.0.0.1:8000/v1/chat/completions"
@@ -98,6 +98,7 @@ def test_model_args_omit_api_key_and_tokenizer_when_unset():
     assert "api_key" not in parsed
     assert "tokenizer" not in parsed
     assert parsed["base_url"] == "http://h/v1/completions"
+    assert parsed["tokenized_requests"] == "True"
 
 
 def test_model_args_reject_comma_in_value():
