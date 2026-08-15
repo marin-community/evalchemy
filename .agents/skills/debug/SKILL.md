@@ -3,7 +3,7 @@ name: debug
 description: Debug a code bug with a structured debug log that records hypotheses, changes, and results.
 ---
 
-<!-- Vendored from marin-community/marin-style v0.3.0 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.3.1 — do not edit; re-run `marin-style sync`. -->
 
 # Skill: Debug
 
@@ -17,7 +17,9 @@ and may not touch on shared infrastructure) take precedence.
 
 ## Code bugs
 
-Maintain a debug log at `docs/debug-log-<task-name>.md`:
+Maintain an investigation log at `.agents/ops/<task-name>.md`. Keep agent
+working records out of the repository's public documentation. If `.agents/` is
+ignored, add the narrow exception needed to track `.agents/ops/`.
 
 ```
 # Debugging log for <task>

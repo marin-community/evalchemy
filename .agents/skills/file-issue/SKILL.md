@@ -3,7 +3,7 @@ name: file-issue
 description: File a GitHub issue for a bug or improvement found this session.
 ---
 
-<!-- Vendored from marin-community/marin-style v0.3.0 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.3.1 — do not edit; re-run `marin-style sync`. -->
 
 # Skill: File GitHub Issue
 
