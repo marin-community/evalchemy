@@ -29,7 +29,7 @@ extra_model_args:
 
 # marin-serve provider
 cluster: marin
-tpu: v5litepod-8              # single-host slice on marin's v5e-serving pool; override with --tpu / --region
-region: europe-west4
+tpu: v6e-4,v5litepod-4,v5p-8,v4-8  # compatible 4-chip slices; Iris uses whichever has capacity
+region: null
 wait_timeout_s: 1800
 timeout_hours: 2

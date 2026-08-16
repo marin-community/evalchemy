@@ -132,7 +132,7 @@ def test_shipped_config_parses():
     cfg = RunConfig.load(os.path.join(_HERE, "eval", "serve_eval", "configs", "qwen-tiny.yaml"))
     assert cfg.model == "Qwen/Qwen3-0.6B"
     assert cfg.apply_chat_template is True
-    assert cfg.tpu == "v5litepod-8"
+    assert cfg.tpu == "v6e-4,v5litepod-4,v5p-8,v4-8"
 
 
 # --- providers: readiness poll + factory fail-fast ----------------------------

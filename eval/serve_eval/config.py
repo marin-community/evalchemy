@@ -41,7 +41,7 @@ class RunConfig(BaseSettings):
 
     # marin-serve provider
     cluster: str = "marin"
-    tpu: str = "v5litepod-8"
+    tpu: str = "v6e-4,v5litepod-4,v5p-8,v4-8"
     region: Optional[str] = None
     wait_timeout_s: float = 1800.0
     timeout_hours: float = 2.0
