@@ -20,10 +20,15 @@ generation_kwargs:
   do_sample: false
   temperature: 0.0
 filter_list:
-  - name: extract_answer
+  - name: strict_answer
     filter:
       - function: custom
         filter_fn: !function eval.lm_eval_tasks.short_answer_extraction.marked_short_answer_filter
+      - function: take_first
+  - name: extract_answer
+    filter:
+      - function: custom
+        filter_fn: !function eval.lm_eval_tasks.short_answer_extraction.short_answer_filter
       - function: take_first
 target_delimiter: " "
 metric_list:
@@ -35,4 +40,4 @@ metric_list:
     regexes_to_ignore:
     - "\\b(?:The |the |An |A |The |a |an )"
 metadata:
-  version: 4.2
+  version: 4.3

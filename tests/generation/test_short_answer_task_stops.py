@@ -21,7 +21,12 @@ from eval import robust_api
 from eval.completion_response import CompletionClassification, CompletionContentPolicy
 from eval.eval import DEFAULT_LM_EVAL_INCLUDE_DIR
 from eval.generation_stops import SHORT_ANSWER_STOP_SEQUENCES, truncate_at_stop
-from eval.lm_eval_tasks.short_answer_extraction import extract_marked_short_answer
+from eval.lm_eval_tasks.short_answer_extraction import (
+    INVALID_SHORT_ANSWER,
+    ShortAnswerFormat,
+    extract_marked_short_answer,
+    extract_short_answer,
+)
 
 _TASKS = ("nq_open", "triviaqa")
 
@@ -44,19 +49,27 @@ def _adapter() -> LocalChatCompletion:
     return adapter
 
 
-def _filtered_response(task_name: str, message: dict[str, str | None]) -> str:
+def _filtered_response(
+    task_name: str, message: dict[str, str | None], filter_name: str = "extract_answer"
+) -> str:
     config = _task_config(task_name)
+    filter_entry = next(
+        entry for entry in config["filter_list"] if entry["name"] == filter_name
+    )
     steps = [
-        (filter_config["function"], {key: value for key, value in filter_config.items() if key != "function"})
-        for filter_config in config["filter_list"][0]["filter"]
+        (
+            step["function"],
+            {key: value for key, value in step.items() if key != "function"},
+        )
+        for step in filter_entry["filter"]
     ]
-    pipeline = build_filter_ensemble(config["filter_list"][0]["name"], steps)
+    pipeline = build_filter_ensemble(filter_name, steps)
     instance = Instance("generate_until", {}, (), 0)
     instance.resps = [
         _adapter().parse_generations({"choices": [{"index": 0, "message": message}]})[0]
     ]
     pipeline.apply([instance])
-    return instance.filtered_resps[config["filter_list"][0]["name"]]
+    return instance.filtered_resps[filter_name]
 
 
 @pytest.mark.parametrize(
@@ -108,32 +121,101 @@ def test_short_answer_task_establishes_and_extracts_its_answer_contract(task_nam
 
     assert config["doc_to_text"].endswith('Respond with exactly "Answer: <short answer>".')
     assert config["fewshot_config"]["doc_to_target"].startswith("Answer:")
+    assert [entry["name"] for entry in config["filter_list"]] == [
+        "strict_answer",
+        "extract_answer",
+    ]
 
 
 @pytest.mark.parametrize("task_name", _TASKS)
-def test_short_answer_task_rejects_an_unmarked_transcript(task_name):
+def test_short_answer_task_scores_explicit_answer_and_reports_contract_adherence(task_name):
+    message = {
+        "content": "The answer is (14 December 1972).",
+        "reasoning_content": "I checked the Apollo mission timeline.",
+    }
+
+    selected = _filtered_response(task_name, message)
+    strict_selected = _filtered_response(task_name, message, "strict_answer")
+
+    assert selected == "14 December 1972"
+    assert strict_selected == INVALID_SHORT_ANSWER
+    assert exact_match_hf_evaluate(
+        predictions=[selected],
+        references=["14 December 1972"],
+        ignore_case=True,
+        ignore_punctuation=True,
+    )["exact_match"] == 1.0
+
+
+@pytest.mark.parametrize("task_name", _TASKS)
+def test_short_answer_task_scores_a_bare_final_line(task_name):
     selected = _filtered_response(
         task_name,
         {
-            "content": "The answer is 14 December 1972.",
-            "reasoning_content": "I checked the Apollo mission timeline.",
+            "content": "<think>I checked the Apollo mission timeline.</think>\n[14 December 1972]",
+            "reasoning_content": None,
         },
     )
 
-    assert selected == "[invalid]"
+    assert selected == "14 December 1972"
 
 
 @pytest.mark.parametrize(
-    ("response", "expected"),
+    ("response", "expected", "answer_format", "strict_expected"),
     [
-        ("Reasoning\nAnswer: first\nFinal Answer: second", "second"),
-        ("A: 14 December 1972", "14 December 1972"),
-        ("Answer: St. John's, Newfoundland\nQuestion: repeated prompt", "St. John's, Newfoundland"),
-        ("The answer is unmarked.", "[invalid]"),
+        (
+            "Reasoning\nAnswer: first\nFinal Answer: second",
+            "second",
+            ShortAnswerFormat.CONTRACT,
+            "second",
+        ),
+        (
+            "A: 14 December 1972",
+            "14 December 1972",
+            ShortAnswerFormat.CONTRACT,
+            "14 December 1972",
+        ),
+        (
+            "Answer: St. John's, Newfoundland\nQuestion: repeated prompt",
+            "St. John's, Newfoundland",
+            ShortAnswerFormat.CONTRACT,
+            "St. John's, Newfoundland",
+        ),
+        (
+            "The answer is (Leeds).",
+            "Leeds",
+            ShortAnswerFormat.EXPLICIT,
+            INVALID_SHORT_ANSWER,
+        ),
+        (
+            "The answer is Answer: car rental company",
+            "car rental company",
+            ShortAnswerFormat.EXPLICIT,
+            INVALID_SHORT_ANSWER,
+        ),
+        (
+            "<think>reasoning</think>\n[Miller Lite]",
+            "Miller Lite",
+            ShortAnswerFormat.BARE,
+            INVALID_SHORT_ANSWER,
+        ),
+        (
+            "<think>reasoning only</think>",
+            INVALID_SHORT_ANSWER,
+            ShortAnswerFormat.INVALID,
+            INVALID_SHORT_ANSWER,
+        ),
+        (None, INVALID_SHORT_ANSWER, ShortAnswerFormat.INVALID, INVALID_SHORT_ANSWER),
     ],
 )
-def test_short_answer_extractor_selects_the_last_line_level_marker(response, expected):
-    assert extract_marked_short_answer(response) == expected
+def test_short_answer_extractor_classifies_shared_answer_formats(
+    response, expected, answer_format, strict_expected
+):
+    extraction = extract_short_answer(response)
+
+    assert extraction.answer == expected
+    assert extraction.format == answer_format
+    assert extract_marked_short_answer(response) == strict_expected
 
 
 @pytest.mark.parametrize("task_name", _TASKS)
