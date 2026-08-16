@@ -23,6 +23,7 @@ GSM8K_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
 ]
 DROP_STOP_SEQUENCES: list[str] = list(END_OF_TURN_SEQUENCES)  # noqa: ml-module-globals
 SHORT_ANSWER_STOP_SEQUENCES: list[str] = list(END_OF_TURN_SEQUENCES)  # noqa: ml-module-globals
+OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES = 4
 HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\nclass",
     "\ndef",
@@ -31,6 +32,15 @@ HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\nprint",
     "\n```",
     *END_OF_TURN_SEQUENCES,
+]
+# OpenAI-compatible completions endpoints accept at most four request stops.
+# The scorer still applies the complete set after generation, including the
+# omitted ``print``, code-fence, and chat turn boundaries.
+HUMANEVAL_REQUEST_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
+    "\nclass",
+    "\ndef",
+    "\n#",
+    "\nif",
 ]
 
 

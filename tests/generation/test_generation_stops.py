@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from lm_eval.tasks import TaskManager
 from lm_eval.tasks._yaml_loader import load_yaml
 
@@ -8,7 +9,8 @@ from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.eval import DEFAULT_LM_EVAL_INCLUDE_DIR
 from eval.generation_stops import (
     GSM8K_STOP_SEQUENCES,
-    HUMANEVAL_STOP_SEQUENCES,
+    OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES,
+    HUMANEVAL_REQUEST_STOP_SEQUENCES,
     truncate_at_stop,
 )
 from eval.lm_eval_tasks.humaneval.scoring import build_predictions
@@ -28,10 +30,21 @@ def test_math_graders_ignore_boxed_answers_from_a_repeated_turn():
     assert MATH500Benchmark.extract_answer(None, output) == "17"
 
 
-def test_humaneval_discards_a_closing_code_fence():
+@pytest.mark.parametrize(
+    "response",
+    [
+        "    return 42\n```\nAssistant:\nHere is another answer",
+        "    return 42\nprint(answer())\n",
+    ],
+)
+def test_humaneval_scoring_discards_boundaries_omitted_from_the_request(response):
     docs = [{"prompt": "def answer():\n"}]
-    responses = [["    return 42\n```\nAssistant:\nHere is another answer"]]
+    responses = [[response]]
     assert build_predictions(responses, docs) == [["def answer():\n    return 42"]]
+
+
+def test_humaneval_request_stops_fit_the_completions_api():
+    assert len(HUMANEVAL_REQUEST_STOP_SEQUENCES) == OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES
 
 
 def test_generation_task_overrides_use_shared_stop_sequences():
@@ -39,7 +52,7 @@ def test_generation_task_overrides_use_shared_stop_sequences():
 
     expected_stops = {
         "gsm8k": GSM8K_STOP_SEQUENCES,
-        "humaneval": HUMANEVAL_STOP_SEQUENCES,
+        "humaneval": HUMANEVAL_REQUEST_STOP_SEQUENCES,
     }
     for task_name, stops in expected_stops.items():
         entry = task_manager.task_index[task_name]
