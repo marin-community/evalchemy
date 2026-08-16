@@ -32,6 +32,10 @@ HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\n```",
     *END_OF_TURN_SEQUENCES,
 ]
+# OpenAI-compatible completions endpoints accept at most four request stops.
+# The scorer still applies the complete set after generation, so omitting the
+# remaining boundaries from the request cannot leak text into a prediction.
+HUMANEVAL_REQUEST_STOP_SEQUENCES: list[str] = HUMANEVAL_STOP_SEQUENCES[:4]  # noqa: ml-module-globals
 
 
 def truncate_at_stop(text: str, stops: Sequence[str] = END_OF_TURN_SEQUENCES) -> str:
