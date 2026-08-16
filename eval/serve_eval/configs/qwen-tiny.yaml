@@ -20,16 +20,16 @@ seed: 1234                    # pinned greedy decoding
 gen_kwargs: temperature=0,do_sample=false,max_gen_toks=1024
 extra_model_args:
   # num_concurrent=1 sends one request at a time, so vLLM's batch composition is
-  # constant run-to-run. Greedy output then reproduces on the same slice type, which
-  # is what lets the gate use a tight reference+-tolerance band instead of a wide
-  # floor. It is slower; bump it for ad-hoc human runs that don't gate.
+  # constant run-to-run. Together with greedy output, this makes the gate reproducible
+  # across the compatible slice set. It is slower; bump it for ad-hoc human runs that
+  # don't gate, and re-record the gate when the allowed hardware changes.
   num_concurrent: 1
   timeout: 120
   max_retries: 3
 
 # marin-serve provider
 cluster: marin
-tpu: v6e-4,v5litepod-4,v5p-8,v4-8  # compatible 4-chip slices; Iris uses whichever has capacity
+# The RunConfig default requests every compatible 4-chip slice; override with --tpu.
 region: null
 wait_timeout_s: 1800
 timeout_hours: 2

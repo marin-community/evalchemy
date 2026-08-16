@@ -27,8 +27,7 @@ on:
         description: "HF model id to serve/evaluate"
         default: Qwen/Qwen3-0.6B
       tpu:
-        description: "Compatible TPU slice types, comma-separated"
-        default: v6e-4,v5litepod-4,v5p-8,v4-8
+        description: "Optional compatible TPU slice types; blank uses the runner default"
       region:
         description: "Optional region allow-list; blank lets Iris choose"
       tasks:
@@ -107,9 +106,13 @@ jobs:
 
       - name: Serve, evaluate, and gate
         run: |
+          tpu_args=()
+          if [ -n "${{ github.event.inputs.tpu || '' }}" ]; then
+            tpu_args=(--tpu "${{ github.event.inputs.tpu }}")
+          fi
           uv run python -m eval.serve_eval.run --provider marin-serve \
             --model "${{ github.event.inputs.model || 'Qwen/Qwen3-0.6B' }}" \
-            --tpu "${{ github.event.inputs.tpu || 'v6e-4,v5litepod-4,v5p-8,v4-8' }}" \
+            "${tpu_args[@]}" \
             --region "${{ github.event.inputs.region || '' }}" \
             --marin-workspace "$GITHUB_WORKSPACE/marin" \
             --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
