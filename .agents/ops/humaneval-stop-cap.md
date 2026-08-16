@@ -11,14 +11,14 @@ list because its API contract allows at most four strings.
 
 ## Hypothesis 1
 
-HumanEval does not need generic chat turn stops at request time: its six
-code-boundary stops are the upstream task contract, and the scorer already
-truncates generic turn-boundary text after generation.
+HumanEval needs no more than four request stops: the scorer already truncates
+the two omitted code boundaries and all generic chat turn boundaries after
+generation.
 
 ## Changes to make
 
-Make the HumanEval request stop list contain only its code-boundary stops, and
-add regression coverage for the OpenAI cap and post-generation turn truncation.
+Make the HumanEval request stop list contain four code-boundary stops, and add
+regression coverage for the OpenAI cap and post-generation truncation.
 
 ## Results
 
