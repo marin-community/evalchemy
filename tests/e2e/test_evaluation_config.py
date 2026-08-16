@@ -66,7 +66,7 @@ def test_shipped_flat_yaml_becomes_portable_evaluation_intent():
     assert cfg.evaluation.tasks == ["gsm8k"]
     assert cfg.evaluation.max_tokens == 1024
     assert cfg.evaluation.max_length is None
-    assert cfg.tpu == "v5litepod-8"
+    assert cfg.tpu == "v6e-4,v5litepod-4,v5p-8,v4-8"
 
 
 def test_runner_argv_preserves_shipped_evaluation_behavior():
