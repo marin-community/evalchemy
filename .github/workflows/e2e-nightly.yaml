@@ -27,7 +27,7 @@ on:
         description: "HF model id to serve/evaluate"
         default: Qwen/Qwen3-0.6B
       tpu:
-        description: "Optional compatible TPU slice types; blank uses the runner default"
+        description: "Optional TPU slice type; blank uses the runner default"
       region:
         description: "Optional region allow-list; blank lets Iris choose"
       tasks:

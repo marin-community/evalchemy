@@ -30,7 +30,7 @@ The `endpoint` provider needs none of this.
 ```bash
 # Provision a TPU on the marin cluster, eval, print results:
 uv run python -m eval.serve_eval.run --model Qwen/Qwen3-0.6B \
-    --tpu v6e-4,v5litepod-4,v5p-8,v4-8 --marin-workspace /path/to/marin
+    --tpu v6e-4 --marin-workspace /path/to/marin
 
 # Or attach to a server you already have:
 uv run python -m eval.serve_eval.run --provider endpoint --base-url http://localhost:8000/v1

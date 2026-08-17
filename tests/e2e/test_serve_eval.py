@@ -132,7 +132,7 @@ def test_shipped_config_parses():
     cfg = RunConfig.load(os.path.join(_HERE, "eval", "serve_eval", "configs", "qwen-tiny.yaml"))
     assert cfg.model == "Qwen/Qwen3-0.6B"
     assert cfg.apply_chat_template is True
-    assert cfg.tpu == "v6e-4,v5litepod-4,v5p-8,v4-8"
+    assert cfg.tpu == "v6e-4"
 
 
 # --- providers: readiness poll + factory fail-fast ----------------------------
@@ -222,6 +222,51 @@ def test_endpoint_provider_yields_normalized_served_model():
             assert served.base_url == f"http://127.0.0.1:{port}/v1"
             assert served.model == "m"
             assert served.tokenizer == "m"
+    finally:
+        server.shutdown()
+
+
+def test_shipped_config_starts_with_released_marin_serve_tpu_contract(tmp_path):
+    # The workflow's supported marin-core floor accepts one TPU type. Exercise
+    # that external CLI boundary so the shipped config cannot get ahead of it.
+    server = _serve(ready_after=0)
+    port = server.server_address[1]
+    marin_serve = tmp_path / "marin-serve"
+    marin_serve.write_text(
+        textwrap.dedent(
+            f"""\
+            #!/bin/sh
+            while [ "$#" -gt 0 ]; do
+                if [ "$1" = "--tpu" ]; then
+                    shift
+                    tpu="$1"
+                fi
+                shift
+            done
+            case "$tpu" in
+                *,*) exit 64 ;;
+            esac
+            echo "  job          /app/evalchemy-e2e-qwen3-0-6b"
+            echo "  base_url     http://127.0.0.1:{port}/v1"
+            sleep 30
+            """
+        )
+    )
+    marin_serve.chmod(0o755)
+    iris_bin, _ = _fake_iris(tmp_path, "")
+    cfg = RunConfig.load(os.path.join(_HERE, "eval", "serve_eval", "configs", "qwen-tiny.yaml"))
+    prov = MarinServeProvider(
+        model=cfg.model,
+        tpu=cfg.tpu,
+        marin_serve_bin=str(marin_serve),
+        iris_bin=iris_bin,
+        readiness_timeout_s=5,
+    )
+
+    try:
+        with prov as served:
+            assert served.base_url == f"http://127.0.0.1:{port}/v1"
+            assert served.model == "Qwen/Qwen3-0.6B"
     finally:
         server.shutdown()
 

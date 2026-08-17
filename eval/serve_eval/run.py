@@ -8,7 +8,7 @@ task's metrics. Defaults live in ``eval/serve_eval/configs/qwen-tiny.yaml``; eve
 is overridable.
 
     python -m eval.serve_eval.run --model Qwen/Qwen3-0.6B \
-        --tpu v6e-4,v5litepod-4,v5p-8,v4-8 --marin-workspace /path/to/marin
+        --tpu v6e-4 --marin-workspace /path/to/marin
 
     python -m eval.serve_eval.run --provider endpoint --base-url http://localhost:8000/v1
 """
@@ -295,7 +295,7 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 @click.option(
     "--tpu",
     default=None,
-    help="Compatible comma-separated TPU slice types (marin-serve provider).",
+    help="TPU slice type (marin-serve provider).",
 )
 @click.option("--name", default=None, help="Iris job name (marin-serve provider).")
 @click.option("--region", default=None, help="Region(s) to pin the TPU slice to, e.g. europe-west4.")
