@@ -3,7 +3,7 @@ name: commit
 description: Lint, run the pre-PR checks, commit, push, and author or update the branch's pull request in the required plain-text format. Use when committing, pushing, or creating/updating a PR.
 ---
 
-<!-- Vendored from marin-community/marin-style v0.3.1 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.4.0 — do not edit; re-run `marin-style sync`. -->
 
 # Skill: Commit & PR
 
@@ -162,8 +162,8 @@ Fixes #1234
 just to satisfy this — omit the link when none exists.
 
 **Specifications (>500 LOC only).** A genuinely large PR must link a spec in an
-issue or design doc. Name the important design decisions in the PR body and link
-the spec for module maps, code excerpts, and detailed rationale.
+issue or Echo design entry. Name the important design decisions in the PR body
+and link the spec for module maps, code excerpts, and detailed rationale.
 
 **Inspect the payload.** Draft the body in a uniquely named temporary file and
 use `--body-file`. Re-open that file and apply the final compression pass before

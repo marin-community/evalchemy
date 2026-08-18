@@ -3,7 +3,7 @@ name: writing-style
 description: Marin house writing style. Use when drafting or revising Marin-authored prose, including commit messages and GitHub PR, issue, or comment text.
 ---
 
-<!-- Vendored from marin-community/marin-style v0.3.1 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.4.0 — do not edit; re-run `marin-style sync`. -->
 
 # Marin House Style
 
