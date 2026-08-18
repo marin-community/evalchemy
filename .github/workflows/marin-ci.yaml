@@ -46,5 +46,5 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Check the vendored .agents/ tree is in sync
         run: >-
-          uvx --from git+https://github.com/marin-community/marin-style@64ceb7ac07a4f66bba134cae814f6928f9e6af62
+          uvx --from git+https://github.com/marin-community/marin-style@5094279da60b47b9a8fa8effaf7f73cd13f1e96f
           marin-style sync --check

@@ -1,4 +1,4 @@
-<!-- Vendored from marin-community/marin-style v0.3.1 — do not edit; re-run `marin-style sync`. -->
+<!-- Vendored from marin-community/marin-style v0.4.0 — do not edit; re-run `marin-style sync`. -->
 
 # Pull Requests And Commit Messages
 
@@ -34,7 +34,7 @@ Prefer `[sft] Add the OpenCode chat template` over
   detailed evidence when the full record belongs elsewhere.
 - End with `Fixes #NNNN` or `Part of #NNNN` when applicable.
 - Put specifications, extended raw benchmark output, and research history in an
-  issue, design doc, logbook, or artifact and link it. Keep the reproduction
+  issue, Echo design or incident entry, or source artifact and link it. Keep the reproduction
   detail and result summary needed to evaluate the change.
 
 The body must stand alone, but it does not need to reproduce the diff. Delete:
