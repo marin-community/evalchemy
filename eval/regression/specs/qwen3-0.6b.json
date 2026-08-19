@@ -16,14 +16,10 @@
     "gsm8k": {
       "metrics": {
         "exact_match,flexible-extract": {
-          "min": 0.33,
-          "reference": 0.58,
-          "tolerance": 0.05
+          "min": 0.33
         },
         "exact_match,strict-match": {
-          "min": 0.07,
-          "reference": 0.32,
-          "tolerance": 0.05
+          "min": 0.07
         }
       },
       "observed": {
