@@ -95,6 +95,12 @@ def test_shipped_spec_parses():
     assert "gsm8k" in GateSpec.load(DEFAULT_SPEC).tasks
 
 
+def test_shipped_smoke_spec_allows_score_improvement():
+    results = _results(strict=0.32, flexible=0.64, n=100)
+    report = evaluate_gate(results, GateSpec.load(DEFAULT_SPEC))
+    assert report.ok, report.render()
+
+
 def test_spec_save_load_round_trip(tmp_path):
     src = {
         "provenance": {"model": "Qwen/Qwen3-0.6B"},
