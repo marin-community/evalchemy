@@ -105,6 +105,7 @@ jobs:
         run: uv sync --no-dev --python 3.12 --extra serve-eval
 
       - name: Serve, evaluate, and gate
+        shell: bash
         run: |
           tpu_args=()
           if [ -n "${{ github.event.inputs.tpu || '' }}" ]; then
