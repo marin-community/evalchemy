@@ -10,7 +10,7 @@
     "num_fewshot": 5,
     "seed": 1234,
     "recorded_at": "2026-07-13T00:07:14.868428+00:00",
-    "note": "Coarse smoke gate seeded from a real run."
+    "note": "GSM8K smoke gate with floors calibrated from scheduled-run history."
   },
   "tasks": {
     "gsm8k": {
