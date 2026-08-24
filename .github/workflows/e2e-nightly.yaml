@@ -93,7 +93,7 @@ jobs:
         # marin-core can't co-resolve with evalchemy's deps, so it lives in its own
         # uv tool env. uv symlinks marin-serve but NOT iris, so put the tool's bin
         # dir on PATH -- teardown (the provider's finally + the cleanup step below)
-        # shells out to `iris job stop`, which otherwise wouldn't resolve.
+        # shells out to `iris job cancel`, which otherwise wouldn't resolve.
         # Floor = first nightly with the `marin-serve iris MODEL` CLI (marin#7452),
         # which also includes the WIF IAP-auth fix (marin#7144). `>=` still floats
         # to newer nightlies; it only prevents an incompatible pre-fix install.
@@ -140,10 +140,10 @@ jobs:
               || echo "WARNING: failed to collect logs for $id" >> e2e-out/iris-job.log
           fi
 
-      - name: Stop any Iris job the run left behind
+      - name: Cancel any Iris job the run left behind
         if: always()
-        # The provider stops its own job in a finally and marin-serve self-stops after
-        # --timeout-hours; this covers a hard-killed step. `iris job stop` accepts only
+        # The provider cancels its own job in a finally and marin-serve self-cancels after
+        # --timeout-hours; this covers a hard-killed step. `iris job cancel` accepts only
         # canonical /<user>/<job> ids: the provider exports the one it parsed as
         # IRIS_JOB_ID, and `job list` is the fallback when serving died before printing
         # it. --cluster is a top-level flag.
@@ -156,8 +156,8 @@ jobs:
           if [ -z "$id" ]; then
             echo "no leftover iris job found for evalchemy-e2e-qwen3-0-6b"
           else
-            echo "stopping $id"
-            iris --cluster marin job stop "$id" || echo "WARNING: failed to stop $id -- stop it manually"
+            echo "cancelling $id"
+            iris --cluster marin job cancel "$id" || echo "WARNING: failed to cancel $id -- cancel it manually"
           fi
 
       - uses: actions/upload-artifact@v4
