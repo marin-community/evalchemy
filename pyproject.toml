@@ -306,6 +306,7 @@ include = [
     "tests/e2e/**",
     "tests/drop/**",
     "tests/graders/**",
+    "tests/uncheatable_eval/**",
     "scripts/benchmarks/**",
     "packages/evalchemy-config/**",
     "scripts/ci/**",
