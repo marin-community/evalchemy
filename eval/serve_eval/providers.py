@@ -260,7 +260,7 @@ class MarinServeProvider(Provider):
         job_match = _JOB_LINE.match(line)
         if job_match:
             self._job_id = job_match.group("job")
-            # Hand the canonical id to later workflow steps: `iris job stop` rejects
+            # Hand the canonical id to later workflow steps: `iris job cancel` rejects
             # bare names, so an external cleanup step needs this exact id.
             github_env = os.environ.get("GITHUB_ENV")
             if github_env:
@@ -323,17 +323,17 @@ class MarinServeProvider(Provider):
             except OSError:
                 pass
             self._master_fd = None
-        outcome = self._stop_iris_job()
+        outcome = self._cancel_iris_job()
         PHASE_DURATION.record(
             time.monotonic() - started,
             attributes={"phase": "cleanup", "outcome": outcome},
         )
         return False
 
-    def _stop_iris_job(self) -> CleanupOutcome:
-        """Resolve and stop the served Iris job."""
-        # `iris job stop` accepts only canonical /<user>/<job> ids; a bare name makes
-        # it raise, which check=False would swallow -- resolve one before stopping.
+    def _cancel_iris_job(self) -> CleanupOutcome:
+        """Resolve and cancel the served Iris job."""
+        # `iris job cancel` accepts only canonical /<user>/<job> ids; a bare name makes
+        # it raise, which check=False would swallow -- resolve one before cancelling.
         resolution = (
             JobResolution(JobResolutionStatus.FOUND, self._job_id)
             if self._job_id
@@ -345,7 +345,7 @@ class MarinServeProvider(Provider):
             name = self.name or self.default_job_name(self.model)
             logger.warning(
                 "no canonical iris job id (marin-serve never printed one and `job list` shows no '%s'); "
-                "if a slice is still up, stop it manually: %s --cluster %s job stop /<user>/%s",
+                "if a slice is still up, cancel it manually: %s --cluster %s job cancel /<user>/%s",
                 name,
                 self.iris_bin,
                 self.cluster,
@@ -354,18 +354,18 @@ class MarinServeProvider(Provider):
             return CleanupOutcome.JOB_NOT_FOUND
         job_id = resolution.job_id
         assert job_id is not None
-        # NB: --cluster is a TOP-LEVEL iris flag (`iris --cluster X job stop <id>`),
-        # not a `job stop` option.
-        stop = [self.iris_bin, "--cluster", self.cluster, "job", "stop", job_id]
-        logger.info("stopping iris job: %s", " ".join(shlex.quote(c) for c in stop))
+        # NB: --cluster is a TOP-LEVEL iris flag (`iris --cluster X job cancel <id>`),
+        # not a `job cancel` option.
+        cancel = [self.iris_bin, "--cluster", self.cluster, "job", "cancel", job_id]
+        logger.info("cancelling iris job: %s", " ".join(shlex.quote(c) for c in cancel))
         try:
-            result = subprocess.run(stop, timeout=120, check=False)  # noqa: S603 - operator-supplied command
+            result = subprocess.run(cancel, timeout=120, check=False)  # noqa: S603 - operator-supplied command
             if result.returncode != 0:
-                error = RuntimeError(f"iris job stop exited with code {result.returncode}")
-                logger.warning("%s; stop it manually: %s", error, " ".join(stop))
+                error = RuntimeError(f"iris job cancel exited with code {result.returncode}")
+                logger.warning("%s; cancel it manually: %s", error, " ".join(cancel))
                 return CleanupOutcome.FAILED
         except (OSError, subprocess.SubprocessError) as error:
-            logger.warning("iris job stop failed (%s); stop it manually: %s", error, " ".join(stop))
+            logger.warning("iris job cancel failed (%s); cancel it manually: %s", error, " ".join(cancel))
             return CleanupOutcome.FAILED
         return CleanupOutcome.SUCCEEDED
 

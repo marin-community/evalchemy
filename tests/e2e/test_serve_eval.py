@@ -132,7 +132,7 @@ def test_shipped_config_parses():
     cfg = RunConfig.load(os.path.join(_HERE, "eval", "serve_eval", "configs", "qwen-tiny.yaml"))
     assert cfg.model == "Qwen/Qwen3-0.6B"
     assert cfg.apply_chat_template is True
-    assert cfg.tpu == "v6e-4,v5litepod-4,v5p-8,v4-8"
+    assert cfg.tpu == "v6e-4,v5litepod-4,v5p-8"
 
 
 # --- providers: readiness poll + factory fail-fast ----------------------------
@@ -322,15 +322,15 @@ def _cleanup_outcome(prov: MarinServeProvider) -> str:
     return cleanup["attributes"]["outcome"]
 
 
-def test_exit_stops_by_canonical_id_resolved_from_job_list(tmp_path):
-    # Regression: `iris job stop` rejects bare names, so when the job line was never
-    # parsed, teardown must resolve /<user>/<job> from `job list` -- not pass the name.
+def test_exit_cancels_by_canonical_id_resolved_from_job_list(tmp_path):
+    # Iris actions require canonical ids, so when the job line was never parsed,
+    # teardown must resolve /<user>/<job> from `job list` -- not pass the name.
     iris_bin, log = _fake_iris(tmp_path, "  job   /ci-user/evalchemy-e2e-qwen3-0-6b   RUNNING")
     prov = MarinServeProvider(model="Qwen/Qwen3-0.6B", iris_bin=iris_bin)
     prov.__exit__(None, None, None)
     calls = log.read_text().splitlines()
-    stop_calls = [c for c in calls if "job stop" in c]
-    assert stop_calls == ["--cluster marin job stop /ci-user/evalchemy-e2e-qwen3-0-6b"]
+    cancel_calls = [c for c in calls if "job cancel" in c]
+    assert cancel_calls == ["--cluster marin job cancel /ci-user/evalchemy-e2e-qwen3-0-6b"]
 
 
 @pytest.mark.parametrize(
@@ -343,7 +343,7 @@ def test_cleanup_reports_job_listing_outcome(tmp_path, list_output, list_exit_co
     outcome = _cleanup_outcome(prov)
     calls = log.read_text().splitlines()
     assert outcome == expected
-    assert not [c for c in calls if "job stop" in c]
+    assert not [c for c in calls if "job cancel" in c]
 
 
 def test_cleanup_reports_failed_when_job_listing_cannot_start(tmp_path):
