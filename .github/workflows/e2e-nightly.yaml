@@ -192,4 +192,6 @@ jobs:
             The nightly serves Qwen3-0.6B on a Marin TPU via marin-serve/Iris and gates
             scores with eval/regression. Separate cluster-side failures (Iris scheduling,
             marin-serve, IAP auth) from evalchemy regressions, and check whether a leftover
-            Iris job needs stopping.
+            Iris job needs stopping. A repository-local PR that fixes the tracked failure
+            must end its body with a Fixes link to this issue. Use Part of only when the
+            PR does not restore the lane.
