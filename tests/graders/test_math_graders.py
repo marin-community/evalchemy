@@ -11,6 +11,11 @@ answers.
 
 The single-case tests cover divergences a plausible fast path gets wrong, each
 observed against the reference rather than invented.
+
+The equivalence waivers (whitespace, ``\\dfrac``→``\\frac``,
+``$``/``\\text{...}`` wrappers, and similar reformulations) are deliberate
+divergences from the harness. The parity tests below scope them out, and the
+``*_equivalences`` tests pin the new behavior instead.
 """
 
 import json
@@ -62,26 +67,47 @@ def test_hendrycks_matches_harness_on_benchmark(benchmark):
 
 
 def test_minerva_matches_harness_on_benchmark(benchmark):
-    mismatched = [
-        record["reference_answer"]
-        for record in benchmark
-        if minerva_math.grade(record["problem"], record["minerva_solution"], record["reference_answer"])
-        != reference_minerva_grade(record["minerva_solution"], record["reference_answer"])
-    ]
-    assert mismatched == []
+    for record in benchmark:
+        got = minerva_math.grade(record["problem"], record["minerva_solution"], record["reference_answer"])
+        want = reference_minerva_grade(record["minerva_solution"], record["reference_answer"])
+        if got == want:
+            continue
+        # A comma list (bracketed or bare) has no faithful sympy reading: the
+        # reference parses it as its first element or scores it 0 outright, while
+        # the port compares the full list by normalized string. A disagreement is
+        # only acceptable on such an answer.
+        candidate = minerva_math.normalize_final_answer(
+            minerva_math.extract_answer(record["minerva_solution"])
+        )
+        gold = minerva_math.normalize_final_answer(record["reference_answer"])
+        assert minerva_math._LIST_COMMA.search(candidate) or minerva_math._LIST_COMMA.search(gold)
 
 
 def test_hendrycks_normalization_matches_harness_on_benchmark_answers(benchmark):
-    """strip_string is reproduced verbatim, so it must agree character for character."""
+    """``strip_string`` matches the harness except where a waiver applies."""
     for record in benchmark:
         answer = record["reference_answer"]
-        assert hendrycks_math.strip_string(answer) == reference_hendrycks.strip_string(answer)
+        got = hendrycks_math.strip_string(answer)
+        want = reference_hendrycks.strip_string(answer)
+        if got != want:
+            # The port unwraps ``\\text{...}`` to its content; the reference
+            # leaves the wrapper intact. That is the only normalization
+            # divergence on this fixture.
+            assert answer == "\\text{ellipse}"
+            assert got == "ellipse"
 
 
 def test_minerva_normalization_matches_harness_on_benchmark_answers(benchmark):
     for record in benchmark:
         answer = record["reference_answer"]
-        assert minerva_math.normalize_final_answer(answer) == reference_minerva.normalize_final_answer(answer)
+        got = minerva_math.normalize_final_answer(answer)
+        want = reference_minerva.normalize_final_answer(answer)
+        if got != want:
+            # The port reduces ``\\dfrac`` to ``\\frac``; the reference keeps the
+            # display variant. Those are the only normalization divergences on
+            # this fixture.
+            assert answer in {"\\dfrac{1}{12}", "\\dfrac{5}{162}"}
+            assert got == want.replace("\\dfrac", "\\frac")
         extracted = minerva_math.extract_answer(record["minerva_solution"])
         assert extracted == reference_minerva.get_unnormalized_answer(record["minerva_solution"])
 
@@ -89,10 +115,6 @@ def test_minerva_normalization_matches_harness_on_benchmark_answers(benchmark):
 @pytest.mark.parametrize(
     ("candidate", "reference"),
     [
-        # Bracketed comma lists are outside sympy's grammar, so the reference
-        # scores them 0 even against an identical string.
-        ("[2,5)", "[2,5)"),
-        ("(1,3)", "(1,3)"),
         # A comma before three digits is a thousands separator, so this parses.
         ("(100,101)", "(100,101)"),
         ("(100,101)", "100101"),
@@ -122,6 +144,164 @@ def test_minerva_normalization_matches_harness_on_benchmark_answers(benchmark):
 )
 def test_minerva_equivalence_matches_reference(candidate, reference):
     assert minerva_math.is_equiv(candidate, reference) is bool(reference_minerva.is_equiv(candidate, reference))
+
+
+def waiver_cases():
+    """The waiver patterns both graders must equate."""
+    return [
+        # Whitespace inside brackets.
+        ("(1, 2)", "(1,2)"),
+        ("( 1, 2 )", "(1,2)"),
+        # Whitespace between operations.
+        ("1 + 2i", "1+2i"),
+        ("x + y + z", "x+y + z"),
+        ("\\frac{a + b}{c}", "\\frac{a+b}{c}"),
+        # A leading decimal point.
+        (".12", "0.12"),
+        # Redundant ``$`` as a math wrapper or a dollar unit.
+        ("$2$", "2"),
+        ("$$2$$", "2"),
+        ("$2", "2"),
+        # An extra text wrapper.
+        ("\\text{Amy}", "Amy"),
+        ("$Amy$", "Amy"),
+        # LaTeX display-variant fractions.
+        ("\\dfrac{1}{2}", "\\frac{1}{2}"),
+        ("\\tfrac{3}{4}", "\\frac{3}{4}"),
+        # Multiple-choice letter formats.
+        ("$E$", "E"),
+        ("(E)", "E"),
+        ("$(E)$", "E"),
+        ("\\text{E}", "E"),
+        ("\\text{(E)}", "E"),
+        # Sizing bracket wrappers.
+        ("\\left[ X, Y \\right]", "[X, Y]"),
+        ("\\left(X, Y\\right)", "(X, Y)"),
+        ("\\left( X,  Y \\right)", "(X, Y)"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reference"),
+    [
+        *waiver_cases(),
+        # Fraction vs decimal; ``strip_string`` only special-cases the ``0.5``
+        # form, the rest go through the sympy fallback.
+        ("0.5", "\\frac{1}{2}"),
+        # A bare base subscript braces to ``_{base}``, and a missing base is
+        # not an error (``40`` == ``40_{9}``).
+        ("40_9", "40"),
+        ("40_{9}", "40"),
+        # A missing unit is not an error (``15`` == ``15 \mbox{ cm^2}``),
+        # whether the power sits inside or outside the unit wrapper.
+        ("15", "15\\mbox{ cm^2}"),
+        ("15", "15\\mbox{ cm}^2"),
+        # Thousands-separator commas collapse via sympy.
+        ("58500", "58,500"),
+        ("11111111100", "11,111,111,100"),
+        # General fraction vs decimal (not just the 0.5 special case).
+        ("0.09", "\\frac{9}{100}"),
+        ("5.5", "\\frac{11}{2}"),
+        # Order of products.
+        ("(b+2)(a+5)", "(a+5)(b+2)"),
+    ],
+)
+def test_hendrycks_equivalences(candidate, reference):
+    """Equivalent answers ``is_equiv`` accepts, via ``strip_string`` or sympy."""
+    assert hendrycks_math.is_equiv(candidate, reference)
+
+
+@pytest.mark.parametrize(
+    ("candidate", "reference"),
+    [
+        *waiver_cases(),
+        # A bracketed comma list is outside sympy's grammar, so the reference
+        # scores even an identical string 0; the port now compares two such
+        # lists by their normalized strings.
+        ("[2,5)", "[2,5)"),
+        # Commas that only group digits are separators.
+        ("1,000,000", "1000000"),
+        ("1,\\!000\\!000", "1000000"),
+        # Fraction vs decimal.
+        ("\\frac{1}{2}", "0.5"),
+        ("\\frac{3}{10}", "0.3"),
+        # Order of products.
+        ("(a+b)(b+c)", "(b+c)(a+b)"),
+        # A bare base subscript braces to ``_{base}``, and a missing base is
+        # not an error (``40`` == ``40_{9}``).
+        ("40_9", "40"),
+        ("40_{9}", "40"),
+        # A missing unit is not an error (``15`` == ``15 \mbox{ cm^2}``),
+        # whether the power sits inside or outside the unit wrapper.
+        ("15", "15\\mbox{ cm^2}"),
+        ("15", "15\\mbox{ cm}^2"),
+    ],
+)
+def test_minerva_equivalences(candidate, reference):
+    """``grade``'s normalize-then-compare path equates each reformulation."""
+    assert minerva_math.is_equiv(
+        minerva_math.normalize_final_answer(candidate),
+        minerva_math.normalize_final_answer(reference),
+    )
+
+
+def test_does_not_equate_different_bases():
+    """Two different present bases are distinct: ``40_8`` is not ``40_9``.
+
+    sympy's parser drops the subscript and would wrongly equate them; the string
+    fast path keeps them apart.
+    """
+    assert not hendrycks_math.is_equiv("40_8", "40_9")
+    assert not minerva_math.is_equiv(
+        minerva_math.normalize_final_answer("40_8"),
+        minerva_math.normalize_final_answer("40_9"),
+    )
+
+
+def test_minerva_keeps_full_equations_instead_of_collapsing_to_rhs():
+    """A short binding splits to its RHS; a full equation is left whole."""
+    assert minerva_math.normalize_final_answer("x = 5") == "5"
+    assert minerva_math.normalize_final_answer("2x - 11y + 10z + 13 = 0") == "2x-11y+10z+13=0"
+    assert minerva_math.normalize_final_answer("5x - 7y + 11z + 4 = 0") == "5x-7y+11z+4=0"
+
+
+def test_minerva_does_not_equate_different_equations():
+    """Two distinct ``... = 0`` equations are different planes, not both ``0``."""
+    solution = "Final Answer: The final answer is $2x - 11y + 10z + 13 = 0$."
+    assert minerva_math.grade("irrelevant problem text", solution, "5x - 7y + 11z + 4 = 0") == 0.0
+
+
+def test_hendrycks_sympy_fallback_skips_comma_lists():
+    """A comma list must not reach sympy, which parses it as its first element
+    (``\frac{3}{4}, -\frac{3}{4}`` -> ``\frac{3}{4}``)."""
+    assert not hendrycks_math.is_equiv("\\frac{3}{4}", "\\frac{3}{4}, -\\frac{3}{4}")
+    assert not hendrycks_math.is_equiv("1, -2", "-2, 1")
+
+
+def test_minerva_comma_list_skips_sympy():
+    """A bare comma list must not reach sympy, which reads only its first element.
+
+    ``-2`` must not equal ``-2,1`` (a list of two roots is not one root), and the
+    guard holds for any number of elements: a list of one length never equals a
+    list of another, while two identical lists do.
+    """
+    assert not minerva_math.is_equiv("-2", "-2,1")
+    assert not minerva_math.is_equiv("-2", "-2,1,3")
+    assert not minerva_math.is_equiv("-2,1", "-2,1,3")
+    assert minerva_math.is_equiv("-2,1", "-2,1")
+    assert minerva_math.is_equiv("-2,1,3", "-2,1,3")
+
+
+def test_minerva_equates_identical_matrix_answers():
+    """sympy cannot parse ``\\begin{...}``, so a matrix compares by string.
+
+    The reference scores a matrix 0 even against itself; the port scores an
+    identical matrix 1 while a different matrix or a scalar stays 0.
+    """
+    solution = "Final Answer: The final answer is $\\begin{pmatrix} -7 \\\\ 16 \\\\ 5 \\end{pmatrix}$."
+    assert minerva_math.grade("irrelevant problem text", solution, "\\begin{pmatrix} -7 \\\\ 16 \\\\ 5 \\end{pmatrix}") == 1.0
+    assert minerva_math.grade("irrelevant problem text", solution, "\\begin{pmatrix} -7 \\\\ 16 \\\\ 9 \\end{pmatrix}") == 0.0
+    assert minerva_math.grade("irrelevant problem text", solution, "5") == 0.0
 
 
 def test_hendrycks_strips_percent_escapes_created_by_an_earlier_removal():
