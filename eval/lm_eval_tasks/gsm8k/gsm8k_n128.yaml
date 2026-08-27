@@ -1,0 +1,15 @@
+# gsm8k sampled 128 times per question at temperature 0.7 for offline pass@k. lm-eval's
+# filter chain scores only the first completion (take_first), so the reported exact_match is
+# a single-sample accuracy; all 128 completions are kept in the --log_samples `resps` for
+# pass@k estimation downstream. `repeats` has no CLI override, hence this task file.
+include: gsm8k.yaml
+task: gsm8k_n128
+generation_kwargs:
+  until: !function eval.generation_stops.GSM8K_STOP_SEQUENCES
+  do_sample: true
+  temperature: 0.7
+  top_p: 1.0
+repeats: 128
+num_fewshot: 0
+metadata:
+  version: 3.2

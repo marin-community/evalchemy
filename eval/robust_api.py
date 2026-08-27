@@ -38,6 +38,7 @@ Import for side effect (idempotent):
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import Counter
 
@@ -341,7 +342,45 @@ def apply_openai_payload_controls() -> bool:
     return True
 
 
+_REQUEST_SEED_ENV = "EVALCHEMY_API_REQUEST_SEED"
+_REQUEST_SEED_PATCH_FLAG = "_marin_request_seed_patched"
+
+
+def apply_request_seed_policy() -> bool:
+    """Null the request seed on sampling payloads when ``EVALCHEMY_API_REQUEST_SEED=0``.
+
+    lm-eval writes its model-level seed into every ``local-completions`` / ``local-chat-completions``
+    payload. The JAX/TPU vLLM backend rejects a temperature>0 request whose seed is non-null
+    ("JAX does not support per-request seed"), so sampled runs (``repeats`` tasks, native pass@k)
+    cannot reach such endpoints unless the seed is an explicit null. Greedy payloads are untouched.
+    Sample diversity then comes from the server RNG; the run is not bit-reproducible.
+    """
+    try:
+        from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
+    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
+        logger.warning("request seed policy: could not import lm-eval adapter (%r); patch skipped.", exc)
+        return False
+
+    for cls in (LocalCompletionsAPI, LocalChatCompletion):
+        if cls.__dict__.get(_REQUEST_SEED_PATCH_FLAG, False):
+            continue
+        original = cls.__dict__.get("_create_payload")
+        if original is None:
+            continue
+
+        def _create_payload(self, *args, _original=original, **kwargs):
+            payload = _original(self, *args, **kwargs)
+            if os.environ.get(_REQUEST_SEED_ENV, "1") == "0" and (payload.get("temperature") or 0) > 0:
+                payload["seed"] = None
+            return payload
+
+        cls._create_payload = _create_payload
+        setattr(cls, _REQUEST_SEED_PATCH_FLAG, True)
+    return True
+
+
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
 _APPLIED = apply()
+_REQUEST_SEED_APPLIED = apply_request_seed_policy()
 _COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
 _OPENAI_PAYLOAD_CONTROLS_APPLIED = apply_openai_payload_controls()
