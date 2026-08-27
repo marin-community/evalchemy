@@ -297,7 +297,17 @@ class BaseBenchmark(ABC):
                     # classes (Local/OpenAI x completions/chat); the OpenAI* classes are the
                     # SUBCLASSES, so checking those two alone silently routes local-* endpoints
                     # into the Huggingface branch.
-                    instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
+                    #
+                    # A sampling request (temperature > 0) with a non-null seed is rejected by the
+                    # JAX/TPU vLLM backend ("JAX does not support per-request seed"). lm-eval writes
+                    # its own model-level seed into every payload, so the only way to send a seedless
+                    # request is an explicit null that overrides it. EVALCHEMY_API_REQUEST_SEED=0
+                    # selects that; sample diversity then comes from the server's RNG and the run is
+                    # not bit-reproducible.
+                    if os.environ.get("EVALCHEMY_API_REQUEST_SEED", "1") == "0":
+                        instance.args[1]["seed"] = None
+                    else:
+                        instance.args[1]["seed"] = seeds[0]
                 elif isinstance(model, _VLLM) or "UploadInstancesToHF" in model.__class__.__name__:
                     instance.args[1]["seed"] = seeds[0] if "seed" in instance.args[1] else None
                 else:  # Huggingface does not support seed
