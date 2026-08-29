@@ -1,7 +1,8 @@
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from evalchemy_config import EvaluationConfig
 from lm_eval.api.instance import Instance
 
 from eval.limits import (
@@ -13,7 +14,6 @@ from eval.limits import (
     safe_generation_cap,
 )
 from eval.task import BaseBenchmark
-from evalchemy_config import EvaluationConfig
 
 
 def _args(**overrides):
@@ -160,6 +160,21 @@ def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context
         gen_kwargs={"max_tokens": 128},
         context_length=None,
     )
+    assert kwargs == {"max_tokens": 128}
+    assert prompt_tokens is None
+    assert cap is None
+
+
+def test_endpoint_preflight_is_a_noop_when_api_adapter_has_no_tokenizer():
+    messages = [{"role": "user", "content": "one two"}]
+
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=None,
+        payloads=[messages],
+        gen_kwargs={"max_tokens": 128},
+        context_length=2048,
+    )
+
     assert kwargs == {"max_tokens": 128}
     assert prompt_tokens is None
     assert cap is None
