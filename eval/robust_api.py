@@ -52,10 +52,12 @@ from eval.limits import preflight_endpoint_generation
 logger = logging.getLogger("eval.robust_api")
 
 _PATCH_FLAG = "_marin_resilient_batch_patched"
+_ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
+_ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 
 
@@ -213,6 +215,71 @@ def apply() -> bool:
     return True
 
 
+def apply_rolling_loglikelihood_batching() -> bool:
+    """Batch rolling-likelihood windows across documents for API models."""
+    try:
+        from tqdm import tqdm
+
+        from lm_eval import utils
+        from lm_eval.models.api_models import TemplateAPI
+    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
+        logger.warning("rolling likelihood batching: could not import lm-eval symbols (%r); patch skipped.", exc)
+        return False
+
+    if getattr(TemplateAPI, _ROLLING_PATCH_FLAG, False):
+        return True
+
+    def loglikelihood_rolling(self, requests, disable_tqdm: bool = False):
+        loglikelihoods = []
+        pending_documents = []
+        pending_window_count = 0
+        target_window_count = max(1, self._concurrent * _ROLLING_WINDOWS_PER_CONCURRENT_SLOT)
+
+        def score_pending_documents():
+            nonlocal pending_documents, pending_window_count
+            if not pending_documents:
+                return
+
+            windows = [window for _, document_windows in pending_documents for window in document_windows]
+            window_scores = self._loglikelihood_tokens(windows, disable_tqdm=True)
+            offset = 0
+            for string, document_windows in pending_documents:
+                next_offset = offset + len(document_windows)
+                string_nll = sum(score for score, _ in window_scores[offset:next_offset])
+                loglikelihoods.append(string_nll)
+                self.cache_hook.add_partial("loglikelihood_rolling", (string,), string_nll)
+                offset = next_offset
+
+            pending_documents = []
+            pending_window_count = 0
+
+        for (string,) in tqdm([request.args for request in requests], disable=disable_tqdm):
+            document_windows = [
+                (None,) + window
+                for window in map(
+                    utils.make_disjoint_window,
+                    utils.get_rolling_token_windows(
+                        token_list=self.tok_encode(string),
+                        prefix_token=self.prefix_token_id,
+                        max_seq_len=self.max_length - 1,
+                        context_len=1,
+                    ),
+                )
+            ]
+            pending_documents.append((string, document_windows))
+            pending_window_count += len(document_windows)
+            if pending_window_count >= target_window_count:
+                score_pending_documents()
+
+        score_pending_documents()
+        return loglikelihoods
+
+    TemplateAPI.loglikelihood_rolling = loglikelihood_rolling
+    setattr(TemplateAPI, _ROLLING_PATCH_FLAG, True)
+    logger.info("rolling likelihood batching: patched TemplateAPI.loglikelihood_rolling.")
+    return True
+
+
 def apply_completion_normalization() -> bool:
     """Preserve reasoning content returned by lm-eval's chat-completions adapter."""
     try:
@@ -343,5 +410,6 @@ def apply_openai_payload_controls() -> bool:
 
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
 _APPLIED = apply()
+_ROLLING_LOGLIKELIHOOD_BATCHING_APPLIED = apply_rolling_loglikelihood_batching()
 _COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
 _OPENAI_PAYLOAD_CONTROLS_APPLIED = apply_openai_payload_controls()
