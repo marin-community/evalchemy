@@ -132,8 +132,8 @@ fork policy forbids us from touching.
 This repo is a fork of [mlfoundations/evalchemy](https://github.com/mlfoundations/evalchemy)
 and still tracks upstream. Most of `eval/` is upstream code.
 
-**Marin owns** `eval/serve_eval/`, `eval/regression/`, `eval/lm_eval_tasks/`,
-`eval/graders/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
+**Marin owns** `eval/serve_eval/`, `eval/regression/`, `eval/lm_eval_models/`,
+`eval/lm_eval_tasks/`, `eval/graders/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
 `tests/uncheatable_eval/`, `scripts/ci/`,
 `scripts/benchmarks/`, `packages/evalchemy-config/`, `infra/`, and the Marin workflows.
 New Marin work goes here, and the Marin standards (`infra/pre-commit.py`) apply here.

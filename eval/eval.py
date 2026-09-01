@@ -47,6 +47,7 @@ from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F4
 from eval.constants import LIST_OPENAI_MODELS
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
+from eval.lm_eval_models.text_completions import LocalTextCompletionsAPI  # noqa: F401
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import TaskManager as InstructTaskManager
 
