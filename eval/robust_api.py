@@ -310,15 +310,15 @@ def apply_openai_payload_controls() -> bool:
         return True
 
     original_completions_payload = LocalCompletionsAPI._create_payload
+    original_local_chat_payload = LocalChatCompletion._create_payload
+    original_openai_chat_payload = OpenAIChatCompletion._create_payload
 
-    def _payload_values(self, gen_kwargs, eos):
+    def _bounded_generation_kwargs(gen_kwargs, eos, default_until=None):
         request_kwargs = dict(gen_kwargs or {})
-        request_kwargs.pop("do_sample", False)
-        max_tokens = request_kwargs.pop("max_tokens", request_kwargs.pop("max_gen_toks", self._max_gen_toks))
-        temperature = request_kwargs.pop("temperature", 0)
-        until = request_kwargs.pop("until", [])
+        until = request_kwargs.get("until", default_until)
         stop = handle_stop_sequences(list(until) if isinstance(until, list) else until, eos)
-        return request_kwargs, max_tokens, temperature, bounded_request_stops(stop)
+        request_kwargs["until"] = bounded_request_stops(stop)
+        return request_kwargs
 
     def _create_local_payload(
         self,
@@ -329,20 +329,15 @@ def apply_openai_payload_controls() -> bool:
         eos=None,
         **kwargs,
     ):
-        assert isinstance(messages, list) and all(isinstance(message, dict) for message in messages), (
-            "LocalChatCompletion expects messages as list[dict]. "
-            "If you see this error, ensure --apply_chat_template is set or upstream code formats messages correctly."
+        return original_local_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
         )
-        request_kwargs, max_tokens, temperature, stop = _payload_values(self, gen_kwargs, eos)
-        return {
-            "messages": messages,
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stop": stop,
-            "seed": seed,
-            **request_kwargs,
-        }
 
     def _create_completions_payload(
         self,
@@ -363,16 +358,15 @@ def apply_openai_payload_controls() -> bool:
                 eos=eos,
                 **kwargs,
             )
-        request_kwargs, max_tokens, temperature, stop = _payload_values(self, gen_kwargs, eos)
-        return {
-            "prompt": messages,
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "stop": stop,
-            "seed": seed,
-            **request_kwargs,
-        }
+        return original_completions_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
 
     def _create_openai_payload(
         self,
@@ -383,20 +377,24 @@ def apply_openai_payload_controls() -> bool:
         eos="<|endoftext|>",
         **kwargs,
     ):
-        assert type(messages) is not str, "chat-completions require the --apply_chat_template flag."
-        request_kwargs, max_tokens, temperature, stop = _payload_values(self, gen_kwargs, eos)
-        payload = {
-            "messages": messages,
-            "model": self.model,
-            "max_completion_tokens": max_tokens,
-            "temperature": temperature,
-            "stop": stop,
-            "seed": seed,
-            **request_kwargs,
-        }
+        request_kwargs = _bounded_generation_kwargs(gen_kwargs, eos, ["<|endoftext|>"])
+        selected_stops = list(request_kwargs["until"])
+        temperature = request_kwargs.get("temperature", 0)
+        payload = original_openai_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=request_kwargs,
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
         if openai_model_requires_fixed_generation(self.model):
-            payload.pop("stop")
+            payload.pop("stop", None)
             payload["temperature"] = 1
+        else:
+            payload["stop"] = selected_stops
+            payload["temperature"] = temperature
         return payload
 
     LocalCompletionsAPI._create_payload = _create_completions_payload

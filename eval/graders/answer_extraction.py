@@ -1,8 +1,9 @@
 """Shared answer-extraction contracts for generated benchmark responses."""
 
 from collections.abc import Sequence
+from typing import TypedDict
 
-from lm_eval.tasks.hendrycks_math.utils import remove_boxed
+from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 
@@ -19,25 +20,30 @@ class MissingAnswerError(AnswerExtractionError):
     """The response contained no answer in the required syntax."""
 
 
+class ExtractionFailure(TypedDict):
+    """JSON representation of an answer-extraction error."""
+
+    type: str
+    message: str
+
+
+def extraction_failure(exc: AnswerExtractionError) -> ExtractionFailure:
+    """Return the stable artifact fields for an extraction error."""
+    return {"type": type(exc).__name__, "message": str(exc)}
+
+
 def _first_boxed_only_string(response: str) -> str | None:
     box_starts = [index for marker in ("\\boxed", "\\fbox") if (index := response.find(marker)) >= 0]
     if not box_starts:
         return None
     start = min(box_starts)
-    if response.startswith("\\boxed ", start):
-        return response[start:].split("$", maxsplit=1)[0]
-
-    depth = 0
-    opened = False
-    for index in range(start, len(response)):
-        if response[index] == "{":
-            depth += 1
-            opened = True
-        elif response[index] == "}":
-            depth -= 1
-            if opened and depth == 0:
-                return response[start : index + 1]
-    return None
+    later_box_starts = [
+        index
+        for marker in ("\\boxed", "\\fbox")
+        if (index := response.find(marker, start + 1)) >= 0
+    ]
+    end = min(later_box_starts) if later_box_starts else len(response)
+    return last_boxed_only_string(response[start:end])
 
 
 def extract_boxed_answer(

@@ -11,7 +11,12 @@ from lm_eval.tasks.hendrycks_math.utils import (
     is_equiv,
 )
 
-from eval.graders.answer_extraction import AnswerExtractionError, extract_boxed_answer
+from eval.graders.answer_extraction import (
+    AnswerExtractionError,
+    ExtractionFailure,
+    extract_boxed_answer,
+    extraction_failure,
+)
 from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.task import BaseBenchmark
 
@@ -481,12 +486,17 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         return out
 
     def extract_answer(self, output: str) -> str:
-        """Extract the first boxed answer before any later task boundary."""
+        """Extract the first boxed answer before any later task boundary.
+
+        Raises:
+            EmptyResponseError: The model response is empty.
+            MissingAnswerError: No complete boxed answer precedes the boundary.
+        """
         return extract_boxed_answer(output)
 
-    def _extract_for_scoring(self, output: str) -> tuple[str, Optional[Dict[str, str]]]:
+    def _extract_for_scoring(self, output: str) -> tuple[str, Optional[ExtractionFailure]]:
         """Score missing syntax as incorrect while retaining a structured error."""
         try:
             return self.extract_answer(output), None
         except AnswerExtractionError as exc:
-            return "", {"type": type(exc).__name__, "message": str(exc)}
+            return "", extraction_failure(exc)

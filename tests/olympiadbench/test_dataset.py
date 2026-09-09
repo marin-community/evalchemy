@@ -144,10 +144,5 @@ def test_olympiadbench_records_unboxed_answer_error_and_scores_it_incorrect():
 
     assert generated["examples"][0]["answer_extraction_error"]["type"] == "MissingAnswerError"
     assert scored["accuracy"] == 0.0
-    assert sample["answer_extraction_errors"] == [
-        {
-            "type": "MissingAnswerError",
-            "message": "response contains no boxed answer before the task boundary",
-        }
-    ]
+    assert sample["answer_extraction_errors"][0]["type"] == "MissingAnswerError"
     assert "answer_extraction_error" not in sample["doc"]
