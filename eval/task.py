@@ -68,18 +68,27 @@ class BaseBenchmark(ABC):
         # using a different output budget.
         self._evaluation_max_length: Optional[int] = None
         self._evaluation_max_tokens: Optional[int] = None
+        self._evaluation_limit: Optional[int] = None
 
-    def set_evaluation_limits(self, *, max_length: Optional[int] = None, max_tokens: Optional[int] = None) -> None:
+    def set_evaluation_limits(
+        self,
+        *,
+        max_length: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> None:
         """Attach Evalchemy's resolved limits to this custom benchmark.
 
         ``max_length`` is already supplied to the LM adapter through
         ``model_args``.  MMLU-Pro additionally owns its prompt-budgeting logic,
         so synchronize its legacy field here.  ``max_tokens`` is forced on every
         generated ``Instance`` in :meth:`_normalize_model_args`, including
-        benchmarks with a hard-coded per-task default.
+        benchmarks with a hard-coded per-task default. ``limit`` gives custom
+        benchmarks the same positive sample cap as native lm-eval tasks.
         """
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
+        self._evaluation_limit = limit if limit is not None and limit > 0 else None
         if max_length is not None and hasattr(self, "max_model_length"):
             self.max_model_length = max_length
         if max_tokens is not None:
@@ -92,6 +101,11 @@ class BaseBenchmark(ABC):
             config = getattr(self, "config", None)
             if config is not None and hasattr(config, "max_new_token"):
                 config.max_new_token = max_tokens
+
+    @property
+    def evaluation_limit(self) -> Optional[int]:
+        """Return the normalized sample cap for this custom benchmark."""
+        return self._evaluation_limit
 
     def attach_resume_manager(self, manager) -> None:
         """Attach a ResumeManager so ``compute`` skips already-done problems.
@@ -551,6 +565,7 @@ class BaseBenchmark(ABC):
             "response",
             "output",
             "correct",
+            "score",
         }
         return {key: value for key, value in example.items() if key not in generated_fields}
 
@@ -693,6 +708,7 @@ class TaskManager:
             instance.set_evaluation_limits(
                 max_length=self.benchmark_kwargs.get("max_length"),
                 max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                limit=self.benchmark_kwargs.get("limit"),
             )
 
             self.tasks[name] = benchmark_class
