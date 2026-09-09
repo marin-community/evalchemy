@@ -10,11 +10,6 @@ class _WhitespaceTokenizer:
     def encode(self, text, **kwargs):
         return text.split()
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
-        assert tokenize is True
-        assert add_generation_prompt is True
-        return [token for message in messages for token in message["content"].split()] + ["assistant"]
-
 
 class _Model:
     rank = 0

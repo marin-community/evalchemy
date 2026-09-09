@@ -8,6 +8,7 @@ from lm_eval.api.instance import Instance
 from eval.limits import (
     ContextWindowExceededError,
     MissingContextLengthError,
+    encoded_token_count,
     endpoint_prompt_token_count,
     ensure_context_window,
     format_key_value_args,
@@ -146,7 +147,7 @@ def test_shared_content_token_count_supports_text_and_messages():
 
     encode = lambda text: tokenizer.encode(text, add_special_tokens=False)
 
-    assert message_content_token_count(encode, "one two three") == 3
+    assert encoded_token_count(encode, "one two three") == 3
     assert (
         message_content_token_count(
             encode,

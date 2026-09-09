@@ -34,6 +34,8 @@ MRCR_BIN_UPPER_BOUNDS = (8_192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_28
 MRCR_NEEDLE_COUNTS = (2, 4, 8)
 MRCR_SAMPLES_PER_CELL = 100
 _OFFICIAL_TOKENIZER = tiktoken.get_encoding("o200k_base")
+PreparedPrompt = Union[List[Dict[str, str]], str]
+SelectedExample = tuple[Dict[str, Any], PreparedPrompt]
 
 
 def mrcr_bin(total_tokens: int) -> Optional[int]:
@@ -79,12 +81,35 @@ def score_response(response: str, answer: str, nonce: str) -> tuple[float, float
     return float(SequenceMatcher(None, response_body, answer_body).ratio()), 1.0
 
 
+def _cell_targets(desired_cells: List[tuple[int, int]], limit: Optional[int]) -> Dict[tuple[int, int], int]:
+    if limit is None:
+        return {cell: MRCR_SAMPLES_PER_CELL for cell in desired_cells}
+    complete_rounds, partial_round = divmod(limit, len(desired_cells))
+    return {cell: complete_rounds + (index < partial_round) for index, cell in enumerate(desired_cells)}
+
+
+def _interleave_cells(
+    cells: Dict[tuple[int, int], List[SelectedExample]],
+    desired_cells: List[tuple[int, int]],
+    limit: Optional[int],
+) -> List[SelectedExample]:
+    ordered: List[SelectedExample] = []
+    rounds = max((len(examples) for examples in cells.values()), default=0)
+    for position in range(rounds):
+        for cell in desired_cells:
+            if position < len(cells[cell]):
+                ordered.append(cells[cell][position])
+                if limit is not None and len(ordered) == limit:
+                    return ordered
+    return ordered
+
+
 class MRCRBenchmark(BaseBenchmark):
     """OpenAI's multi-round co-reference resolution long-context benchmark."""
 
     def __init__(
         self,
-        n_needles: Optional[Union[int, List[int]]] = None,
+        n_needles: Optional[List[int]] = None,
         debug: bool = False,
         seed: Optional[List[int]] = None,
         max_tokens: int = 4096,
@@ -95,8 +120,7 @@ class MRCRBenchmark(BaseBenchmark):
         if system_instruction is not None:
             raise ValueError("MRCR does not accept a system instruction because it changes the canonical prompt")
         super().__init__(logger=logger)
-        needles = [n_needles] if isinstance(n_needles, int) else n_needles
-        self.n_needles = tuple(needles) if needles is not None else MRCR_NEEDLE_COUNTS
+        self.n_needles = tuple(n_needles) if n_needles is not None else MRCR_NEEDLE_COUNTS
         unknown_needles = set(self.n_needles) - set(MRCR_NEEDLE_COUNTS)
         if unknown_needles:
             raise ValueError(f"unsupported MRCR needle counts: {sorted(unknown_needles)}")
@@ -115,30 +139,23 @@ class MRCRBenchmark(BaseBenchmark):
         )["train"]
         return iter(dataset)
 
-    def _selected_examples(self, model: LM) -> List[tuple[Dict[str, Any], Any]]:
-        context_length = require_context_length(self._evaluation_max_length, task_name="MRCR")
-        eligible_bins = tuple(upper for upper in MRCR_BIN_UPPER_BOUNDS if upper <= context_length)
-        desired_cells = [(upper, needles) for upper in eligible_bins for needles in self.n_needles]
-        if not desired_cells:
-            raise ContextWindowExceededError(context_length=context_length, required_tokens=8_192)
-
-        limit = 2 if self.debug and self.evaluation_limit is None else self.evaluation_limit
-        if limit is None:
-            cell_targets = {cell: MRCR_SAMPLES_PER_CELL for cell in desired_cells}
-        else:
-            complete_rounds, partial_round = divmod(limit, len(desired_cells))
-            cell_targets = {cell: complete_rounds + (index < partial_round) for index, cell in enumerate(desired_cells)}
-        cells: Dict[tuple[int, int], List[tuple[Dict[str, Any], Any]]] = defaultdict(list)
-
+    def _collect_cells(
+        self,
+        model: LM,
+        targets: Dict[tuple[int, int], int],
+    ) -> Dict[tuple[int, int], List[SelectedExample]]:
+        cells: Dict[tuple[int, int], List[SelectedExample]] = defaultdict(list)
         for source in self._load_rows():
             needles = int(source["n_needles"])
             if needles not in self.n_needles:
                 continue
             upper = mrcr_bin(official_token_count(source))
-            cell = (upper, needles)
-            if upper not in eligible_bins or cell not in desired_cells:
+            if upper is None:
                 continue
-            if len(cells[cell]) >= cell_targets[cell]:
+            cell = (upper, needles)
+            if cell not in targets:
+                continue
+            if len(cells[cell]) >= targets[cell]:
                 continue
 
             example = dict(source)
@@ -146,25 +163,29 @@ class MRCRBenchmark(BaseBenchmark):
             payload = self._prepare_messages(messages, model)
             example["mrcr_bin_upper"] = upper
             cells[cell].append((example, payload))
-            if all(len(cells[key]) >= target for key, target in cell_targets.items()):
+            if all(len(cells[key]) >= target for key, target in targets.items()):
                 break
+        return cells
 
-        shortfalls = {
-            cell: target - len(cells[cell]) for cell, target in cell_targets.items() if len(cells[cell]) < target
-        }
+    def _selected_examples(self, model: LM) -> List[SelectedExample]:
+        context_length = require_context_length(self._evaluation_max_length, task_name="MRCR")
+        eligible_bins = tuple(upper for upper in MRCR_BIN_UPPER_BOUNDS if upper <= context_length)
+        desired_cells = [(upper, needles) for upper in eligible_bins for needles in self.n_needles]
+        if not desired_cells:
+            raise ContextWindowExceededError(
+                context_length=context_length,
+                required_tokens=MRCR_BIN_UPPER_BOUNDS[0],
+            )
+
+        limit = self.evaluation_limit
+        if self.debug:
+            limit = min(limit, 2) if limit is not None else 2
+        targets = _cell_targets(desired_cells, limit)
+        cells = self._collect_cells(model, targets)
+        shortfalls = {cell: target - len(cells[cell]) for cell, target in targets.items() if len(cells[cell]) < target}
         if shortfalls:
             raise ValueError(f"pinned MRCR dataset could not fill requested cells: {shortfalls}")
-
-        ordered: List[tuple[Dict[str, Any], Any]] = []
-        rounds = max((len(examples) for examples in cells.values()), default=0)
-        for position in range(rounds):
-            for cell in desired_cells:
-                if position < len(cells[cell]):
-                    ordered.append(cells[cell][position])
-                    if limit is not None and len(ordered) == limit:
-                        break
-            if limit is not None and len(ordered) == limit:
-                break
+        ordered = _interleave_cells(cells, desired_cells, limit)
 
         self.logger.info(
             "Selected %d MRCR examples across %d cells",
@@ -231,12 +252,6 @@ class MRCRBenchmark(BaseBenchmark):
             metrics[metric] = sum(scores) / len(scores)
             metrics[f"{metric}_count"] = len(scores)
         return metrics
-
-    def extract_answer(self, output: str) -> str:
-        return str(output)
-
-    def _sample_prompt(self, example: Dict[str, Any]) -> str:
-        return str(example["prompt"])
 
     def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
         source = super()._sample_doc(example)

@@ -55,16 +55,10 @@ def encoded_token_count(encode: Callable[[str], Sequence[Any]], text: str) -> in
     return len(encode(text))
 
 
-def message_content_token_count(
-    encode: Callable[[str], Sequence[Any]], content: str | Sequence[Mapping[str, Any]]
-) -> int:
-    """Count text or message content without provider-specific chat framing."""
-    if isinstance(content, str):
-        return encoded_token_count(encode, content)
-    if not isinstance(content, Sequence):
-        raise TypeError(f"content must be text or a message sequence, got {type(content).__name__}")
+def message_content_token_count(encode: Callable[[str], Sequence[Any]], messages: Sequence[Mapping[str, Any]]) -> int:
+    """Count message content without provider-specific chat framing."""
     total = 0
-    for message in content:
+    for message in messages:
         if not isinstance(message, Mapping) or not isinstance(message.get("content"), str):
             raise TypeError("each message must be a mapping with string content")
         total += encoded_token_count(encode, message["content"])
