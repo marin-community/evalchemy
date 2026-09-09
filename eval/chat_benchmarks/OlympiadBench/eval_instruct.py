@@ -9,10 +9,15 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import (
     is_equiv,
-    last_boxed_only_string,
-    remove_boxed,
 )
 
+from eval.graders.answer_extraction import (
+    AnswerExtractionError,
+    ExtractionFailure,
+    extract_boxed_answer,
+    extraction_failure,
+)
+from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.task import BaseBenchmark
 
 # Same prompt shape as MATH500/AMC23/AIME24 (math reasoning benchmarks in this tree):
@@ -218,6 +223,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                             "max_new_tokens": self.max_new_tokens,
                             "temperature": 0.7,
                             "seed": self.seed,
+                            "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
@@ -234,7 +240,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         for example, output in zip(examples, outputs):
             example["model_output"] = output
-            example["model_answer"] = self.extract_answer(output)
+            example["model_answer"], example["answer_extraction_error"] = self._extract_for_scoring(output)
 
         return {"examples": examples}
 
@@ -261,6 +267,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                             "max_new_tokens": self.max_new_tokens,
                             "temperature": 0.7,
                             "seed": seed,
+                            "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
@@ -276,7 +283,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         for example, outputs in zip(examples, zip(*all_outputs)):
             example["model_outputs"] = list(outputs)
-            example["model_answers"] = [self.extract_answer(output) for output in outputs]
+            extracted = [self._extract_for_scoring(output) for output in outputs]
+            example["model_answers"] = [answer for answer, _ in extracted]
+            example["answer_extraction_errors"] = [error for _, error in extracted]
         return {"examples": examples}
 
     def _generate_pass_at_k(
@@ -306,6 +315,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                             "temperature": 0.7,
                             "top_p": 1.0,
                             "seed": seed,
+                            "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
@@ -324,7 +334,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             return None
         for example, outputs in zip(examples, per_problem):
             example["model_outputs"] = list(outputs)
-            example["model_answers"] = [self.extract_answer(o) for o in outputs]
+            extracted = [self._extract_for_scoring(output) for output in outputs]
+            example["model_answers"] = [answer for answer, _ in extracted]
+            example["answer_extraction_errors"] = [error for _, error in extracted]
         return {"examples": examples, "pass_at_k": True}
 
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
@@ -474,19 +486,17 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         return out
 
     def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be
-        in the format of \\boxed{answer}.
+        """Extract the first boxed answer before any later task boundary.
 
-        Uses the same logic as hendrycks_math.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \\boxed.
+        Raises:
+            EmptyResponseError: The model response is empty.
+            MissingAnswerError: No complete boxed answer precedes the boundary.
         """
+        return extract_boxed_answer(output)
+
+    def _extract_for_scoring(self, output: str) -> tuple[str, Optional[ExtractionFailure]]:
+        """Score missing syntax as incorrect while retaining a structured error."""
         try:
-            answer = remove_boxed(last_boxed_only_string(output))
-            return answer
-        except Exception:
-            return ""
+            return self.extract_answer(output), None
+        except AnswerExtractionError as exc:
+            return "", extraction_failure(exc)

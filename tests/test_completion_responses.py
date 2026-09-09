@@ -14,7 +14,7 @@ from eval.completion_response import (
 )
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
-from lm_eval.models.openai_completions import LocalChatCompletion, OpenAIChatCompletion
+from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
 
 
 def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
@@ -43,6 +43,27 @@ def _openai_payload(model: str) -> dict:
     )
 
 
+def _local_chat_payload(stops: list[str]) -> dict:
+    adapter = object.__new__(LocalChatCompletion)
+    adapter.model = "served-model"
+    adapter._max_gen_toks = 256
+    return adapter._create_payload(
+        messages=[{"role": "user", "content": "Question"}],
+        gen_kwargs={"max_gen_toks": 32, "until": stops},
+    )
+
+
+def _local_completions_payload(stops: list[str]) -> dict:
+    adapter = object.__new__(LocalCompletionsAPI)
+    adapter.model = "served-model"
+    adapter._max_gen_toks = 256
+    return adapter._create_payload(
+        messages="Question",
+        generate=True,
+        gen_kwargs={"max_gen_toks": 32, "until": stops},
+    )
+
+
 def test_gpt5_payload_uses_openai_provider_generation_controls():
     payload = _openai_payload("gpt-5")
 
@@ -54,8 +75,31 @@ def test_gpt5_payload_uses_openai_provider_generation_controls():
 def test_non_openai_alias_with_five_retains_configured_generation_controls(model):
     payload = _openai_payload(model)
 
-    assert payload["stop"][:2] == ["<|im_end|>", "\nQuestion:"]
+    assert payload["stop"][:2] == ["\nQuestion:", "<|im_end|>"]
     assert payload["temperature"] == 0
+
+
+def test_local_chat_payload_prioritizes_semantic_stops_within_openai_limit():
+    payload = _local_chat_payload(
+        [
+            "<|im_end|>",
+            "<|eot_id|>",
+            "<|end_of_text|>",
+            "<|endoftext|>",
+            "Question:",
+            "\nQ:",
+            "\n[Question]",
+            "\nUser:",
+        ]
+    )
+
+    assert payload["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
+
+
+def test_local_completions_payload_uses_the_same_bounded_stop_policy():
+    stops = ["<|im_end|>", "<|eot_id|>", "Question:", "\nQ:", "\n[Question]", "\nUser:"]
+
+    assert _local_completions_payload(stops)["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
 
 
 class _NativeBenchmark(BaseBenchmark):

@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
 
 # lm-eval-harness's gsm8k prompt, sent zero-shot through the chat template --
@@ -69,12 +70,12 @@ def load_static_records(filename: str) -> List[Dict[str, Any]]:
 
 
 def extract_flexible_answer(text: str) -> Optional[str]:
-    """lm-eval's flexible-extract: the last number-like token in the output.
+    """Return the last number-like token before a next-turn boundary.
 
     Faithful to the harness convention, a digitless token like ".." still
     counts as an (incorrect) answer rather than no-answer.
     """
-    matches = FLEXIBLE_RE.findall(text)
+    matches = FLEXIBLE_RE.findall(truncate_at_stop(text, GSM8K_STOP_SEQUENCES))
     if not matches:
         return None
     return matches[-1][0] or matches[-1][1]
@@ -131,7 +132,15 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
                 Instance(
                     "generate_until",
                     record,
-                    (templated, {"do_sample": False, "temperature": 0.0, "max_new_tokens": self.max_new_tokens}),
+                    (
+                        templated,
+                        {
+                            "do_sample": False,
+                            "temperature": 0.0,
+                            "max_new_tokens": self.max_new_tokens,
+                            "until": list(GSM8K_STOP_SEQUENCES),
+                        },
+                    ),
                     idx,
                 )
             )

@@ -47,6 +47,7 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
+from eval.generation_stops import bounded_request_stops
 from eval.limits import preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
@@ -293,18 +294,81 @@ def apply_completion_normalization() -> bool:
 
 
 def apply_openai_payload_controls() -> bool:
-    """Restrict OpenAI-specific generation controls to anchored OpenAI model names."""
+    """Bound API stops and restrict OpenAI-specific controls to OpenAI models."""
     try:
-        from lm_eval.models.openai_completions import OpenAIChatCompletion
+        from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
         from lm_eval.models.utils import handle_stop_sequences
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("OpenAI payload controls: could not import lm-eval adapter (%r); patch skipped.", exc)
         return False
 
-    if getattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False):
+    if (
+        getattr(LocalCompletionsAPI, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+        and getattr(LocalChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+        and getattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+    ):
         return True
 
-    def _create_payload(
+    original_completions_payload = LocalCompletionsAPI._create_payload
+    original_local_chat_payload = LocalChatCompletion._create_payload
+    original_openai_chat_payload = OpenAIChatCompletion._create_payload
+
+    def _bounded_generation_kwargs(gen_kwargs, eos, default_until=None):
+        request_kwargs = dict(gen_kwargs or {})
+        until = request_kwargs.get("until", default_until)
+        stop = handle_stop_sequences(list(until) if isinstance(until, list) else until, eos)
+        request_kwargs["until"] = bounded_request_stops(stop)
+        return request_kwargs
+
+    def _create_local_payload(
+        self,
+        messages,
+        generate=False,
+        gen_kwargs=None,
+        seed=1234,
+        eos=None,
+        **kwargs,
+    ):
+        return original_local_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
+
+    def _create_completions_payload(
+        self,
+        messages,
+        generate=False,
+        gen_kwargs=None,
+        seed=1234,
+        eos=None,
+        **kwargs,
+    ):
+        if not generate:
+            return original_completions_payload(
+                self,
+                messages,
+                generate=generate,
+                gen_kwargs=gen_kwargs,
+                seed=seed,
+                eos=eos,
+                **kwargs,
+            )
+        return original_completions_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
+
+    def _create_openai_payload(
         self,
         messages,
         generate=False,
@@ -313,31 +377,33 @@ def apply_openai_payload_controls() -> bool:
         eos="<|endoftext|>",
         **kwargs,
     ):
-        assert type(messages) is not str, "chat-completions require the --apply_chat_template flag."
-        request_kwargs = dict(gen_kwargs or {})
-        request_kwargs.pop("do_sample", False)
-        max_tokens = request_kwargs.pop("max_tokens", request_kwargs.pop("max_gen_toks", self._max_gen_toks))
-        temperature = request_kwargs.pop("temperature", 0)
-        stop = handle_stop_sequences(request_kwargs.pop("until", ["<|endoftext|>"]), eos)
-        if not isinstance(stop, (list, tuple)):
-            stop = [stop]
-        payload = {
-            "messages": messages,
-            "model": self.model,
-            "max_completion_tokens": max_tokens,
-            "temperature": temperature,
-            "stop": stop[:4],
-            "seed": seed,
-            **request_kwargs,
-        }
+        request_kwargs = _bounded_generation_kwargs(gen_kwargs, eos, ["<|endoftext|>"])
+        selected_stops = list(request_kwargs["until"])
+        temperature = request_kwargs.get("temperature", 0)
+        payload = original_openai_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=request_kwargs,
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
         if openai_model_requires_fixed_generation(self.model):
-            payload.pop("stop")
+            payload.pop("stop", None)
             payload["temperature"] = 1
+        else:
+            payload["stop"] = selected_stops
+            payload["temperature"] = temperature
         return payload
 
-    OpenAIChatCompletion._create_payload = _create_payload
+    LocalCompletionsAPI._create_payload = _create_completions_payload
+    LocalChatCompletion._create_payload = _create_local_payload
+    OpenAIChatCompletion._create_payload = _create_openai_payload
+    setattr(LocalCompletionsAPI, _OPENAI_PAYLOAD_PATCH_FLAG, True)
+    setattr(LocalChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, True)
     setattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, True)
-    logger.info("OpenAI payload controls: patched GPT-5 family matching.")
+    logger.info("OpenAI payload controls: patched bounded stop selection and GPT-5 family matching.")
     return True
 
 

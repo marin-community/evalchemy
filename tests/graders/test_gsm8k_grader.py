@@ -99,6 +99,12 @@ def test_flexible_extract_takes_the_last_number():
     assert gsm8k.extract_flexible("3 + 2 = 5, so he has 7 left.") == "7"
 
 
+def test_flexible_extract_ignores_numbers_in_a_later_question():
+    solution = "The answer is 12.\n[Question] Configure an ETL job for 8088 rows."
+
+    assert gsm8k.extract_flexible(solution) == "12."
+
+
 def test_flexible_extract_recovers_an_answer_strict_match_misses():
     assert gsm8k.grade("", "The answer is 18", "#### 18") == 0.0
     assert gsm8k.grade_flexible_extract("", "The answer is 18", "#### 18") == 1.0
