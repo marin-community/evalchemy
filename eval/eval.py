@@ -3,10 +3,10 @@ import concurrent.futures
 import difflib
 import json
 import logging
+import math
 import os
 import sys
 import time
-import math
 from typing import Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -36,8 +36,8 @@ from lm_eval.api.model import LM
 from lm_eval.loggers import EvaluationTracker, WandbLogger
 from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_commit_hash
 from lm_eval.tasks import TaskManager as PretrainTaskManager
-from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from lm_eval.utils import handle_non_serializable as _orig_handle
+from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
@@ -524,6 +524,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         annotator_model=args.annotator_model,
         max_length=limits.max_length,
         max_tokens=limits.max_tokens,
+        limit=getattr(args, "limit", None),
         debug=args.debug,
         seed=args.seed,
         task_list=task_list,

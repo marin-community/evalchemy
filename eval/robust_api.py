@@ -48,7 +48,7 @@ from eval.completion_response import (
     completion_response_from_chat_choice,
 )
 from eval.generation_stops import bounded_request_stops
-from eval.limits import preflight_endpoint_generation
+from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
 
@@ -98,11 +98,10 @@ def apply() -> bool:
         import asyncio
 
         from aiohttp import ClientSession, ClientTimeout, TCPConnector
-        from tenacity import retry, stop_after_attempt, wait_exponential
-        from tqdm.asyncio import tqdm_asyncio
-
         from lm_eval.models import api_models as _api
         from lm_eval.models.utils import chunks
+        from tenacity import retry, stop_after_attempt, wait_exponential
+        from tqdm.asyncio import tqdm_asyncio
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("robust_api: could not import lm-eval async deps (%r); patch skipped.", exc)
         return False
@@ -194,7 +193,9 @@ def apply() -> bool:
                             gen_kwargs=kwargs.get("gen_kwargs"),
                             context_length=self.max_length + 1 if self.max_length is not None else None,
                         )
-                    except Exception as exc:  # noqa: BLE001 - refuse deterministic overflow before transport
+                    except ContextWindowExceededError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - add request-preflight context
                         raise ValueError(f"endpoint context preflight failed: {exc}") from exc
                     if bounded is not None:
                         request_kwargs["gen_kwargs"] = bounded

@@ -1,19 +1,25 @@
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from evalchemy_config import EvaluationConfig
 from lm_eval.api.instance import Instance
 
 from eval.limits import (
+    ContextWindowExceededError,
+    MissingContextLengthError,
+    encoded_token_count,
     endpoint_prompt_token_count,
+    ensure_context_window,
     format_key_value_args,
+    message_content_token_count,
     parse_key_value_args,
     preflight_endpoint_generation,
+    require_context_length,
     resolve_evaluation_limits,
     safe_generation_cap,
 )
 from eval.task import BaseBenchmark
-from evalchemy_config import EvaluationConfig
 
 
 def _args(**overrides):
@@ -118,10 +124,11 @@ def test_custom_prompt_budget_field_receives_the_same_context_limit():
     benchmark.max_model_length = 4096
     benchmark.max_new_tokens = 99
 
-    benchmark.set_evaluation_limits(max_length=16384, max_tokens=1024)
+    benchmark.set_evaluation_limits(max_length=16384, max_tokens=1024, limit=7)
 
     assert benchmark.max_model_length == 16384
     assert benchmark.max_new_tokens == 1024
+    assert benchmark.evaluation_limit == 7
 
 
 class _Tokenizer:
@@ -133,6 +140,32 @@ class _Tokenizer:
         assert tokenize is True
         assert add_generation_prompt is True
         return list(range(sum(len(message["content"].split()) for message in messages) + 3))
+
+
+def test_shared_content_token_count_supports_text_and_messages():
+    tokenizer = _Tokenizer()
+
+    encode = lambda text: tokenizer.encode(text, add_special_tokens=False)
+
+    assert encoded_token_count(encode, "one two three") == 3
+    assert (
+        message_content_token_count(
+            encode,
+            [{"role": "user", "content": "one two"}, {"role": "assistant", "content": "three"}],
+        )
+        == 3
+    )
+
+
+def test_shared_context_contract_uses_typed_errors():
+    with pytest.raises(MissingContextLengthError):
+        require_context_length(None, task_name="long-context-task")
+
+    with pytest.raises(ContextWindowExceededError) as error:
+        ensure_context_window(context_length=128, prompt_tokens=100, output_tokens=20, safety_tokens=16)
+
+    assert error.value.required_tokens == 136
+    assert error.value.context_length == 128
 
 
 def test_endpoint_preflight_caps_the_historical_tier2_overflow_before_transport():
@@ -163,6 +196,18 @@ def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context
     assert kwargs == {"max_tokens": 128}
     assert prompt_tokens is None
     assert cap is None
+
+
+def test_endpoint_preflight_preserves_typed_context_overflow():
+    with pytest.raises(ContextWindowExceededError) as error:
+        preflight_endpoint_generation(
+            tokenizer=_Tokenizer(),
+            payloads=["token " * 100],
+            gen_kwargs={"max_tokens": 32},
+            context_length=128,
+        )
+
+    assert error.value.context_length == 128
 
 
 def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
