@@ -492,6 +492,7 @@ class BaseBenchmark(ABC):
             if "model_outputs" in example:  # native pass@k: list of completions
                 resps = list(example.get("model_outputs", []))
                 filtered = list(example.get("model_answers", []))
+                extraction_errors = example.get("answer_extraction_errors")
             else:  # single-sample path
                 response = next(
                     (
@@ -503,6 +504,8 @@ class BaseBenchmark(ABC):
                 )
                 resps = [response]
                 filtered = [example.get("model_answer", example.get("generation", response))]
+                extraction_error = example.get("answer_extraction_error")
+                extraction_errors = [extraction_error] if extraction_error is not None else None
 
             doc_hash = hash_string(_json.dumps(self._sample_doc(example), indent=2, default=_hns, ensure_ascii=False))
             samples.append(
@@ -514,6 +517,7 @@ class BaseBenchmark(ABC):
                     "arguments": [[prompt, gen_kwargs]],
                     "resps": [resps],
                     "filtered_resps": filtered,
+                    **({"answer_extraction_errors": extraction_errors} if extraction_errors is not None else {}),
                     "filter": "none",
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
@@ -540,6 +544,8 @@ class BaseBenchmark(ABC):
             "model_answer",
             "model_outputs",
             "model_answers",
+            "answer_extraction_error",
+            "answer_extraction_errors",
             "gpt_completion",
             "generation",
             "response",

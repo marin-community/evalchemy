@@ -11,6 +11,7 @@ from eval.chat_benchmarks.OlympiadBenchFull.eval_instruct import (
     OlympiadBenchFullBenchmark,
 )
 from eval.task import TaskManager
+from eval.graders.answer_extraction import EmptyResponseError, MissingAnswerError
 
 
 def test_olympiadbench_aliases_expose_the_legacy_subset_and_full_text_only_set():
@@ -102,3 +103,51 @@ def test_full_olympiadbench_reports_dataset_provenance_and_sample_standard_error
     assert results["dataset_num_samples"] == 3
     assert results["accuracy"] == 1 / 3
     assert results["accuracy_stderr"] == pytest.approx(1 / 3)
+
+
+def test_olympiadbench_does_not_extract_boxed_answer_from_repeated_question():
+    output = r"Solution. \boxed{17}" + "\nA.2 Solve the next part. " + r"Solution. \boxed{42}"
+
+    assert OlympiadBenchBenchmark().extract_answer(output) == "17"
+
+
+def test_olympiadbench_reports_unboxed_answer_as_typed_extraction_error():
+    with pytest.raises(MissingAnswerError):
+        OlympiadBenchBenchmark().extract_answer("The final answer is 17.")
+
+
+def test_olympiadbench_distinguishes_empty_response_from_missing_answer_syntax():
+    with pytest.raises(EmptyResponseError):
+        OlympiadBenchBenchmark().extract_answer("")
+
+
+def test_olympiadbench_records_unboxed_answer_error_and_scores_it_incorrect():
+    class Model:
+        rank = 0
+        world_size = 1
+
+        @staticmethod
+        def apply_chat_template(messages):
+            return messages
+
+        @staticmethod
+        def generate_until(requests):
+            assert requests[0].args[1]["until"]
+            return ["The final answer is 17."]
+
+    benchmark = OlympiadBenchBenchmark(n_repeat=1)
+    benchmark.load_questions = lambda: [{"problem": "Find x.", "answer": ["17"]}]
+
+    generated = benchmark.generate_responses(Model())
+    scored = benchmark.evaluate_responses(generated)
+    sample = benchmark.to_samples(generated, scored)[0]
+
+    assert generated["examples"][0]["answer_extraction_error"]["type"] == "MissingAnswerError"
+    assert scored["accuracy"] == 0.0
+    assert sample["answer_extraction_errors"] == [
+        {
+            "type": "MissingAnswerError",
+            "message": "response contains no boxed answer before the task boundary",
+        }
+    ]
+    assert "answer_extraction_error" not in sample["doc"]
