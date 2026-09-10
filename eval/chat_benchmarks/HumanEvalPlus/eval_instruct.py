@@ -112,7 +112,7 @@ Please continue to complete the function. You are not allowed to modify the give
                         )
                     )
                 self.logger.info("Generating responses for Human Eval Plus...")
-                outputs = self.compute(model, all_instances)
+                outputs = self.compute(model, all_instances, sample_namespace=lang)
 
                 if model.rank != 0:
                     continue

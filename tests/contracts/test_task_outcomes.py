@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from eval.contracts.task_outcome import EvaluationRunError, FailureCategory, TaskStatus
+from eval.contracts.sample_manifest import SampleManifest, SampleRequest
+from eval.contracts.task_outcome import EvaluationRunError, FailureCategory, TaskRoute, TaskStatus, lm_eval_task_outcome
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
@@ -137,6 +138,24 @@ def test_custom_task_zero_score_is_a_successful_typed_outcome():
     }
 
 
+def test_custom_task_rejects_scoring_coverage_drift():
+    benchmark = _Benchmark(
+        {"examples": [{"prompt": "a"}, {"prompt": "b"}]},
+        scored_result={"accuracy": 1.0, "scored_count": 1},
+    )
+    benchmark._sample_manifest = SampleManifest("contract_task")
+    entries = benchmark.sample_manifest.plan_batch(
+        [SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)]
+    )
+    benchmark.sample_manifest.mark_generated(entries, ["x", "y"])
+
+    with pytest.raises(EvaluationRunError) as raised:
+        _custom_evaluate(benchmark)
+
+    assert raised.value.outcomes[0].failure.category is FailureCategory.INCOMPLETE_EVALUATION
+    assert "manifest" in raised.value.outcomes[0].failure.message
+
+
 def test_custom_generation_exception_is_classified():
     benchmark = _Benchmark(None, generation_error=RuntimeError("endpoint stopped"))
 
@@ -176,6 +195,26 @@ def test_lm_eval_zero_score_is_a_successful_typed_outcome(monkeypatch):
     assert result["results"]["arc_easy"] == {"acc,none": 0.0}
     assert result["task_outcomes"]["arc_easy"]["status"] is TaskStatus.SUCCEEDED
     assert result["task_outcomes"]["arc_easy"]["scored_count"] == 1
+
+
+def test_lm_eval_outcome_rejects_result_count_that_disagrees_with_manifest():
+    manifest = SampleManifest("arc_easy")
+    entries = manifest.plan_batch([SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)])
+    manifest.mark_generated(entries, ["x", "y"])
+
+    outcome = lm_eval_task_outcome(
+        "arc_easy",
+        TaskRoute.LM_EVAL,
+        {
+            "results": {"arc_easy": {"acc,none": 1.0}},
+            "n-samples": {"arc_easy": {"original": 2, "effective": 1}},
+        },
+        manifest,
+    )
+
+    assert outcome.status is TaskStatus.FAILED
+    assert outcome.failure.category is FailureCategory.INCOMPLETE_EVALUATION
+    assert "manifest" in outcome.failure.message
 
 
 def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monkeypatch):

@@ -58,6 +58,7 @@ from eval.contracts.task_outcome import (
     validate_requested_outcomes,
     validate_result_document,
 )
+from eval.contracts.sample_manifest import SampleManifest
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
 from eval.resume import lm_eval_native
@@ -99,7 +100,13 @@ def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
         )
     metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
     return (
-        custom_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result, metrics),
+        custom_task_outcome(
+            work.task_name,
+            CHAT_BENCHMARK_ROUTE,
+            work.generation_result,
+            metrics,
+            work.benchmark.sample_manifest,
+        ),
         scored_result,
     )
 
@@ -412,7 +419,11 @@ def evaluate(
                 if not task_samples:
                     eval_logger.warning("log_samples: scored task %s produced no sample records", work.task_name)
                     continue
-                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(work.task_name, task_samples)
+                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
+                    work.task_name,
+                    task_samples,
+                    work.benchmark.sample_manifest,
+                )
                 results["results"][work.task_name] = without_embedded_samples(scored_result)
 
     # Run pretrain evaluations if any exist
@@ -420,10 +431,12 @@ def evaluate(
         # Route lm-eval through the shared resume wrapper.
         resume_factory = getattr(args, "resume_manager_factory", None)
         for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
+            sample_manifest = SampleManifest(pretrain_task)
             try:
                 pretrain_results = lm_eval_native.resume_simple_evaluate(
                     pretrain_evaluator.simple_evaluate,
                     resume_manager_factory=resume_factory,
+                    sample_manifest=sample_manifest,
                     model=args.model,
                     model_args=args.model_args,
                     tasks=[pretrain_task],
@@ -462,7 +475,12 @@ def evaluate(
                 )
                 continue
 
-            outcome = lm_eval_task_outcome(pretrain_task, LM_EVAL_ROUTE, pretrain_results)
+            outcome = lm_eval_task_outcome(
+                pretrain_task,
+                LM_EVAL_ROUTE,
+                pretrain_results,
+                sample_manifest,
+            )
             outcomes.append(outcome)
             if outcome.status is TaskStatus.FAILED:
                 continue
@@ -478,7 +496,11 @@ def evaluate(
                     if not task_samples:
                         eval_logger.warning("log_samples: scored task %s produced no sample records", task)
                         continue
-                    results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
+                    results.setdefault("samples", {})[task] = canonicalize_samples(
+                        task,
+                        task_samples,
+                        sample_manifest,
+                    )
 
     results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
     if getattr(lm, "rank", 0) == 0:

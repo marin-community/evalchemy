@@ -95,6 +95,7 @@ class AIWBenchmark(BaseBenchmark):
                         example["id"],
                     )
                 )
+                all_instances[-1].repeat_idx = t_id
 
             # Generate model responses
             outputs = self.compute(model, all_instances)
