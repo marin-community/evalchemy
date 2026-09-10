@@ -9,6 +9,8 @@ from enum import StrEnum
 from numbers import Real
 from typing import Any, Literal
 
+from .sample_manifest import SampleCoverageError, SampleManifest
+
 TASK_OUTCOME_SCHEMA_VERSION = 1
 
 
@@ -118,11 +120,22 @@ def custom_task_outcome(
     route: TaskRoute,
     generation_result: Any,
     scored_result: Any,
+    sample_manifest: SampleManifest | None = None,
 ) -> TaskOutcome:
     """Adapt a legacy custom benchmark result to the shared outcome contract."""
     generated_count = _record_count(generation_result)
     expected_count = _integer_field(generation_result, "total_examples")
     scored_count = _scored_count(scored_result, generated_count)
+    manifest_result = _complete_manifest_coverage(
+        task_name,
+        route,
+        sample_manifest,
+        {"scored": _reported_scored_count(scored_result)},
+    )
+    if isinstance(manifest_result, TaskOutcome):
+        return manifest_result
+    if manifest_result is not None:
+        expected_count, generated_count, scored_count = manifest_result
     return _adapt_completed_outcome(
         task_name,
         route,
@@ -133,7 +146,12 @@ def custom_task_outcome(
     )
 
 
-def lm_eval_task_outcome(task_name: str, route: TaskRoute, result: Any) -> TaskOutcome:
+def lm_eval_task_outcome(
+    task_name: str,
+    route: TaskRoute,
+    result: Any,
+    sample_manifest: SampleManifest | None = None,
+) -> TaskOutcome:
     """Adapt one lm-eval invocation to the shared outcome contract."""
     if not isinstance(result, Mapping):
         return TaskOutcome.failed(
@@ -165,12 +183,24 @@ def lm_eval_task_outcome(task_name: str, route: TaskRoute, result: Any) -> TaskO
             )
         metrics = groups[task_name]
     expected_count, scored_count = lm_eval_task_counts(task_name, result)
+    manifest_result = _complete_manifest_coverage(
+        task_name,
+        route,
+        sample_manifest,
+        {"expected": expected_count, "scored": scored_count},
+    )
+    if isinstance(manifest_result, TaskOutcome):
+        return manifest_result
+    if manifest_result is not None:
+        expected_count, generated_count, scored_count = manifest_result
+    else:
+        generated_count = scored_count
     return _adapt_completed_outcome(
         task_name,
         route,
         metrics,
         expected_count=expected_count,
-        generated_count=scored_count,
+        generated_count=generated_count,
         scored_count=scored_count,
     )
 
@@ -360,9 +390,7 @@ def _outcome_contract_violation(outcome: TaskOutcome) -> TaskFailure | None:
     if not _contains_finite_number(outcome.metrics):
         return TaskFailure(FailureCategory.INCOMPLETE_EVALUATION, "task returned no finite numeric metrics")
     if 0 in {
-        count
-        for count in (outcome.expected_count, outcome.generated_count, outcome.scored_count)
-        if count is not None
+        count for count in (outcome.expected_count, outcome.generated_count, outcome.scored_count) if count is not None
     }:
         return TaskFailure(FailureCategory.INCOMPLETE_EVALUATION, "task reported zero sample coverage")
     return None
@@ -410,12 +438,58 @@ def _record_count(result: Any) -> int | None:
 
 
 def _scored_count(scored_result: Any, generated_count: int | None) -> int | None:
+    reported = _reported_scored_count(scored_result)
+    return reported if reported is not None else generated_count
+
+
+def _reported_scored_count(scored_result: Any) -> int | None:
     if isinstance(scored_result, Mapping):
-        for key in ("scored_count", "num_examples", "total_examples", "sample_len", "total_samples"):
+        for key in (
+            "scored_count",
+            "num_examples",
+            "total_examples",
+            "num_questions",
+            "sample_len",
+            "total_samples",
+        ):
             count = _integer_field(scored_result, key)
             if count is not None:
                 return count
-    return generated_count
+    return None
+
+
+def _complete_manifest_coverage(
+    task_name: str,
+    route: TaskRoute,
+    sample_manifest: SampleManifest | None,
+    reported_counts: Mapping[str, int | None],
+) -> tuple[int, int, int] | TaskOutcome | None:
+    if sample_manifest is None or not sample_manifest.expected_sample_count:
+        return None
+    try:
+        sample_manifest.validate_generated()
+        generated_count = sample_manifest.generated_sample_count
+        for label, reported in reported_counts.items():
+            if reported is not None and reported != generated_count:
+                raise SampleCoverageError(
+                    f"{task_name}: evaluator reported {reported} {label} samples but the "
+                    f"manifest contains {generated_count} generated samples"
+                )
+        sample_manifest.mark_scored(reported_counts.get("scored"))
+        sample_manifest.validate_scored()
+    except SampleCoverageError as exc:
+        return TaskOutcome.failed(
+            task_name,
+            route,
+            FailureCategory.INCOMPLETE_EVALUATION,
+            str(exc),
+            exception=exc,
+        )
+    return (
+        sample_manifest.expected_sample_count,
+        generated_count,
+        sample_manifest.scored_sample_count,
+    )
 
 
 def _integer_field(value: Any, key: str) -> int | None:

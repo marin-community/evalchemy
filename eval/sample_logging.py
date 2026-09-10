@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from eval.completion_response import CompletionText
+from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
 from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
@@ -20,13 +21,28 @@ def is_scored_result(result: Any) -> bool:
     return isinstance(result, Mapping) and bool(result) and "error" not in result
 
 
-def canonicalize_samples(task_name: str, samples: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def canonicalize_samples(
+    task_name: str,
+    samples: Sequence[Mapping[str, Any]],
+    sample_manifest: SampleManifest | None = None,
+) -> list[dict[str, Any]]:
     """Add the stable envelope to lm-eval-compatible sample records.
 
     Existing lm-eval fields are retained unchanged.  The envelope makes task
     identity and schema version explicit, while filling fields that custom
     benchmark adapters must provide for tracker-compatible JSONL.
     """
+    manifest_entries = ()
+    if sample_manifest is not None and sample_manifest.expected_sample_count:
+        manifest_entries = sample_manifest.sample_entries(namespace=task_name)
+        if not manifest_entries and sample_manifest.task_name == task_name:
+            manifest_entries = sample_manifest.sample_entries()
+        if len(manifest_entries) != len(samples):
+            raise SampleCoverageError(
+                f"{task_name}: sample logger received {len(samples)} records but the manifest "
+                f"contains {len(manifest_entries)} samples"
+            )
+
     canonical: list[dict[str, Any]] = []
     for doc_id, sample in enumerate(samples):
         record = dict(sample)
@@ -39,6 +55,14 @@ def canonicalize_samples(task_name: str, samples: Sequence[Mapping[str, Any]]) -
         record.setdefault("resps", [])
         record.setdefault("filtered_resps", [])
         record.setdefault("filter", "none")
+        if manifest_entries:
+            entry = manifest_entries[doc_id]
+            record["sample_id"] = entry.sample_id
+            record["source_id"] = entry.source_id
+            record["sample_ordinal"] = entry.ordinal
+            record["sample_namespace"] = entry.namespace
+            record["sample_shard"] = entry.shard
+            record["sample_repeat"] = entry.repeat
         completion_artifacts = _completion_artifacts(record["resps"])
         if completion_artifacts is not None:
             record["completion_responses"] = completion_artifacts

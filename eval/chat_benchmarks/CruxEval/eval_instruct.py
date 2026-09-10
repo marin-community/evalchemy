@@ -229,7 +229,7 @@ class CruxEvalBenchmark(BaseBenchmark):
 
                 self.logger.info(f"Generating responses for CruxEval-{task}...")
 
-                outputs = self.compute(model, all_instances)
+                outputs = self.compute(model, all_instances, sample_namespace=task)
                 if model.rank != 0:
                     continue
 

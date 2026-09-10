@@ -144,9 +144,10 @@ class MTBenchBenchmark(BaseBenchmark):
                                     "temperature": temperature,
                                 },
                             ),
-                            q_idx,
+                            question["question_id"],
                         )
                     )
+                    batch_instances[-1].sample_ordinal = q_idx
 
             # Generate responses
             if batch_instances:

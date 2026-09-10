@@ -32,6 +32,13 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.sample_manifest import (
+    DEFAULT_SAMPLE_NAMESPACE,
+    SampleEntry,
+    SampleManifest,
+    SampleRequest,
+)
+
 
 class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
@@ -69,6 +76,12 @@ class BaseBenchmark(ABC):
         self._evaluation_max_length: Optional[int] = None
         self._evaluation_max_tokens: Optional[int] = None
         self._evaluation_limit: Optional[int] = None
+        self._sample_manifest = SampleManifest(self.__class__.__name__.replace("Benchmark", ""))
+
+    @property
+    def sample_manifest(self) -> SampleManifest:
+        """Return this benchmark run's shared sample lifecycle ledger."""
+        return self._sample_manifest
 
     def set_evaluation_limits(
         self,
@@ -196,7 +209,25 @@ class BaseBenchmark(ABC):
         per_sample_instances: List[List[Instance]] = []
         for sample_idx in range(n):
             seed = [s + sample_idx for s in base_seed]
-            per_sample_instances.append(build_instances(sample_idx, seed))
+            sample_instances = build_instances(sample_idx, seed)
+            for ordinal, instance in enumerate(sample_instances):
+                instance.sample_ordinal = ordinal
+                instance.sample_repeat = getattr(instance, "repeat_idx", sample_idx)
+            per_sample_instances.append(sample_instances)
+
+        passk_entries = [
+            self.sample_manifest.plan_batch(
+                [
+                    SampleRequest(
+                        source_id=instance.idx,
+                        ordinal=instance.sample_ordinal,
+                        repeat=instance.sample_repeat,
+                    )
+                    for instance in sample_instances
+                ]
+            )
+            for sample_idx, sample_instances in enumerate(per_sample_instances)
+        ]
 
         num_problems = len(per_sample_instances[0]) if per_sample_instances else 0
         # batch_idx -> list of problem indices it covers
@@ -211,8 +242,14 @@ class BaseBenchmark(ABC):
         skipped = 0
         for batch_idx, problem_idxs in enumerate(batches):
             unit = {"task": task_name, "batch_idx": batch_idx}
+            batch_entries = [
+                passk_entries[sample_idx][problem_idx]
+                for sample_idx in range(n)
+                for problem_idx in problem_idxs
+            ]
             if manager.should_skip(unit):
                 payload = restored[canonical_unit_key(unit)]
+                self.sample_manifest.validate_prior_entries([payload], batch_entries)
                 # payload["outputs"] is keyed by problem index (as strings in JSON)
                 stored = payload["outputs"]
                 for pidx in problem_idxs:
@@ -236,7 +273,16 @@ class BaseBenchmark(ABC):
             if model.rank == 0:
                 for pidx in problem_idxs:
                     per_problem_outputs[pidx] = batch_per_problem[pidx]
-                manager.record(unit, {"outputs": {str(pidx): batch_per_problem[pidx] for pidx in problem_idxs}})
+                manager.record(
+                    unit,
+                    {
+                        "outputs": {
+                            str(pidx): batch_per_problem[pidx]
+                            for pidx in problem_idxs
+                        },
+                        "samples": [entry.to_dict() for entry in batch_entries],
+                    },
+                )
 
         if skipped:
             self.logger.info(
@@ -247,7 +293,13 @@ class BaseBenchmark(ABC):
         manager.finalize()
         if model.rank != 0:
             return None
-        return [list(p) for p in per_problem_outputs]
+        completed = [list(problem_outputs) for problem_outputs in per_problem_outputs]
+        for sample_idx, entries in enumerate(passk_entries):
+            self.sample_manifest.mark_generated(
+                entries,
+                [problem_outputs[sample_idx] for problem_outputs in completed],
+            )
+        return completed
 
     def _passk_batch_size(self) -> int:
         """Fingerprinted pass@k problem-batch size ``B``. Defaults to all problems in one batch.
@@ -349,20 +401,24 @@ class BaseBenchmark(ABC):
         return messages
 
     def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
-        """Resume unit key for one instance: ``{task, problem_idx}`` (+``repeat_idx``).
+        """Return the legacy resume key, preserving opaque source IDs.
 
-        ``instance.idx`` is the problem index (the 4th positional arg at instance
-        construction). AIME24's ``n_repeat`` loop and the native pass@k scaffold set
-        ``instance.repeat_idx`` per pass, so each (problem, repeat) is its own unit —
-        giving per-seed resume granularity (scope doc, Stage 3a).
+        New records use :class:`SampleEntry` IDs. This helper remains for reading
+        existing manifests and intentionally no longer coerces IDs to integers.
         """
-        key: Dict[str, Any] = {"task": task_name, "problem_idx": int(instance.idx)}
+        key: Dict[str, Any] = {"task": task_name, "problem_idx": instance.idx}
         repeat_idx = getattr(instance, "repeat_idx", None)
         if repeat_idx is not None:
-            key["repeat_idx"] = int(repeat_idx)
+            key["repeat_idx"] = repeat_idx
         return key
 
-    def compute(self, model: LM, inputs: List[Instance], do_slice: bool = True) -> List[str]:
+    def compute(
+        self,
+        model: LM,
+        inputs: List[Instance],
+        do_slice: bool = True,
+        sample_namespace: str = DEFAULT_SAMPLE_NAMESPACE,
+    ) -> List[str]:
         inputs = self._normalize_model_args(model, inputs)
 
         # Add task_name to each instance
@@ -370,16 +426,40 @@ class BaseBenchmark(ABC):
         for instance in inputs:
             instance.task_name = task_name
 
+        world_size = int(getattr(model, "world_size", 1))
+        entries = self.sample_manifest.plan_batch(
+            [
+                SampleRequest(
+                    source_id=instance.idx,
+                    ordinal=getattr(instance, "sample_ordinal", ordinal),
+                    namespace=sample_namespace,
+                    shard=ordinal % world_size if world_size > 1 and do_slice else None,
+                    repeat=getattr(
+                        instance,
+                        "repeat_idx",
+                        getattr(instance, "sample_repeat", None),
+                    ),
+                )
+                for ordinal, instance in enumerate(inputs)
+            ]
+        )
+
         if model.world_size > 1 and do_slice:
             prompts = list(islice(inputs, model.rank, len(inputs), model.world_size))
+            prompt_entries = list(islice(entries, model.rank, len(entries), model.world_size))
         else:
             prompts = inputs
+            prompt_entries = list(entries)
 
-        results = self._generate_with_resume(model, task_name, prompts)
+        results = self._generate_with_resume(model, task_name, prompts, prompt_entries)
         if model.world_size > 1:
             all_results = [None for _ in range(model.world_size)]
-
             dist.all_gather_object(all_results, results)
+
+            all_entries = None
+            if not do_slice:
+                all_entries = [None for _ in range(model.world_size)]
+                dist.all_gather_object(all_entries, prompt_entries)
 
             # Merge results from all ranks
             length = sum(len(res) for res in all_results if res is not None)
@@ -388,11 +468,29 @@ class BaseBenchmark(ABC):
                 if sub_results is not None:
                     for i, item in enumerate(sub_results):
                         merged[i * model.world_size + rank] = item
+            merged_entries = entries
+            if all_entries is not None:
+                merged_entries = []
+                for rank, rank_entries in enumerate(all_entries):
+                    if rank_entries is not None:
+                        self.sample_manifest.adopt_entries(rank_entries)
+                        for i, entry in enumerate(rank_entries):
+                            position = i * model.world_size + rank
+                            if position >= len(merged_entries):
+                                merged_entries.extend([None] * (position - len(merged_entries) + 1))
+                            merged_entries[position] = entry
+            self.sample_manifest.mark_generated(merged_entries, merged)
             return merged
         else:
             return results
 
-    def _generate_with_resume(self, model: LM, task_name: str, prompts: List[Instance]) -> List[str]:
+    def _generate_with_resume(
+        self,
+        model: LM,
+        task_name: str,
+        prompts: List[Instance],
+        entries: List[SampleEntry],
+    ) -> List[str]:
         """Generate over this rank's prompt slice, skipping resume-done units.
 
         When no manager is attached (the default) this is exactly
@@ -414,7 +512,9 @@ class BaseBenchmark(ABC):
         # the ``{task, batch_idx}`` unit only (decision #4). When suspended this is a
         # plain generate, exactly as if no manager were attached.
         if manager is None or getattr(self, "_suspend_resume", False):
-            return model.generate_until(prompts)
+            outputs = model.generate_until(prompts)
+            self.sample_manifest.mark_generated(entries, outputs)
+            return outputs
 
         # Ensure the resume decision (fresh / resume / refuse) is made before we
         # consult done units; ``decide`` is idempotent and is the place a material
@@ -422,17 +522,23 @@ class BaseBenchmark(ABC):
         manager.decide()
 
         restored = manager.restore()  # {unit_key: payload} for completed units
-        keys = [self._unit_key(task_name, inst) for inst in prompts]
+        self.sample_manifest.validate_prior_entries(list(restored.values()), entries)
+        keys = [entry.resume_unit(task_name) for entry in entries]
 
         remaining_instances: List[Instance] = []
         remaining_positions: List[int] = []
         results: List[Optional[str]] = [None] * len(prompts)
         skipped = 0
-        from eval.resume import canonical_unit_key
+        from eval.resume import find_restored_payload
 
         for pos, (inst, unit) in enumerate(zip(prompts, keys)):
-            if manager.should_skip(unit):
-                results[pos] = restored[canonical_unit_key(unit)]["output"]
+            restored_match = find_restored_payload(
+                restored,
+                [unit, self._unit_key(task_name, inst)],
+            )
+            if restored_match is not None:
+                _, payload = restored_match
+                results[pos] = payload["output"]
                 skipped += 1
             else:
                 remaining_instances.append(inst)
@@ -446,11 +552,16 @@ class BaseBenchmark(ABC):
 
         if remaining_instances:
             new_outputs = model.generate_until(remaining_instances)
+            self.sample_manifest.validate_output_count(len(remaining_instances), new_outputs)
             for pos, inst, output in zip(remaining_positions, remaining_instances, new_outputs):
                 results[pos] = output
-                manager.record(self._unit_key(task_name, inst), {"output": output})
+                manager.record(
+                    keys[pos],
+                    {"output": output, "sample": entries[pos].to_dict()},
+                )
 
         manager.finalize()
+        self.sample_manifest.mark_generated(entries, results)
         return results
 
     @abstractmethod
