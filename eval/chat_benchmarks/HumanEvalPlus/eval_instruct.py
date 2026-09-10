@@ -7,7 +7,7 @@ import logging
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from human_eval_plus.evaluation import evaluate_functional_correctness
+from .human_eval_plus.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
 from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
 from eval.task import BaseBenchmark
