@@ -3,7 +3,9 @@
 """Regression coverage for functional-correctness sandbox launch isolation."""
 
 import json
+import multiprocessing
 import os
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -79,17 +81,18 @@ def test_functional_correctness_checks_run_outside_evaluator_process(
 )
 def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, module_path, is_mbpp):
     module = __import__(module_path, fromlist=["evaluation"])
-    problem_file, input_file, _sample = _write_evaluation_fixture(tmp_path, is_mbpp)
+    _problem_file, _input_file, sample = _write_evaluation_fixture(tmp_path, is_mbpp)
+    sample["test_code"] = "def answer():\n    return 42\nassert answer() == 42"
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=1, mp_context=context) as executor:
+        result = executor.submit(
+            module.check_correctness,
+            "python/0",
+            sample,
+            "python",
+            1.0,
+            str(tmp_path),
+            0,
+        ).result()
 
-    result = module.evaluate_functional_correctness(
-        input_file=str(input_file),
-        tmp_dir=str(tmp_path),
-        n_workers=1,
-        timeout=1.0,
-        problem_file=str(problem_file),
-        is_mbpp=is_mbpp,
-        k=[1],
-    )
-
-    assert result["scored_count"] == 1
-    assert "pass@1" in result
+    assert result["passed"], result["result"]
