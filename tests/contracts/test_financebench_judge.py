@@ -40,6 +40,8 @@ class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
         self.requests += 1
         if self.requests == 1:
             choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")
+        elif self.requests == 2:
+            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="stop")
         else:
             choice = SimpleNamespace(message=SimpleNamespace(content="correct"), finish_reason="stop")
         return SimpleNamespace(choices=[choice])
