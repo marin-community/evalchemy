@@ -32,9 +32,17 @@ class _FailingAsyncOpenAI(_FakeAsyncOpenAI):
 
 
 class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.requests = 0
+
     async def create(self, **kwargs):
-        content = "correct" if kwargs["max_tokens"] >= 128 else ""
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+        self.requests += 1
+        if self.requests == 1:
+            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")
+        else:
+            choice = SimpleNamespace(message=SimpleNamespace(content="correct"), finish_reason="stop")
+        return SimpleNamespace(choices=[choice])
 
 
 def test_financebench_judge_uses_dedicated_endpoint_and_key(monkeypatch):

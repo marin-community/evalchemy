@@ -41,8 +41,8 @@ _LABEL_PATTERN = re.compile(r"correct|incorrect|not_attempted", re.IGNORECASE)
 # bound, so a modest semaphore keeps throughput high without tripping rate limits.
 DEFAULT_NUM_WORKERS = 16
 # Reasoning models account for hidden reasoning and visible content against the same
-# completion budget. Sixteen tokens can end before the requested label is emitted.
-MAX_JUDGE_TOKENS = 256
+# completion budget. Retry a length-truncated response with more room for the label.
+JUDGE_TOKEN_BUDGETS = (128, 256)
 
 
 def _parse_judgment(text: str) -> str:
@@ -80,13 +80,18 @@ async def judge_answer(
     prompt = JUDGE_PROMPT.format(
         question=question, gold=gold_answer, predicted=predicted_answer
     )
-    response = await client.chat.completions.create(
-        model=judge_model,
-        max_tokens=MAX_JUDGE_TOKENS,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    raw = (response.choices[0].message.content or "").strip()
+    for max_tokens in JUDGE_TOKEN_BUDGETS:
+        response = await client.chat.completions.create(
+            model=judge_model,
+            max_tokens=max_tokens,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        choice = response.choices[0]
+        raw = (choice.message.content or "").strip()
+        if raw or choice.finish_reason != "length":
+            return _parse_judgment(raw), raw
+
     return _parse_judgment(raw), raw
 
 
