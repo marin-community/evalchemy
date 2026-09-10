@@ -102,6 +102,8 @@ jobs:
         run: uv sync --python 3.12
       - name: Assert no heavy deps leaked and empty-extra benchmarks import
         run: uv run python scripts/ci/check_lean_install.py
+      - name: Enumerate every task under the shared lifecycle contract
+        run: uv run python scripts/ci/check_task_contracts.py
 
   benchmark-extras:
     # Assert each per-benchmark extra is self-sufficient and torch-free: sync base + that

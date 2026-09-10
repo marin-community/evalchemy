@@ -57,6 +57,15 @@ def import_benchmark(name: str):
         spec = importlib.util.spec_from_file_location(f"eval.chat_benchmarks.{name}.eval_instruct", eval_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
+        from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
+        from eval.task import BaseBenchmark
+
+        benchmark_classes = find_custom_benchmark_classes(module, BaseBenchmark)
+        if len(benchmark_classes) != 1:
+            raise RuntimeError(
+                f"{name} must define exactly one BaseBenchmark subclass; found {len(benchmark_classes)}"
+            )
+        validate_custom_benchmark_class(benchmark_classes[0], BaseBenchmark)
         return module
     finally:
         sys.path.pop(0)

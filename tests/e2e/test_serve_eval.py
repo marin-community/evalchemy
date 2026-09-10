@@ -26,6 +26,8 @@ import zstandard
 from click.testing import CliRunner
 from pydantic import ValidationError
 
+from eval.contracts.failures import FailureCategory
+from eval.contracts.task_outcome import EvaluationRunError
 from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.providers import (
@@ -385,6 +387,22 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
                     }}
                 }},
                 "n-samples": {{"gsm8k": {{"original": 4, "effective": {sample_count}}}}},
+                "task_outcomes": {{
+                    "gsm8k": {{
+                        "schema_version": 1,
+                        "task_name": "gsm8k",
+                        "route": "lm-eval",
+                        "status": "succeeded",
+                        "metrics": {{
+                            "exact_match,strict-match": 0.75,
+                            "exact_match_stderr,strict-match": 0.125,
+                        }},
+                        "expected_count": 4,
+                        "generated_count": {sample_count},
+                        "scored_count": {sample_count},
+                        "failure": None,
+                    }}
+                }},
             }}
             (results_dir / "results_test.json").write_text(json.dumps(payload))
             """
@@ -496,7 +514,7 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
     assert seconds_per_trial["value"] == pytest.approx(evaluation["value"] / 3)
 
 
-def test_runner_omits_rate_when_no_trials_completed(tmp_path):
+def test_runner_rejects_results_when_no_trials_completed(tmp_path):
     server = _serve()
     try:
         args = _runner_args(server, tmp_path / "results", _fake_eval_python(tmp_path, sample_count=0))
@@ -504,11 +522,9 @@ def test_runner_omits_rate_when_no_trials_completed(tmp_path):
     finally:
         server.shutdown()
 
-    assert result.exit_code == 0, result.output
-    records = _telemetry_records()
-    completed = [record for record in records if record["name"] == "work_completed"]
-    assert {record["attributes"]["scope"]: record["value"] for record in completed} == {"task": 0, "run": 0}
-    assert not [record for record in records if record["name"] == "seconds_per_trial"]
+    assert isinstance(result.exception, EvaluationRunError)
+    assert result.exception.outcomes[0].failure.category is FailureCategory.INVALID_RESULT
+    assert "zero sample coverage" in str(result.exception)
 
 
 def test_retries_keep_root_and_generate_distinct_execution_uids(tmp_path):

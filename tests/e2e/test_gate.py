@@ -23,9 +23,27 @@ _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 # --- the CI gate (gate.evaluate_gate) -----------------------------------------
 
 
+def _outcome(metrics, n):
+    return {
+        "schema_version": 1,
+        "task_name": "gsm8k",
+        "route": "lm-eval",
+        "status": "succeeded",
+        "metrics": metrics,
+        "expected_count": n,
+        "generated_count": n,
+        "scored_count": n,
+        "failure": None,
+    }
+
+
 def _results(strict=0.35, flexible=0.40, n=20):
     task = {"exact_match,strict-match": strict, "exact_match,flexible-extract": flexible}
-    doc = {"results": {"gsm8k": task}, "n-samples": {"gsm8k": {"original": n, "effective": n}}}
+    doc = {
+        "results": {"gsm8k": task},
+        "n-samples": {"gsm8k": {"original": n, "effective": n}},
+        "task_outcomes": {"gsm8k": _outcome(task, n)},
+    }
     return EvalResults.model_validate(doc)
 
 
@@ -61,8 +79,13 @@ def test_gate_wrong_sample_count_fails():
 
 
 def test_gate_missing_metric_fails():
+    metrics = {"exact_match,flexible-extract": 0.4}
     results = EvalResults.model_validate(
-        {"results": {"gsm8k": {"exact_match,flexible-extract": 0.4}}, "n-samples": {"gsm8k": {"effective": 20}}}
+        {
+            "results": {"gsm8k": metrics},
+            "n-samples": {"gsm8k": {"effective": 20}},
+            "task_outcomes": {"gsm8k": _outcome(metrics, 20)},
+        }
     )
     report = evaluate_gate(results, _spec())
     assert not report.ok
@@ -117,6 +140,12 @@ def test_spec_save_load_round_trip(tmp_path):
 
 _RESULTS = {
     "results": {"gsm8k": {"exact_match,strict-match": 0.30, "exact_match,flexible-extract": 0.50, "sample_len": 20}},
+    "task_outcomes": {
+        "gsm8k": _outcome(
+            {"exact_match,strict-match": 0.30, "exact_match,flexible-extract": 0.50, "sample_len": 20},
+            20,
+        )
+    },
     "lm_eval_version": "0.4.12",
     "model_source": "local-chat-completions",
     "config": {"limit": 20, "random_seed": 1234},

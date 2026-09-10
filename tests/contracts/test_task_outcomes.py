@@ -352,3 +352,8 @@ def test_persisted_result_reader_retains_typed_task_outcomes():
 
     assert loaded.task_outcomes["contract_task"].status is TaskStatus.SUCCEEDED
     assert loaded.task_outcomes["contract_task"].metrics == {"accuracy": 0.0}
+
+
+def test_persisted_result_reader_rejects_legacy_results_without_outcomes():
+    with pytest.raises(EvaluationRunError, match="no task outcomes"):
+        EvalResults.model_validate({"results": {"task": {"accuracy": 1.0}}})
