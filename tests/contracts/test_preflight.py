@@ -45,6 +45,18 @@ class _CustomManager:
         return self.benchmark
 
 
+class _RecordingModel:
+    rank = 0
+    world_size = 1
+
+    def __init__(self):
+        self.requests = []
+
+    def generate_until(self, requests):
+        self.requests.extend(requests)
+        return ["answer" for _ in requests]
+
+
 def test_package_file_and_dependency_are_validated():
     benchmark = _Benchmark()
     benchmark.RESOURCE_REQUIREMENTS = (
@@ -112,28 +124,26 @@ def test_lm_eval_task_is_constructed_during_preflight():
     assert preparations[0].route is TaskRoute.LM_EVAL
 
 
-def test_invalid_representative_request_fails_before_generation():
-    class _Model:
-        rank = 0
-        world_size = 1
-
-        def generate_until(self, requests):
-            raise AssertionError("generation must not receive an invalid request")
-
-    request = Instance("generate_until", {}, ("", {}), 0)
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "",
+        JsonChatStr('[{"role": "user", "content": ""}]'),
+        JsonChatStr("not-json"),
+    ],
+)
+def test_invalid_representative_request_fails_before_generation(prompt):
+    model = _RecordingModel()
+    request = Instance("generate_until", {}, (prompt, {}), 0)
 
     with pytest.raises(ModelRequestValidationError):
-        _Benchmark().compute(_Model(), [request])
+        _Benchmark().compute(model, [request])
+
+    assert model.requests == []
 
 
 def test_json_chat_request_reaches_generation():
-    class _Model:
-        rank = 0
-        world_size = 1
-
-        def generate_until(self, requests):
-            return ["answer" for _ in requests]
-
+    model = _RecordingModel()
     request = Instance(
         "generate_until",
         {},
@@ -141,26 +151,8 @@ def test_json_chat_request_reaches_generation():
         0,
     )
 
-    assert _Benchmark().compute(_Model(), [request]) == ["answer"]
-
-
-def test_empty_json_chat_request_fails_before_generation():
-    class _Model:
-        rank = 0
-        world_size = 1
-
-        def generate_until(self, requests):
-            raise AssertionError("generation must not receive an empty chat request")
-
-    request = Instance(
-        "generate_until",
-        {},
-        (JsonChatStr('[{"role": "user", "content": ""}]'), {}),
-        0,
-    )
-
-    with pytest.raises(ModelRequestValidationError):
-        _Benchmark().compute(_Model(), [request])
+    assert _Benchmark().compute(model, [request]) == ["answer"]
+    assert model.requests == [request]
 
 
 def test_mmlupro_prompt_resolution_is_independent_of_cwd(tmp_path):

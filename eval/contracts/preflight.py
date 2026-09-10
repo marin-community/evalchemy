@@ -165,13 +165,12 @@ def validate_model_request(instance: "Instance") -> None:
 
 def _is_non_empty_chat_prompt(prompt: Any) -> bool:
     """Recognize raw messages and lm-eval's serialized chat request wrapper."""
-    from lm_eval.models.api_models import JsonChatStr
-
-    if isinstance(prompt, JsonChatStr):
+    serialized_prompt = getattr(prompt, "prompt", None)
+    if isinstance(prompt, tuple) and len(prompt) == 1 and isinstance(serialized_prompt, str):
         try:
-            prompt = json.loads(prompt.prompt)
-        except (TypeError, json.JSONDecodeError):
-            return False
+            prompt = json.loads(serialized_prompt)
+        except json.JSONDecodeError as exc:
+            raise ModelRequestValidationError("serialized chat request must contain valid JSON") from exc
 
     return (
         isinstance(prompt, Sequence)
