@@ -41,8 +41,8 @@ _LABEL_PATTERN = re.compile(r"correct|incorrect|not_attempted", re.IGNORECASE)
 # bound, so a modest semaphore keeps throughput high without tripping rate limits.
 DEFAULT_NUM_WORKERS = 16
 # Reasoning models account for hidden reasoning and visible content against the same
-# completion budget. Retry a length-truncated response with more room for the label.
-JUDGE_TOKEN_BUDGETS = (128, 256)
+# completion budget. Retry empty responses with progressively more room for the label.
+JUDGE_TOKEN_BUDGETS = (128, 512, 2048)
 
 
 def _parse_judgment(text: str) -> str:
@@ -87,9 +87,8 @@ async def judge_answer(
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
         )
-        choice = response.choices[0]
-        raw = (choice.message.content or "").strip()
-        if raw or choice.finish_reason != "length":
+        raw = (response.choices[0].message.content or "").strip()
+        if raw:
             return _parse_judgment(raw), raw
 
     return _parse_judgment(raw), raw
