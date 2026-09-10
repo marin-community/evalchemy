@@ -101,6 +101,13 @@ class _FakeModel:
     world_size = 1
     rank = 0
 
+    def __init__(self):
+        self.generated_ids = []
+
+    def generate_until(self, instances):
+        self.generated_ids.extend(instance.idx for instance in instances)
+        return [f"response-{instance.idx}" for instance in instances]
+
 
 def test_custom_benchmark_request_cannot_escape_resolved_output_cap():
     benchmark = _BudgetBenchmark()
@@ -129,6 +136,47 @@ def test_custom_prompt_budget_field_receives_the_same_context_limit():
     assert benchmark.max_model_length == 16384
     assert benchmark.max_new_tokens == 1024
     assert benchmark.evaluation_limit == 7
+
+
+def _instances(*source_ids, repeat_idx=None):
+    instances = [Instance("generate_until", {}, ("prompt", {}), source_id) for source_id in source_ids]
+    for instance in instances:
+        instance.repeat_idx = repeat_idx
+    return instances
+
+
+def test_custom_sample_cap_is_enforced_across_chunked_generation_calls():
+    benchmark = _BudgetBenchmark()
+    benchmark.set_evaluation_limits(limit=2)
+    model = _FakeModel()
+
+    first_outputs = benchmark.compute(model, _instances("a", "b", "c"))
+    later_outputs = benchmark.compute(model, _instances("c", "d"))
+
+    assert first_outputs == ["response-a", "response-b"]
+    assert later_outputs == []
+    assert model.generated_ids == ["a", "b"]
+    assert benchmark.sample_manifest.generated_sample_count == 2
+
+
+def test_custom_sample_cap_allows_repeats_and_applies_per_namespace():
+    benchmark = _BudgetBenchmark()
+    benchmark.set_evaluation_limits(limit=1)
+    model = _FakeModel()
+
+    benchmark.compute(model, _instances("a", "b", repeat_idx=0))
+    benchmark.compute(model, _instances("a", "b", repeat_idx=1))
+    benchmark.compute(model, _instances("a", "b"), sample_namespace="second-task")
+
+    assert model.generated_ids == ["a", "a", "a"]
+    assert benchmark.sample_manifest.generated_sample_count == 2
+
+
+def test_custom_benchmark_can_limit_source_records_before_building_requests():
+    benchmark = _BudgetBenchmark()
+    benchmark.set_evaluation_limits(limit=2)
+
+    assert benchmark.limit_samples(iter(range(5))) == [0, 1]
 
 
 class _Tokenizer:
@@ -213,8 +261,8 @@ def test_endpoint_preflight_preserves_typed_context_overflow():
 def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
     """All chat benchmarks must reach ``BaseBenchmark.compute`` before inference.
 
-    That method owns the request-time output-cap override above.  A new
-    benchmark which bypasses it would reintroduce a separate max-token path.
+    That method owns both the sample cap and request-time output cap. A new
+    benchmark which bypasses it would reintroduce an unbounded inference path.
     """
     benchmarks_dir = Path(__file__).parents[1] / "eval" / "chat_benchmarks"
     missing_guard = [
