@@ -804,7 +804,6 @@ class TaskManager:
                 requires_openai = (
                     hasattr(benchmark_class, "REQUIRES_OPENAI_ANNOTATOR") and benchmark_class.REQUIRES_OPENAI_ANNOTATOR
                 )
-                requires_judge_key = getattr(benchmark_class, "REQUIRES_JUDGE_API_KEY", False)
 
                 if requires_annotator:
                     self.list_of_tasks_that_require_annotator_model.append(item)
@@ -814,11 +813,6 @@ class TaskManager:
                         f"Not loading {item} benchmark as it requires OpenAI as annotator model but OPENAI_API_KEY is not set"
                     )
                     self.load_failures[item] = RuntimeError("OPENAI_API_KEY is required by this benchmark")
-                    continue
-
-                if requires_judge_key and not os.environ.get("JUDGE_API_KEY"):
-                    self.logger.warning(f"Not loading {item} benchmark because JUDGE_API_KEY is not set")
-                    self.load_failures[item] = RuntimeError("JUDGE_API_KEY is required by this benchmark")
                     continue
 
                 self._register_benchmark(item, benchmark_class)

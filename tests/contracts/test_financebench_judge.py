@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,12 @@ class _FakeAsyncOpenAI:
         type(self).constructor_kwargs = kwargs
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
     async def create(self, **kwargs):
         type(self).request_kwargs = kwargs
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="correct"))])
@@ -27,11 +34,13 @@ class _FailingAsyncOpenAI(_FakeAsyncOpenAI):
 def test_financebench_judge_uses_dedicated_endpoint_and_key(monkeypatch):
     monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FakeAsyncOpenAI)
 
-    judgments = finance_judge.judge(
-        [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-        "judge-model",
-        api_key="judge-key",
-        base_url="https://judge.example/v1",
+    judgments = asyncio.run(
+        finance_judge.judge_all(
+            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
+            "judge-model",
+            api_key="judge-key",
+            base_url="https://judge.example/v1",
+        )
     )
 
     assert judgments == [("correct", "correct")]
@@ -44,11 +53,13 @@ def test_financebench_judge_api_failure_propagates(monkeypatch):
     monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FailingAsyncOpenAI)
 
     with pytest.raises(RuntimeError, match="judge unavailable"):
-        finance_judge.judge(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
+        asyncio.run(
+            finance_judge.judge_all(
+                [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
+                "judge-model",
+                api_key="judge-key",
+                base_url="https://judge.example/v1",
+            )
         )
 
 
@@ -60,11 +71,13 @@ def test_financebench_malformed_judge_response_propagates(monkeypatch):
     monkeypatch.setattr(finance_judge, "AsyncOpenAI", MalformedAsyncOpenAI)
 
     with pytest.raises(ValueError, match="unrecognized FinanceBench judgment"):
-        finance_judge.judge(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
+        asyncio.run(
+            finance_judge.judge_all(
+                [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
+                "judge-model",
+                api_key="judge-key",
+                base_url="https://judge.example/v1",
+            )
         )
 
 

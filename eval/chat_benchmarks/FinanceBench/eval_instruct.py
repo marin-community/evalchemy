@@ -53,8 +53,6 @@ class FinanceBenchBenchmark(BaseBenchmark):
     Link: https://github.com/patronus-ai/financebench
     """
 
-    REQUIRES_JUDGE_API_KEY = True
-
     def __init__(
         self,
         data_file: str = os.path.join(
@@ -64,6 +62,8 @@ class FinanceBenchBenchmark(BaseBenchmark):
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 4096,
         annotator_model: Optional[str] = None,
+        judge_api_key: Optional[str] = None,
+        judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
     ):
@@ -79,6 +79,9 @@ class FinanceBenchBenchmark(BaseBenchmark):
                 are short, but the prompt's document context can be long.
             annotator_model: Override the judge model. Falls back to ``$JUDGE_MODEL`` and
                 then ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
+            judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
+            judge_base_url: OpenAI-compatible judge endpoint. Falls back to
+                ``$JUDGE_BASE_URL`` and then the OpenAI API.
             logger: Optional logger instance.
             system_instruction: Optional system instruction for the model.
         """
@@ -87,10 +90,10 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
-        self.judge_api_key = os.environ.get("JUDGE_API_KEY")
+        self.judge_api_key = judge_api_key or os.environ.get("JUDGE_API_KEY")
         if not self.judge_api_key:
             raise ValueError("JUDGE_API_KEY is required by FinanceBench")
-        self.judge_base_url = os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
+        self.judge_base_url = judge_base_url or os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
         # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
         self.judge_model = (
             annotator_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL

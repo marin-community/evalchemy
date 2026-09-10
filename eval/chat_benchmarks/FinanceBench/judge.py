@@ -101,30 +101,16 @@ async def judge_all(
     zip it back onto the examples.
     """
     semaphore = asyncio.Semaphore(num_workers)
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=2)
+    async with AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=2) as client:
 
-    async def bound(item: Dict[str, Any]) -> Tuple[str, str]:
-        async with semaphore:
-            return await judge_answer(
-                item["question"],
-                str(item["answer"]),
-                item.get("model_output", "") or "",
-                judge_model,
-                client,
-            )
+        async def bound(item: Dict[str, Any]) -> Tuple[str, str]:
+            async with semaphore:
+                return await judge_answer(
+                    item["question"],
+                    str(item["answer"]),
+                    item.get("model_output", "") or "",
+                    judge_model,
+                    client,
+                )
 
-    return await asyncio.gather(*[bound(item) for item in items])
-
-
-def judge(
-    items: List[Dict[str, Any]],
-    judge_model: str,
-    *,
-    api_key: str,
-    base_url: str,
-    num_workers: int = DEFAULT_NUM_WORKERS,
-) -> List[Tuple[str, str]]:
-    """Synchronous entry point: run the async judge fan-out and block on the result."""
-    return asyncio.run(
-        judge_all(items, judge_model, api_key=api_key, base_url=base_url, num_workers=num_workers)
-    )
+        return await asyncio.gather(*[bound(item) for item in items])
