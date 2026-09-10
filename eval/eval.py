@@ -46,7 +46,7 @@ from eval.robust_api import EndpointFailureCapture, capture_endpoint_failures, c
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
-from eval.constants import LIST_OPENAI_MODELS
+from eval.constants import AUTO_ANNOTATOR_MODEL, LIST_OPENAI_MODELS
 from eval.contracts.conformance import build_task_contract_registry
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
@@ -333,7 +333,7 @@ def setup_custom_parser():
     parser.add_argument(
         "--annotator_model",
         type=str,
-        default="auto",
+        default=AUTO_ANNOTATOR_MODEL,
         help="Judge model used to evaluate generations. Example: gpt-4o-mini-2024-07-18",
     )
     parser.add_argument(
