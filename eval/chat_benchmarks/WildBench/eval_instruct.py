@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+
+from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.task import BaseBenchmark
 
 # Import WildBench utilities
@@ -91,7 +93,7 @@ class WildBenchBenchmark(BaseBenchmark):
             logger: Optional logger instance
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
-        if annotator_model == "auto":
+        if annotator_model == AUTO_ANNOTATOR_MODEL:
             annotator_model = "gpt-4-1106-preview"
         if config:
             self.logger.warning(f"Overwriting config.judge_model = {annotator_model} ")

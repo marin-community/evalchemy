@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.task import BaseBenchmark
 
 from .judge import judge_all
@@ -77,8 +78,9 @@ class FinanceBenchBenchmark(BaseBenchmark):
             seed: Random seed for reproducibility (deterministic at temperature 0).
             max_tokens: Max generation tokens. 4096 by default -- factual Q&A answers
                 are short, but the prompt's document context can be long.
-            annotator_model: Override the judge model. Falls back to ``$JUDGE_MODEL`` and
-                then ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
+            annotator_model: Override the judge model. The CLI's ``auto`` sentinel is
+                treated as unset, then falls back to ``$JUDGE_MODEL`` and finally
+                ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
             judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
             judge_base_url: OpenAI-compatible judge endpoint. Falls back to
                 ``$JUDGE_BASE_URL`` and then the OpenAI API.
@@ -95,9 +97,8 @@ class FinanceBenchBenchmark(BaseBenchmark):
             raise ValueError("JUDGE_API_KEY is required by FinanceBench")
         self.judge_base_url = judge_base_url or os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
         # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
-        self.judge_model = (
-            annotator_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
-        )
+        explicit_judge_model = annotator_model if annotator_model not in (None, AUTO_ANNOTATOR_MODEL) else None
+        self.judge_model = explicit_judge_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """

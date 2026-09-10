@@ -14,6 +14,8 @@ from pathlib import Path
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+
+from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.task import BaseBenchmark
 from fastchat.llm_judge.common import (
     load_questions,
@@ -87,7 +89,7 @@ class MTBenchBenchmark(BaseBenchmark):
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.base_path = Path(base_path)
-        if annotator_model == "auto":
+        if annotator_model == AUTO_ANNOTATOR_MODEL:
             annotator_model = "gpt-4"
         if config:
             print(f"Warning: Overwriting config.judge_model = {annotator_model} ")
