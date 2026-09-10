@@ -15,11 +15,14 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from eval.contracts.outcomes import TaskOutcome
+
 
 class EvalResults(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    task_outcomes: Dict[str, TaskOutcome] = Field(default_factory=dict)
     n_samples: Dict[str, Any] = Field(default_factory=dict, alias="n-samples")
     lm_eval_version: Optional[str] = None
     config: Dict[str, Any] = Field(default_factory=dict)

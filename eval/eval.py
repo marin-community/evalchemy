@@ -7,7 +7,8 @@ import math
 import os
 import sys
 import time
-from typing import Dict, List, Optional, Union
+from collections.abc import Mapping
+from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
 import lm_eval.api.registry
@@ -45,6 +46,17 @@ from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # reg
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
+from eval.contracts.outcomes import (
+    FailureCategory,
+    TaskOutcome,
+    TaskRoute,
+    TaskStatus,
+    custom_task_outcome,
+    exported_task_outcome,
+    lm_eval_task_outcome,
+    validate_requested_outcomes,
+    validate_result_document,
+)
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
@@ -58,8 +70,27 @@ _BIT_CAP = 15_000
 # answer-extraction filter_list — no run-config change required. A user-supplied
 # --include_path still wins (it is appended last).
 DEFAULT_LM_EVAL_INCLUDE_DIR = os.path.join(os.path.dirname(__file__), "lm_eval_tasks")
-CHAT_BENCHMARK_ROUTE = "Evalchemy chat benchmark"
-LM_EVAL_ROUTE = "lm-eval"
+CHAT_BENCHMARK_ROUTE = TaskRoute.CUSTOM
+LM_EVAL_ROUTE = TaskRoute.LM_EVAL
+
+
+def _score_custom_task(work: tuple[str, Any, Any]) -> tuple[TaskOutcome, Any]:
+    task_name, benchmark, generation_result = work
+    try:
+        scored_result = benchmark.evaluate_responses(generation_result)
+    except Exception as exc:
+        return (
+            TaskOutcome.failed(
+                task_name,
+                CHAT_BENCHMARK_ROUTE,
+                FailureCategory.GRADING,
+                str(exc),
+                exception=exc,
+            ),
+            {},
+        )
+    metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
+    return custom_task_outcome(task_name, CHAT_BENCHMARK_ROUTE, generation_result, metrics), scored_result
 
 
 def resolve_task_routes(
@@ -288,75 +319,99 @@ def evaluate(
     if pretrain_tasks:
         eval_logger.info(f"Pretrain tasks to evaluate: {pretrain_tasks}")
 
-    results = {"results": {}}
+    results = {"results": {}, "task_outcomes": {}}
+    outcomes: list[TaskOutcome] = []
 
     # Run benchmark evaluations - sequential generation, parallel evaluation
     if benchmark_tasks:
         # Sequential generation since it's GPU-bound
-        generate_methods = task_manager.get_list_generate_responses(benchmark_tasks)
-        generation_results = []
-        valid_tasks = []  # Keep track of valid tasks
-        for method, task, batch_size in zip(generate_methods, benchmark_tasks, benchmark_batch_sizes):
+        generation_work = []
+        for task, batch_size in zip(benchmark_tasks, benchmark_batch_sizes):
+            benchmark = task_manager.get_benchmark(task)
+            if benchmark is None:
+                outcomes.append(
+                    TaskOutcome.failed(
+                        task,
+                        CHAT_BENCHMARK_ROUTE,
+                        FailureCategory.INCOMPLETE_EVALUATION,
+                        "requested task is absent from the custom benchmark registry",
+                    )
+                )
+                continue
             if args.model == "hf":
                 lm.batch_size_per_gpu = batch_size
             elif args.model == "vllm":
                 lm.batch_size = batch_size
-            result = method(lm)
-            if result is not None:  # Only keep valid results and their corresponding tasks
-                generation_results.append(result)
-                valid_tasks.append(task)
-        # Get evaluation methods only for valid tasks
-
-        if lm is not None and not hasattr(lm, "upload_to_hub"):
-            evaluate_methods = task_manager.get_list_evaluates(valid_tasks)
-            cpu_count = os.cpu_count()
-
-            max_workers = min(len(valid_tasks), cpu_count * 2)
-            if lm.world_size <= 1 or lm.rank == 0:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    evaluate_results = list(
-                        executor.map(
-                            lambda func_args: func_args[0](func_args[1]), zip(evaluate_methods, generation_results)
+            try:
+                generation_result = benchmark.generate_responses(lm)
+            except Exception as exc:
+                outcomes.append(
+                    TaskOutcome.failed(
+                        task,
+                        CHAT_BENCHMARK_ROUTE,
+                        FailureCategory.GENERATION,
+                        str(exc),
+                        exception=exc,
+                    )
+                )
+                continue
+            if generation_result is None:
+                if getattr(lm, "rank", 0) == 0:
+                    outcomes.append(
+                        TaskOutcome.failed(
+                            task,
+                            CHAT_BENCHMARK_ROUTE,
+                            FailureCategory.INCOMPLETE_EVALUATION,
+                            "custom benchmark returned no generation result",
                         )
                     )
+                continue
+            generation_work.append((task, benchmark, generation_result))
 
-                # Store results using valid tasks for correct mapping.  Sample
-                # serialization is deliberately after scoring: it cannot alter a
-                # score, and it retains the generation result custom evaluators need.
-                for task, generation_result, scored_result in zip(valid_tasks, generation_results, evaluate_results):
-                    results["results"][task] = scored_result
-                    if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
-                        continue
+        if lm is not None and hasattr(lm, "upload_to_hub"):
+            outcomes.extend(
+                exported_task_outcome(task, CHAT_BENCHMARK_ROUTE, generation_result)
+                for task, _benchmark, generation_result in generation_work
+            )
+        elif generation_work and (lm.world_size <= 1 or lm.rank == 0):
+            max_workers = min(len(generation_work), (os.cpu_count() or 1) * 2)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                evaluated = list(executor.map(_score_custom_task, generation_work))
 
-                    benchmark = task_manager.get_benchmark(task)
-                    try:
-                        task_samples = benchmark.to_samples(generation_result, scored_result)
-                    except Exception as e:
-                        eval_logger.warning("log_samples: could not serialize %s (%s)", task, e)
-                        continue
-                    if not task_samples:
-                        eval_logger.warning("log_samples: scored task %s produced no sample records", task)
-                        continue
-                    results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
-                    results["results"][task] = without_embedded_samples(scored_result)
+            # Store results using valid tasks for correct mapping.  Sample
+            # serialization is deliberately after scoring: it cannot alter a
+            # score, and it retains the generation result custom evaluators need.
+            for (task, benchmark, generation_result), (outcome, scored_result) in zip(generation_work, evaluated):
+                outcomes.append(outcome)
+                if outcome.status is TaskStatus.FAILED:
+                    continue
+                results["results"][task] = scored_result
+                if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
+                    continue
+
+                try:
+                    task_samples = benchmark.to_samples(generation_result, scored_result)
+                except Exception as e:
+                    eval_logger.warning("log_samples: could not serialize %s (%s)", task, e)
+                    continue
+                if not task_samples:
+                    eval_logger.warning("log_samples: scored task %s produced no sample records", task)
+                    continue
+                results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
+                results["results"][task] = without_embedded_samples(scored_result)
 
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
-        try:
-            # Stage 3b: route the lm-eval-native (gsm8k) `simple_evaluate` call through
-            # the unified ResumeManager (supersedes lm-eval `--use_cache`, decision #5).
-            # When no resume-manager factory is attached to `args` (the default — Stage 4
-            # wires it), `resume_simple_evaluate` is a VERBATIM passthrough to upstream
-            # `simple_evaluate(**kwargs)`: the gsm8k path is byte-identical to today and
-            # no `resume/` dir is written (global invariant #1). When a factory is present
-            # it wraps the LM in a resume-aware, sampling-capable cache.
-            from eval.resume.lm_eval_native import resume_simple_evaluate
+        # Stage 3b: route the lm-eval-native `simple_evaluate` call through
+        # the unified ResumeManager (supersedes lm-eval `--use_cache`, decision #5).
+        from eval.resume.lm_eval_native import resume_simple_evaluate
 
-            _resume_factory = getattr(args, "resume_manager_factory", None)
-            for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
+        resume_factory = getattr(args, "resume_manager_factory", None)
+        for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
+            try:
                 pretrain_results = resume_simple_evaluate(
                     pretrain_evaluator.simple_evaluate,
-                    resume_manager_factory=_resume_factory,
+                    resume_manager_factory=resume_factory,
                     model=args.model,
                     model_args=args.model_args,
                     tasks=[pretrain_task],
@@ -383,20 +438,39 @@ def evaluate(
                     torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
                     fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
                 )
-                if pretrain_results is not None:
-                    results["results"].update(pretrain_results.get("results", {}))
-                    if getattr(args, "log_samples", False):
-                        native_samples = pretrain_results.get("samples", {})
-                        for task, scored_result in pretrain_results.get("results", {}).items():
-                            if not is_scored_result(scored_result):
-                                continue
-                            task_samples = native_samples.get(task, [])
-                            if not task_samples:
-                                eval_logger.warning("log_samples: scored task %s produced no sample records", task)
-                                continue
-                            results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
-        except Exception as e:
-            eval_logger.error(f"Error in pretrain evaluation: {str(e)}")
+            except Exception as exc:
+                outcomes.append(
+                    TaskOutcome.failed(
+                        pretrain_task,
+                        LM_EVAL_ROUTE,
+                        FailureCategory.GRADING,
+                        str(exc),
+                        exception=exc,
+                    )
+                )
+                continue
+
+            outcome = lm_eval_task_outcome(pretrain_task, LM_EVAL_ROUTE, pretrain_results)
+            outcomes.append(outcome)
+            if outcome.status is TaskStatus.FAILED:
+                continue
+            results["results"].update(pretrain_results.get("results", {}))
+            if pretrain_results.get("n-samples"):
+                results.setdefault("n-samples", {}).update(pretrain_results["n-samples"])
+            if getattr(args, "log_samples", False):
+                native_samples = pretrain_results.get("samples", {})
+                for task, scored_result in pretrain_results.get("results", {}).items():
+                    if not is_scored_result(scored_result):
+                        continue
+                    task_samples = native_samples.get(task, [])
+                    if not task_samples:
+                        eval_logger.warning("log_samples: scored task %s produced no sample records", task)
+                        continue
+                    results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
+
+    results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
+    if getattr(lm, "rank", 0) == 0:
+        validate_requested_outcomes(task_list, outcomes)
 
     # If we're using UploadInstancesToHF, make sure to call upload_to_hub
     if lm is not None and hasattr(lm, "upload_to_hub") and callable(lm.upload_to_hub):
@@ -786,6 +860,7 @@ def handle_evaluation_output(
             Function handles outputs via side effects (logging, saving files)
             rather than returning values.
     """
+    validate_result_document(results)
     samples = results.pop("samples", {}) if args.log_samples else {}
 
     dumped = json.dumps(

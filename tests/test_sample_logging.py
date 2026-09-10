@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from eval.contracts.outcomes import EvaluationRunError
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
 from eval.task import BaseBenchmark
@@ -187,17 +188,17 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     assert json.loads(artifacts[0].read_text())["task_name"] == "gsm8k"
 
 
-def test_log_samples_unscored_task_writes_no_placeholder(tmp_path: Path):
+def test_log_samples_unscored_task_fails_before_writing_placeholder(tmp_path: Path):
     benchmark = _RecordingBenchmark({"examples": [{"prompt": "x", "response": "y"}]}, {"error": "grader failed"})
-    results = evaluate(
-        lm=_FakeLM(),
-        task_manager=_CustomTaskManager("IFEval", benchmark),
-        pretrain_task_manager=_EmptyPretrainTaskManager(),
-        task_list=["IFEval"],
-        task_routes={"IFEval": "Evalchemy chat benchmark"},
-        batch_sizes_list=[1],
-        args=_args(),
-    )
+    with pytest.raises(EvaluationRunError):
+        evaluate(
+            lm=_FakeLM(),
+            task_manager=_CustomTaskManager("IFEval", benchmark),
+            pretrain_task_manager=_EmptyPretrainTaskManager(),
+            task_list=["IFEval"],
+            task_routes={"IFEval": "Evalchemy chat benchmark"},
+            batch_sizes_list=[1],
+            args=_args(),
+        )
 
-    assert results.get("samples") is None
-    assert _write_output(tmp_path, results, _args()) == []
+    assert list(tmp_path.iterdir()) == []
