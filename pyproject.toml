@@ -305,7 +305,6 @@ include = [
     "eval/lm_eval_tasks/**",
     "eval/graders/**",
     "eval/contracts/**",
-    "tests/conftest.py",
     "tests/e2e/**",
     "tests/drop/**",
     "tests/graders/**",
