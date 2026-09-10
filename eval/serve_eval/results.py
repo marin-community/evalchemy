@@ -15,11 +15,14 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from eval.contracts.task_outcome import TaskOutcome, lm_eval_task_counts
+
 
 class EvalResults(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    task_outcomes: Dict[str, TaskOutcome] = Field(default_factory=dict)
     n_samples: Dict[str, Any] = Field(default_factory=dict, alias="n-samples")
     lm_eval_version: Optional[str] = None
     config: Dict[str, Any] = Field(default_factory=dict)
@@ -59,15 +62,9 @@ class EvalResults(BaseModel):
         return {k: float(v) for k, v in task_results.items() if isinstance(v, (int, float))}
 
     def sample_count(self, task: str) -> Optional[int]:
-        """Best-effort effective sample count for ``task``.
-
-        lm-eval's ``--limit`` paths populate top-level ``n-samples``; evalchemy's
-        lm-eval-native (gsm8k) path instead records ``sample_len`` on the task.
-        """
-        entry = self.n_samples.get(task)
-        if isinstance(entry, dict):
-            for key in ("effective", "original"):
-                if isinstance(entry.get(key), int):
-                    return int(entry[key])
-        sample_len = (self.results.get(task) or {}).get("sample_len")
-        return int(sample_len) if isinstance(sample_len, int) else None
+        """Return lm-eval's effective sample count when the result supplies one."""
+        _, effective = lm_eval_task_counts(
+            task,
+            {"n-samples": self.n_samples, "results": self.results},
+        )
+        return effective
