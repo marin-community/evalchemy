@@ -20,7 +20,7 @@ from eval.contracts.preflight import (
     prepare_requested_tasks,
     validate_task_preparations,
 )
-from eval.contracts.task_outcome import TaskRoute
+from eval.contracts.task_outcome import FailureCategory, TaskRoute
 from eval.task import BaseBenchmark, TaskManager
 
 
@@ -66,6 +66,7 @@ def test_missing_resource_is_a_typed_preflight_failure():
     preparation = benchmark.prepare()
 
     assert preparation.status is TaskPreparationStatus.FAILED
+    assert preparation.failure.category is FailureCategory.RESOURCE
     assert preparation.failure.exception_type == "FileNotFoundError"
 
 

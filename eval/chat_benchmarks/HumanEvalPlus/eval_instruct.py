@@ -1,7 +1,6 @@
 from typing import Dict, List, Any, Optional
 import json
 import os
-import tempfile
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -10,6 +9,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from human_eval_plus.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
+from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
 from eval.task import BaseBenchmark
 
 
@@ -17,6 +17,8 @@ class HumanEvalPlusBenchmark(BaseBenchmark):
     """
     HumanEvalPlus benchmark for evaluating code generation capabilities across different languages.
     """
+
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
 
     def __init__(
         self,
@@ -73,8 +75,7 @@ Please continue to complete the function. You are not allowed to modify the give
             or None for non-primary ranks
         """
         results = {}
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        temp_dir = temp_dir_obj.name
+        artifacts = GenerationArtifactManifest.temporary()
 
         for lang in self.languages:
             try:
@@ -125,10 +126,12 @@ Please continue to complete the function. You are not allowed to modify the give
                     generated_examples.append(processed_example)
 
                 results[lang] = generated_examples
-                temp_file_path = os.path.join(temp_dir, f"generated_{lang}.jsonl")
-                with open(temp_file_path, "w", encoding="utf-8") as fw:
-                    for ex in generated_examples:
-                        fw.write(json.dumps(ex) + "\n")
+                artifacts.write_jsonl(
+                    f"generated-{lang}",
+                    f"generated_{lang}.jsonl",
+                    generated_examples,
+                    expected_count=len(examples),
+                )
 
                 self.logger.info(f"Generated and saved {len(generated_examples)} examples for {lang}")
 
@@ -139,7 +142,7 @@ Please continue to complete the function. You are not allowed to modify the give
         results["examples"] = [
             {**example, "language": language} for language in self.languages for example in results.get(language, [])
         ]
-        results["temp_dir_obj"] = temp_dir_obj
+        results["artifacts"] = artifacts
         return results
 
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
@@ -156,39 +159,35 @@ Please continue to complete the function. You are not allowed to modify the give
         if results is None:
             return None
 
-        temp_dir_obj = results["temp_dir_obj"]
-        temp_dir = temp_dir_obj.name
+        artifacts = results["artifacts"]
+        artifacts.validate_required()
+        temp_dir = str(artifacts.root)
 
         evaluation_results = {}
+        scored_count = 0
 
         for lang in self.languages:
-            try:
-                problem_file = os.path.join(self.data_dir, f"humanevalplus-{lang}.jsonl")
-                temp_file_path = os.path.join(temp_dir, f"generated_{lang}.jsonl")
+            problem_file = os.path.join(self.data_dir, f"humanevalplus-{lang}.jsonl")
+            temp_file_path = str(artifacts.path(f"generated-{lang}"))
 
-                if not os.path.exists(temp_file_path):
-                    self.logger.warning(f"Generated file not found: {temp_file_path}")
-                    continue
+            result = evaluate_functional_correctness(
+                input_file=temp_file_path,
+                tmp_dir=temp_dir,
+                n_workers=self.num_workers,
+                timeout=self.timeout,
+                problem_file=problem_file,
+                language=lang,
+            )
 
-                result = evaluate_functional_correctness(
-                    input_file=temp_file_path,
-                    tmp_dir=temp_dir,
-                    n_workers=self.num_workers,
-                    timeout=self.timeout,
-                    problem_file=problem_file,
-                    language=lang,
-                )
-
-                for metric, value in result.items():
+            for metric, value in result.items():
+                if metric == "scored_count":
+                    scored_count += value
+                else:
                     evaluation_results[f"{lang}_{metric}"] = value
 
-                self.logger.info(f"Completed evaluation for {lang}")
+            self.logger.info(f"Completed evaluation for {lang}")
 
-            except Exception as e:
-                self.logger.error(f"Error evaluating {lang}: {str(e)}")
-                continue
-
-        temp_dir_obj.cleanup()
+        evaluation_results["scored_count"] = scored_count
         return evaluation_results
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
@@ -209,8 +208,12 @@ Please continue to complete the function. You are not allowed to modify the give
             if generation_results is None:
                 return None
 
-            evaluation_results = self.evaluate_responses(generation_results)
-            return evaluation_results
+            try:
+                return self.evaluate_responses(generation_results)
+            finally:
+                artifacts = generation_artifacts(generation_results)
+                if artifacts is not None:
+                    artifacts.cleanup()
         except Exception as e:
             self.logger.error(f"Error running benchmark: {str(e)}")
             return {"error": str(e)}

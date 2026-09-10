@@ -2,7 +2,6 @@ from typing import Dict, List, Any, Optional, Generator
 import json
 import os
 import re
-import tempfile
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -11,6 +10,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from mbpp_plus.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
+from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
 from eval.task import BaseBenchmark
 
 
@@ -18,6 +18,8 @@ class MBPPPlusBenchmark(BaseBenchmark):
     """
     MBPPPlus benchmark for evaluating code generation capabilities across different languages.
     """
+
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
 
     def __init__(
         self,
@@ -128,9 +130,8 @@ Here is my problem:
             Dictionary containing generated responses and temporary directory,
             or None for non-primary ranks
         """
+        artifacts = GenerationArtifactManifest.temporary()
         try:
-            temp_dir_obj = tempfile.TemporaryDirectory()
-            temp_dir = temp_dir_obj.name
 
             problem_file = os.path.join(self.data_dir, "mbppplus.jsonl")
             examples = list(self.read_test_examples(problem_file))
@@ -177,21 +178,24 @@ Here is my problem:
                     self.logger.error(f"Error processing output for {example['task_id']}: {str(e)}")
                     continue
 
-            output_path = os.path.join(temp_dir, "generated_python.jsonl")
-            with open(output_path, "w", encoding="utf-8") as fw:
-                for ex in generated_examples:
-                    fw.write(json.dumps(ex) + "\n")
+            output_path = artifacts.write_jsonl(
+                "generated-python",
+                "generated_python.jsonl",
+                generated_examples,
+                expected_count=len(examples),
+            ).path
 
             self.logger.info(f"Saved {len(generated_examples)} examples to {output_path}")
 
             return {
-                "temp_dir_obj": temp_dir_obj,
+                "artifacts": artifacts,
                 "examples": generated_examples,
                 "num_examples": len(generated_examples),
                 "total_examples": len(examples),
             }
 
         except Exception as e:
+            artifacts.cleanup()
             self.logger.error(f"Error in generate_responses: {str(e)}")
             raise
 
@@ -209,16 +213,14 @@ Here is my problem:
         if results is None:
             return None
 
-        temp_dir_obj = results["temp_dir_obj"]
-        temp_dir = temp_dir_obj.name
+        artifacts = results["artifacts"]
+        artifacts.validate_required()
+        temp_dir = str(artifacts.root)
 
         evaluation_results = {}
 
         problem_file = os.path.join(self.data_dir, f"mbppplus.jsonl")
-        temp_file_path = os.path.join(temp_dir, f"generated_python.jsonl")
-
-        if not os.path.exists(temp_file_path):
-            self.logger.warning(f"Generated file not found: {temp_file_path}")
+        temp_file_path = str(artifacts.path("generated-python"))
 
         result = evaluate_functional_correctness(
             input_file=temp_file_path,
@@ -234,7 +236,6 @@ Here is my problem:
 
         self.logger.info(f"Completed evaluation")
 
-        temp_dir_obj.cleanup()
         return evaluation_results
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
@@ -255,8 +256,12 @@ Here is my problem:
             if generation_results is None:
                 return None
 
-            evaluation_results = self.evaluate_responses(generation_results)
-            return evaluation_results
+            try:
+                return self.evaluate_responses(generation_results)
+            finally:
+                artifacts = generation_artifacts(generation_results)
+                if artifacts is not None:
+                    artifacts.cleanup()
         except Exception as e:
             self.logger.error(f"Error running benchmark: {str(e)}")
             return {"error": str(e)}

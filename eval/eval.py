@@ -1,5 +1,4 @@
 import argparse
-import concurrent.futures
 import difflib
 import json
 import logging
@@ -7,7 +6,7 @@ import math
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
@@ -43,17 +42,21 @@ from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
+from eval.robust_api import EndpointFailureCapture, capture_endpoint_failures, contains_request_failure
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
+from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
+    FailurePhase,
     TaskOutcome,
     TaskRoute,
     TaskStatus,
+    classify_task_exception,
     custom_task_outcome,
     exported_task_outcome,
     lm_eval_task_outcome,
@@ -87,13 +90,16 @@ class _CustomTaskWork:
 
 def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
     try:
+        artifacts = generation_artifacts(work.generation_result)
+        if artifacts is not None:
+            artifacts.validate_required()
         scored_result = work.benchmark.evaluate_responses(work.generation_result)
     except Exception as exc:
         return (
             TaskOutcome.failed(
                 work.task_name,
                 CHAT_BENCHMARK_ROUTE,
-                FailureCategory.GRADING,
+                classify_task_exception(FailurePhase.GRADING, exc),
                 str(exc),
                 exception=exc,
             ),
@@ -110,6 +116,107 @@ def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
         ),
         scored_result,
     )
+
+
+def _endpoint_failure_outcome(
+    task_name: str,
+    route: TaskRoute,
+    failures: EndpointFailureCapture,
+    result: Any,
+) -> TaskOutcome | None:
+    if primary_failure := failures.primary_failure():
+        category, count = primary_failure
+        return TaskOutcome.failed(
+            task_name,
+            route,
+            category,
+            f"endpoint reported {count} {category.value} failure(s)",
+        )
+    if contains_request_failure(result):
+        return TaskOutcome.failed(
+            task_name,
+            route,
+            FailureCategory.MODEL_TRANSPORT,
+            "generation result contains a terminal endpoint request failure",
+        )
+    return None
+
+
+def _cleanup_generation_result(generation_result: Any) -> None:
+    artifacts = generation_artifacts(generation_result)
+    if artifacts is not None:
+        artifacts.cleanup()
+
+
+def _record_generation_artifacts(results: dict[str, Any], work: _CustomTaskWork) -> None:
+    artifacts = generation_artifacts(work.generation_result)
+    if artifacts is not None:
+        results.setdefault("generation_artifacts", {})[work.task_name] = artifacts.to_dict()
+
+
+def _grade_custom_tasks(
+    generation_work: Sequence[_CustomTaskWork],
+    args: argparse.Namespace,
+    results: dict[str, Any],
+) -> list[TaskOutcome]:
+    """Score, serialize, and clean up custom work under the shared contracts."""
+    try:
+        try:
+            evaluated = execute_grading_jobs(
+                generation_work,
+                mode_for=lambda work: work.benchmark.GRADER_EXECUTION_MODE,
+                grade=_score_custom_task,
+            )
+        except Exception as exc:
+            return [
+                TaskOutcome.failed(
+                    work.task_name,
+                    CHAT_BENCHMARK_ROUTE,
+                    classify_task_exception(FailurePhase.GRADING, exc),
+                    str(exc),
+                    exception=exc,
+                )
+                for work in generation_work
+            ]
+
+        outcomes: list[TaskOutcome] = []
+        for work, (outcome, scored_result) in zip(generation_work, evaluated):
+            if outcome.status is TaskStatus.FAILED:
+                outcomes.append(outcome)
+                continue
+            results["results"][work.task_name] = scored_result
+            _record_generation_artifacts(results, work)
+            if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
+                outcomes.append(outcome)
+                continue
+
+            try:
+                task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
+                if not task_samples:
+                    raise ValueError("scored task produced no sample records")
+                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
+                    work.task_name,
+                    task_samples,
+                    work.benchmark.sample_manifest,
+                )
+                results["results"][work.task_name] = without_embedded_samples(scored_result)
+                outcomes.append(outcome)
+            except Exception as exc:
+                results["results"].pop(work.task_name, None)
+                results.get("generation_artifacts", {}).pop(work.task_name, None)
+                outcomes.append(
+                    TaskOutcome.failed(
+                        work.task_name,
+                        CHAT_BENCHMARK_ROUTE,
+                        classify_task_exception(FailurePhase.SERIALIZATION, exc),
+                        str(exc),
+                        exception=exc,
+                    )
+                )
+        return outcomes
+    finally:
+        for work in generation_work:
+            _cleanup_generation_result(work.generation_result)
 
 
 def resolve_task_routes(
@@ -370,17 +477,27 @@ def evaluate(
             elif args.model == "vllm":
                 lm.batch_size = batch_size
             try:
-                generation_result = benchmark.generate_responses(lm)
+                with capture_endpoint_failures() as endpoint_failures:
+                    generation_result = benchmark.generate_responses(lm)
             except Exception as exc:
                 outcomes.append(
                     TaskOutcome.failed(
                         task,
                         CHAT_BENCHMARK_ROUTE,
-                        FailureCategory.GENERATION,
+                        classify_task_exception(FailurePhase.GENERATION, exc),
                         str(exc),
                         exception=exc,
                     )
                 )
+                continue
+            if failure_outcome := _endpoint_failure_outcome(
+                task,
+                CHAT_BENCHMARK_ROUTE,
+                endpoint_failures,
+                generation_result,
+            ):
+                outcomes.append(failure_outcome)
+                _cleanup_generation_result(generation_result)
                 continue
             if generation_result is None:
                 if getattr(lm, "rank", 0) == 0:
@@ -402,38 +519,20 @@ def evaluate(
             )
 
         if lm is not None and hasattr(lm, "upload_to_hub"):
-            outcomes.extend(
-                exported_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result)
-                for work in generation_work
-            )
+            try:
+                for work in generation_work:
+                    outcome = exported_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result)
+                    outcomes.append(outcome)
+                    if outcome.status is not TaskStatus.FAILED:
+                        _record_generation_artifacts(results, work)
+            finally:
+                for work in generation_work:
+                    _cleanup_generation_result(work.generation_result)
         elif generation_work and (lm.world_size <= 1 or lm.rank == 0):
-            max_workers = min(len(generation_work), (os.cpu_count() or 1) * 2)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                evaluated = list(executor.map(_score_custom_task, generation_work))
-
-            # Sample serialization happens after scoring, so it cannot alter a score.
-            for work, (outcome, scored_result) in zip(generation_work, evaluated):
-                outcomes.append(outcome)
-                if outcome.status is TaskStatus.FAILED:
-                    continue
-                results["results"][work.task_name] = scored_result
-                if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
-                    continue
-
-                try:
-                    task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
-                except Exception as e:
-                    eval_logger.warning("log_samples: could not serialize %s (%s)", work.task_name, e)
-                    continue
-                if not task_samples:
-                    eval_logger.warning("log_samples: scored task %s produced no sample records", work.task_name)
-                    continue
-                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
-                    work.task_name,
-                    task_samples,
-                    work.benchmark.sample_manifest,
-                )
-                results["results"][work.task_name] = without_embedded_samples(scored_result)
+            outcomes.extend(_grade_custom_tasks(generation_work, args, results))
+        else:
+            for work in generation_work:
+                _cleanup_generation_result(work.generation_result)
 
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
@@ -442,46 +541,56 @@ def evaluate(
         for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
             sample_manifest = SampleManifest(pretrain_task)
             try:
-                pretrain_results = lm_eval_native.resume_simple_evaluate(
-                    pretrain_evaluator.simple_evaluate,
-                    resume_manager_factory=resume_factory,
-                    sample_manifest=sample_manifest,
-                    model=args.model,
-                    model_args=args.model_args,
-                    tasks=[pretrain_task],
-                    num_fewshot=args.num_fewshot,
-                    batch_size=batch_size,
-                    max_batch_size=args.max_batch_size,
-                    device=args.device,
-                    use_cache=args.use_cache,
-                    limit=args.limit,
-                    check_integrity=args.check_integrity,
-                    write_out=args.write_out,
-                    log_samples=args.log_samples,
-                    evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
-                    system_instruction=args.system_instruction,
-                    apply_chat_template=args.apply_chat_template,
-                    fewshot_as_multiturn=args.fewshot_as_multiturn,
-                    gen_kwargs=args.gen_kwargs,
-                    task_manager=pretrain_task_manager,
-                    verbosity=args.verbosity,
-                    predict_only=args.predict_only,
-                    confirm_run_unsafe_code=args.confirm_run_unsafe_code,
-                    random_seed=args.seed[0] if hasattr(args, "seed") else None,
-                    numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
-                    torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
-                    fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
-                )
+                with capture_endpoint_failures() as endpoint_failures:
+                    pretrain_results = lm_eval_native.resume_simple_evaluate(
+                        pretrain_evaluator.simple_evaluate,
+                        resume_manager_factory=resume_factory,
+                        sample_manifest=sample_manifest,
+                        model=args.model,
+                        model_args=args.model_args,
+                        tasks=[pretrain_task],
+                        num_fewshot=args.num_fewshot,
+                        batch_size=batch_size,
+                        max_batch_size=args.max_batch_size,
+                        device=args.device,
+                        use_cache=args.use_cache,
+                        limit=args.limit,
+                        check_integrity=args.check_integrity,
+                        write_out=args.write_out,
+                        log_samples=args.log_samples,
+                        evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
+                        system_instruction=args.system_instruction,
+                        apply_chat_template=args.apply_chat_template,
+                        fewshot_as_multiturn=args.fewshot_as_multiturn,
+                        gen_kwargs=args.gen_kwargs,
+                        task_manager=pretrain_task_manager,
+                        verbosity=args.verbosity,
+                        predict_only=args.predict_only,
+                        confirm_run_unsafe_code=args.confirm_run_unsafe_code,
+                        random_seed=args.seed[0] if hasattr(args, "seed") else None,
+                        numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
+                        torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
+                        fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
+                    )
             except Exception as exc:
                 outcomes.append(
                     TaskOutcome.failed(
                         pretrain_task,
                         LM_EVAL_ROUTE,
-                        FailureCategory.GRADING,
+                        classify_task_exception(FailurePhase.EVALUATION, exc),
                         str(exc),
                         exception=exc,
                     )
                 )
+                continue
+
+            if failure_outcome := _endpoint_failure_outcome(
+                pretrain_task,
+                LM_EVAL_ROUTE,
+                endpoint_failures,
+                pretrain_results,
+            ):
+                outcomes.append(failure_outcome)
                 continue
 
             outcome = lm_eval_task_outcome(
