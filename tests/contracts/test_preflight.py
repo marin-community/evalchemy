@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from lm_eval.api.instance import Instance
+from lm_eval.models.api_models import JsonChatStr
 
 from eval.contracts.preflight import (
     EvaluationPreflightError,
@@ -120,6 +121,43 @@ def test_invalid_representative_request_fails_before_generation():
             raise AssertionError("generation must not receive an invalid request")
 
     request = Instance("generate_until", {}, ("", {}), 0)
+
+    with pytest.raises(ModelRequestValidationError):
+        _Benchmark().compute(_Model(), [request])
+
+
+def test_json_chat_request_reaches_generation():
+    class _Model:
+        rank = 0
+        world_size = 1
+
+        def generate_until(self, requests):
+            return ["answer" for _ in requests]
+
+    request = Instance(
+        "generate_until",
+        {},
+        (JsonChatStr('[{"role": "user", "content": "question"}]'), {}),
+        0,
+    )
+
+    assert _Benchmark().compute(_Model(), [request]) == ["answer"]
+
+
+def test_empty_json_chat_request_fails_before_generation():
+    class _Model:
+        rank = 0
+        world_size = 1
+
+        def generate_until(self, requests):
+            raise AssertionError("generation must not receive an empty chat request")
+
+    request = Instance(
+        "generate_until",
+        {},
+        (JsonChatStr('[{"role": "user", "content": ""}]'), {}),
+        0,
+    )
 
     with pytest.raises(ModelRequestValidationError):
         _Benchmark().compute(_Model(), [request])

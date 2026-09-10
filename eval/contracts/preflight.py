@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -153,7 +154,26 @@ def validate_model_request(instance: "Instance") -> None:
 
     prompt, parameters = arguments
     string_prompt = isinstance(prompt, str) and bool(prompt.strip())
-    chat_prompt = (
+    chat_prompt = _is_non_empty_chat_prompt(prompt)
+    if not string_prompt and not chat_prompt:
+        raise ModelRequestValidationError(
+            "generation request prompt must be non-empty text or a non-empty chat message sequence"
+        )
+    if not isinstance(parameters, Mapping):
+        raise ModelRequestValidationError("generation request parameters must be a mapping")
+
+
+def _is_non_empty_chat_prompt(prompt: Any) -> bool:
+    """Recognize raw messages and lm-eval's serialized chat request wrapper."""
+    from lm_eval.models.api_models import JsonChatStr
+
+    if isinstance(prompt, JsonChatStr):
+        try:
+            prompt = json.loads(prompt.prompt)
+        except (TypeError, json.JSONDecodeError):
+            return False
+
+    return (
         isinstance(prompt, Sequence)
         and not isinstance(prompt, (str, bytes))
         and bool(prompt)
@@ -163,12 +183,6 @@ def validate_model_request(instance: "Instance") -> None:
             for message in prompt
         )
     )
-    if not string_prompt and not chat_prompt:
-        raise ModelRequestValidationError(
-            "generation request prompt must be non-empty text or a non-empty chat message sequence"
-        )
-    if not isinstance(parameters, Mapping):
-        raise ModelRequestValidationError("generation request parameters must be a mapping")
 
 
 def prepare_task(
