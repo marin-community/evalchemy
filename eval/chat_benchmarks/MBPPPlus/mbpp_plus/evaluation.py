@@ -280,4 +280,5 @@ def evaluate_functional_correctness(
     else:
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
+    pass_at_k["scored_count"] = int(np.sum(total))
     return pass_at_k

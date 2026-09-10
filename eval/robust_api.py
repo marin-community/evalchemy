@@ -17,11 +17,10 @@ eval: the served model was healthy (a 200 payload-probe returned coherent math),
 transient async request error aborted the whole gsm8k gather.
 
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
-prevents one exhausted request from aborting the batch. It returns a stable,
-human-readable infrastructure-error marker instead of lm-eval's empty-generation
-placeholder, so artifacts distinguish a request failure from a genuine empty model
-completion. Retries themselves are unchanged (the tenacity wrapper is preserved
-verbatim inside the guard).
+prevents one exhausted request from cancelling its siblings. It collects a stable,
+human-readable infrastructure-error marker, waits for the whole batch to settle, then
+raises a typed terminal failure before lm-eval can score or cache the batch. Retries
+themselves are unchanged (the tenacity wrapper is preserved verbatim inside the guard).
 
 Only the *generative* path (``generate=True`` -> ``generate_until``) is softened; the
 loglikelihood path (``generate=False``) re-raises exactly as before, because turning a
@@ -40,6 +39,12 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from threading import Lock
+from typing import Iterator
 
 from eval.completion_response import (
     CompletionClassification,
@@ -47,6 +52,7 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
+from eval.contracts.failures import EndpointBatchFailure, FailureCategory
 from eval.generation_stops import bounded_request_stops
 from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
@@ -58,6 +64,53 @@ _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
+ENDPOINT_FAILURE_CATEGORIES = (
+    FailureCategory.MODEL_TRANSPORT,
+    FailureCategory.MALFORMED_MODEL_RESPONSE,
+)
+_active_failure_capture: ContextVar["EndpointFailureCapture | None"] = ContextVar(
+    "evalchemy_endpoint_failure_capture",
+    default=None,
+)
+
+
+@dataclass
+class EndpointFailureCapture:
+    """Task-scoped terminal endpoint failures collected across async requests."""
+
+    counts: Counter[FailureCategory] = field(default_factory=Counter)
+    _lock: Lock = field(default_factory=Lock)
+
+    def record(self, category: FailureCategory, count: int) -> None:
+        if category not in ENDPOINT_FAILURE_CATEGORIES:
+            raise ValueError(f"not an endpoint failure category: {category}")
+        with self._lock:
+            self.counts[category] += count
+
+    def primary_failure(self) -> tuple[FailureCategory, int] | None:
+        """Return the highest-priority terminal failure captured for this task."""
+        for category in ENDPOINT_FAILURE_CATEGORIES:
+            if count := self.counts[category]:
+                return category, count
+        return None
+
+
+@contextmanager
+def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
+    """Isolate terminal endpoint failures to one task invocation."""
+    capture = EndpointFailureCapture()
+    token = _active_failure_capture.set(capture)
+    try:
+        yield capture
+    finally:
+        _active_failure_capture.reset(token)
+
+
+def record_endpoint_failure(category: FailureCategory, count: int = 1) -> None:
+    """Record an endpoint failure without turning it into benchmark text."""
+    capture = _active_failure_capture.get()
+    if capture is not None:
+        capture.record(category, count)
 
 
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
@@ -80,6 +133,22 @@ def request_failure_placeholder(exc: BaseException) -> str:
     if detail:
         detail = f": {detail[:_MAX_REQUEST_FAILURE_DETAIL]}"
     return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
+
+
+def contains_request_failure(value: object) -> bool:
+    """Return whether a generation/result tree contains a terminal request marker."""
+    return count_request_failures(value) > 0
+
+
+def count_request_failures(value: object) -> int:
+    """Count terminal endpoint markers in a nested generation/result tree."""
+    if isinstance(value, str):
+        return int(value.startswith(_REQUEST_FAILURE_PREFIX))
+    if isinstance(value, Mapping):
+        return sum(count_request_failures(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return sum(count_request_failures(item) for item in value)
+    return 0
 
 
 def openai_model_requires_fixed_generation(model: object) -> bool:
@@ -160,18 +229,15 @@ def apply() -> bool:
                         # upstream fail-fast behavior.
                         raise
                     n = len(message) if hasattr(message, "__len__") else 1
+                    record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
                     placeholder = request_failure_placeholder(exc)
                     logger.error(
-                        "Request failed after all retries; returning an infrastructure-error "
+                        "Request failed after all retries; recording an infrastructure-error "
                         "marker for %d prompt(s) (placeholder=%r). Cause: %r",
                         n,
                         placeholder,
                         exc,
                     )
-                    # Cache the failure markers so a --use_cache resume does not re-issue them.
-                    if cache_key:
-                        for ck in cache_key:
-                            self.cache_hook.add_partial("generate_until", ck, placeholder)
                     return [placeholder] * n
 
             tasks = []
@@ -207,7 +273,10 @@ def apply() -> bool:
                             self.max_length + 1,
                         )
                 tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
-            return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            if failure_count := count_request_failures(outputs):
+                raise EndpointBatchFailure(failure_count)
+            return outputs
 
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
@@ -254,6 +323,7 @@ def apply_completion_normalization() -> bool:
                     )
             except (IndexError, KeyError, TypeError, ValueError) as exc:
                 # Preserve lm-eval's content-filter fallback for malformed choices.
+                record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
                 logger.warning("completion normalization: could not parse generation (%s)", exc)
                 parsed = [""]
             generated.extend(parsed)
@@ -280,6 +350,8 @@ def apply_completion_normalization() -> bool:
                 total,
                 dict(self.completion_response_summary),
             )
+        if completion_response_quality_invalid(classifications):
+            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
         if self.completion_response_quality_invalid:
             logger.error(
                 "completion normalization: result quality is invalid because at least half of responses lacked final content"

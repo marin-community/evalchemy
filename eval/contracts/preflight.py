@@ -11,7 +11,8 @@ from typing import Any, Protocol
 
 from lm_eval.api.instance import Instance
 
-from .task_outcome import FailureCategory, TaskFailure, TaskRoute
+from .failures import FailureCategory, FailurePhase, ModelRequestValidationError, classify_task_exception
+from .task_outcome import TaskFailure, TaskRoute
 
 TASK_PREPARATION_SCHEMA_VERSION = 1
 
@@ -109,7 +110,7 @@ class TaskPreparation:
             status=TaskPreparationStatus.FAILED,
             resources=tuple(resources),
             failure=TaskFailure(
-                category=FailureCategory.PREPARATION,
+                category=classify_task_exception(FailurePhase.PREPARATION, exception),
                 message=str(exception),
                 exception_type=type(exception).__name__,
             ),
@@ -137,10 +138,6 @@ class EvaluationPreflightError(RuntimeError):
             if item.status is TaskPreparationStatus.FAILED and item.failure is not None
         ]
         super().__init__("Evaluation preflight failed: " + "; ".join(failures))
-
-
-class ModelRequestValidationError(ValueError):
-    """Raised before generation when a representative request is malformed."""
 
 
 def validate_model_request(instance: Instance) -> None:
@@ -285,8 +282,9 @@ def _task_preparation_from_mapping(task_name: str, value: Any) -> None:
     if status is TaskPreparationStatus.READY and failure is not None:
         raise ValueError("ready task preparation contains a failure")
     if status is TaskPreparationStatus.FAILED:
-        if not isinstance(failure, Mapping) or failure.get("category") != FailureCategory.PREPARATION:
-            raise ValueError("failed task preparation lacks a preparation failure")
+        valid_categories = {FailureCategory.PREPARATION, FailureCategory.RESOURCE}
+        if not isinstance(failure, Mapping) or failure.get("category") not in valid_categories:
+            raise ValueError("failed task preparation lacks a preparation or resource failure")
 
 
 def _validate_serialized_resource(value: Any) -> None:

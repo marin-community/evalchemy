@@ -32,13 +32,14 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.grading import GraderExecutionMode
+from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
     SampleManifest,
     SampleRequest,
 )
-from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
 from eval.contracts.task_outcome import TaskRoute
 
 
@@ -46,6 +47,7 @@ class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
 
     RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SERIAL
 
     def __init__(
         self,

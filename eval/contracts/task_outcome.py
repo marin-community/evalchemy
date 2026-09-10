@@ -9,6 +9,10 @@ from enum import StrEnum
 from numbers import Real
 from typing import Any, Literal
 
+from .failures import FailureCategory as FailureCategory
+from .failures import FailurePhase as FailurePhase
+from .failures import classify_task_exception as classify_task_exception
+from .grading import validate_serialized_artifact_manifests
 from .sample_manifest import SampleCoverageError, SampleManifest
 
 TASK_OUTCOME_SCHEMA_VERSION = 1
@@ -28,16 +32,6 @@ class TaskRoute(StrEnum):
     CUSTOM = "Evalchemy chat benchmark"
     LM_EVAL = "lm-eval"
     UNKNOWN = "unknown"
-
-
-class FailureCategory(StrEnum):
-    """Failure classes needed at the task execution boundary."""
-
-    PREPARATION = "preparation"
-    GENERATION = "generation"
-    GRADING = "grading"
-    INCOMPLETE_EVALUATION = "incomplete_evaluation"
-    INVALID_RESULT = "invalid_result"
 
 
 @dataclass(frozen=True)
@@ -273,10 +267,11 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
                 )
             ]
         )
-    from .preflight import validate_task_preparations
+    from .preflight import validate_task_preparations  # noqa: PLC0415 - break preflight/outcome cycle
 
     try:
         validate_task_preparations(result.get("task_preparations", {}), [str(name) for name in serialized])
+        validate_serialized_artifact_manifests(result.get("generation_artifacts", {}))
     except (TypeError, ValueError) as exc:
         raise EvaluationRunError(
             [

@@ -7,9 +7,21 @@ from types import SimpleNamespace
 
 import pytest
 
+from eval.contracts.failures import ModelRequestValidationError
+from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
-from eval.contracts.task_outcome import EvaluationRunError, FailureCategory, TaskRoute, TaskStatus, lm_eval_task_outcome
+from eval.contracts.task_outcome import (
+    EvaluationRunError,
+    FailureCategory,
+    FailurePhase,
+    TaskRoute,
+    TaskStatus,
+    classify_task_exception,
+    lm_eval_task_outcome,
+    validate_result_document,
+)
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
+from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
 
@@ -78,7 +90,7 @@ def _args(**overrides):
     return Namespace(**values)
 
 
-def _custom_evaluate(benchmark):
+def _custom_evaluate(benchmark, **arg_overrides):
     task = "contract_task"
     return evaluate(
         lm=_Model(),
@@ -87,7 +99,7 @@ def _custom_evaluate(benchmark):
         task_list=[task],
         task_routes={task: CHAT_BENCHMARK_ROUTE},
         batch_sizes_list=[1],
-        args=_args(),
+        args=_args(**arg_overrides),
     )
 
 
@@ -119,6 +131,17 @@ def test_custom_task_empty_metrics_fail_the_run():
     assert raised.value.outcomes[0].failure.category is FailureCategory.INCOMPLETE_EVALUATION
 
 
+def test_generation_exception_taxonomy_distinguishes_policy_and_transport_failures():
+    assert (
+        classify_task_exception(FailurePhase.GENERATION, ModelRequestValidationError("empty prompt"))
+        is FailureCategory.GENERATION_POLICY
+    )
+    assert (
+        classify_task_exception(FailurePhase.GENERATION, TimeoutError("endpoint timeout"))
+        is FailureCategory.MODEL_TRANSPORT
+    )
+
+
 def test_custom_task_zero_score_is_a_successful_typed_outcome():
     benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 0.0})
 
@@ -136,6 +159,83 @@ def test_custom_task_zero_score_is_a_successful_typed_outcome():
         "scored_count": 1,
         "failure": None,
     }
+
+
+def test_custom_grader_infrastructure_failure_cannot_become_a_score():
+    benchmark = _Benchmark(
+        {"examples": [{"prompt": "x"}]},
+        grading_error=RuntimeError("sandbox failed"),
+    )
+
+    with pytest.raises(EvaluationRunError) as raised:
+        _custom_evaluate(benchmark)
+
+    assert raised.value.outcomes[0].failure.category is FailureCategory.GRADER_INFRASTRUCTURE
+
+
+def test_endpoint_transport_failure_cannot_reach_the_grader_as_model_text():
+    class _TransportFailureBenchmark(_Benchmark):
+        def generate_responses(self, model):
+            return {
+                "examples": [
+                    {"output": request_failure_placeholder(TimeoutError("endpoint timeout"))}
+                ]
+            }
+
+        def evaluate_responses(self, results):
+            raise AssertionError("transport failures must not be scored")
+
+    benchmark = _TransportFailureBenchmark({})
+
+    with pytest.raises(EvaluationRunError) as raised:
+        _custom_evaluate(benchmark)
+
+    assert raised.value.outcomes[0].failure.category is FailureCategory.MODEL_TRANSPORT
+
+
+def test_artifacts_are_cleaned_when_grader_infrastructure_fails():
+    artifacts = GenerationArtifactManifest.temporary()
+    artifact = artifacts.write_jsonl("generated", "generated.jsonl", [{"id": "a"}], expected_count=1)
+    benchmark = _Benchmark(
+        {"examples": [{"prompt": "x"}], "artifacts": artifacts},
+        grading_error=RuntimeError("grader crashed"),
+    )
+
+    with pytest.raises(EvaluationRunError):
+        _custom_evaluate(benchmark)
+
+    assert not artifact.path.parent.exists()
+
+
+def test_successful_artifact_manifest_is_persisted_before_cleanup():
+    artifacts = GenerationArtifactManifest.temporary()
+    artifact = artifacts.write_jsonl("generated", "generated.jsonl", [{"id": "a"}], expected_count=1)
+    benchmark = _Benchmark(
+        {"examples": [{"prompt": "x"}], "artifacts": artifacts},
+        scored_result={"accuracy": 1.0},
+    )
+
+    result = _custom_evaluate(benchmark)
+
+    assert result["generation_artifacts"]["contract_task"]["artifacts"][0]["expected_count"] == 1
+    assert not artifact.path.parent.exists()
+    validate_result_document(result)
+
+
+def test_requested_sample_serialization_failure_is_typed_and_terminal():
+    class _SerializationFailureBenchmark(_Benchmark):
+        def to_samples(self, generation_result, scored_result):
+            raise TypeError("sample is not serializable")
+
+    benchmark = _SerializationFailureBenchmark(
+        {"examples": [{"prompt": "x"}]},
+        scored_result={"accuracy": 1.0},
+    )
+
+    with pytest.raises(EvaluationRunError) as raised:
+        _custom_evaluate(benchmark, log_samples=True)
+
+    assert raised.value.outcomes[0].failure.category is FailureCategory.SERIALIZATION
 
 
 def test_custom_task_rejects_scoring_coverage_drift():
@@ -221,7 +321,7 @@ def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monke
     with pytest.raises(EvaluationRunError) as raised:
         _lm_eval_evaluate(monkeypatch, error=RuntimeError("grader crashed"))
 
-    assert raised.value.outcomes[0].failure.category is FailureCategory.GRADING
+    assert raised.value.outcomes[0].failure.category is FailureCategory.GRADER_INFRASTRUCTURE
     assert raised.value.outcomes[0].failure.exception_type == "RuntimeError"
 
 
