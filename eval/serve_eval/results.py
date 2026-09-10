@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from eval.contracts.outcomes import TaskOutcome
+from eval.contracts.task_outcome import TaskOutcome
 
 
 class EvalResults(BaseModel):

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from eval.contracts.outcomes import EvaluationRunError, FailureCategory, TaskStatus
+from eval.contracts.task_outcome import EvaluationRunError, FailureCategory, TaskStatus
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark

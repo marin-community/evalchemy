@@ -46,7 +46,7 @@ from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # reg
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
-from eval.contracts.outcomes import (
+from eval.contracts.task_outcome import (
     FailureCategory,
     TaskOutcome,
     TaskRoute,

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from eval.contracts.outcomes import EvaluationRunError
+from eval.contracts.task_outcome import EvaluationRunError
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
 from eval.task import BaseBenchmark
