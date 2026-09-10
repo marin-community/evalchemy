@@ -40,6 +40,9 @@ _LABEL_PATTERN = re.compile(r"correct|incorrect|not_attempted", re.IGNORECASE)
 # Concurrency for the async judge fan-out. The OpenAI chat-completions endpoint is I/O
 # bound, so a modest semaphore keeps throughput high without tripping rate limits.
 DEFAULT_NUM_WORKERS = 16
+# Reasoning models account for hidden reasoning and visible content against the same
+# completion budget. Sixteen tokens can end before the requested label is emitted.
+MAX_JUDGE_TOKENS = 256
 
 
 def _parse_judgment(text: str) -> str:
@@ -79,7 +82,7 @@ async def judge_answer(
     )
     response = await client.chat.completions.create(
         model=judge_model,
-        max_tokens=16,
+        max_tokens=MAX_JUDGE_TOKENS,
         temperature=0,
         messages=[{"role": "user", "content": prompt}],
     )
