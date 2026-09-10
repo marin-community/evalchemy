@@ -39,11 +39,11 @@ class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
     async def create(self, **kwargs):
         self.requests += 1
         if self.requests == 1:
-            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")
+            choice = SimpleNamespace(message=SimpleNamespace(content=""))
         elif self.requests == 2:
-            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="stop")
+            choice = SimpleNamespace(message=SimpleNamespace(content=""))
         else:
-            choice = SimpleNamespace(message=SimpleNamespace(content="correct"), finish_reason="stop")
+            choice = SimpleNamespace(message=SimpleNamespace(content="correct"))
         return SimpleNamespace(choices=[choice])
 
 
