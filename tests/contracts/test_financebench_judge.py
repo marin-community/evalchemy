@@ -31,6 +31,20 @@ class _FailingAsyncOpenAI(_FakeAsyncOpenAI):
         raise RuntimeError("judge unavailable")
 
 
+class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.requests = 0
+
+    async def create(self, **kwargs):
+        self.requests += 1
+        if self.requests == 1:
+            choice = SimpleNamespace(message=SimpleNamespace(content=""), finish_reason="length")
+        else:
+            choice = SimpleNamespace(message=SimpleNamespace(content="correct"), finish_reason="stop")
+        return SimpleNamespace(choices=[choice])
+
+
 def test_financebench_judge_uses_dedicated_endpoint_and_key(monkeypatch):
     monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FakeAsyncOpenAI)
 
@@ -61,6 +75,21 @@ def test_financebench_judge_api_failure_propagates(monkeypatch):
                 base_url="https://judge.example/v1",
             )
         )
+
+
+def test_financebench_judge_allows_reasoning_before_label(monkeypatch):
+    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _ReasoningJudgeAsyncOpenAI)
+
+    judgments = asyncio.run(
+        finance_judge.judge_all(
+            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
+            "reasoning-judge",
+            api_key="judge-key",
+            base_url="https://judge.example/v1",
+        )
+    )
+
+    assert judgments == [("correct", "correct")]
 
 
 def test_financebench_malformed_judge_response_propagates(monkeypatch):
