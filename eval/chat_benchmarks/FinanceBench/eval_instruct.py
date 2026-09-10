@@ -111,7 +111,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
             Dictionary containing the examples enriched with ``model_output``, or None
             for non-primary ranks.
         """
-        examples = self.load_questions()
+        examples = self.limit_samples(self.load_questions())
 
         all_instances = []
         for idx, example in enumerate(examples):

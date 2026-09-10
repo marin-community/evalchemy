@@ -1,9 +1,11 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from eval.chat_benchmarks.FinanceBench import judge as finance_judge
+from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
 from eval.task import TaskManager
 
 
@@ -45,6 +47,21 @@ class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
         else:
             choice = SimpleNamespace(message=SimpleNamespace(content="correct"))
         return SimpleNamespace(choices=[choice])
+
+
+class _CandidateModel:
+    rank = 0
+    world_size = 1
+
+    def __init__(self):
+        self.generated_ids = []
+
+    def apply_chat_template(self, messages):
+        return messages
+
+    def generate_until(self, instances):
+        self.generated_ids.extend(instance.idx for instance in instances)
+        return ["candidate answer" for _ in instances]
 
 
 def test_financebench_judge_uses_dedicated_endpoint_and_key(monkeypatch):
@@ -130,3 +147,20 @@ def test_financebench_auto_annotator_uses_dedicated_judge_model(monkeypatch):
 
     assert manager.load_failures == {}
     assert manager.get_benchmark("FinanceBench").judge_model == "openai/gpt-oss-120b"
+
+
+def test_financebench_sample_cap_limits_generated_and_returned_examples(tmp_path):
+    rows = [
+        {"question": f"Question {index}", "answer": str(index), "evidence_text": "Evidence"}
+        for index in range(3)
+    ]
+    data_file = tmp_path / "financebench.jsonl"
+    data_file.write_text("".join(f"{json.dumps(row)}\n" for row in rows))
+    benchmark = FinanceBenchBenchmark(data_file=str(data_file), judge_api_key="judge-key")
+    benchmark.set_evaluation_limits(limit=1)
+    model = _CandidateModel()
+
+    generated = benchmark.generate_responses(model)
+
+    assert model.generated_ids == [0]
+    assert [example["question"] for example in generated["examples"]] == ["Question 0"]

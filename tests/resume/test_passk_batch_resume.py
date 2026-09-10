@@ -240,3 +240,22 @@ def test_default_batch_size_is_single_batch(tmp_path):
     states = read_manifest(tmp_path / "resume" / "manifest.jsonl")
     assert [s.unit["batch_idx"] for s in states] == [0]  # one batch
     assert set(states[0].payload["outputs"]) == {"0", "1", "2", "3", "4"}
+
+
+def test_sample_cap_applies_to_resumable_pass_at_k_batches(tmp_path):
+    num_problems, n, B = 5, 3, 2
+    fp = _fingerprint(B)
+    bench = _Bench(num_samples=n)
+    bench.set_evaluation_limits(limit=2)
+    bench.passk_batch_size = B
+    bench.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fp, mode="auto"))
+    model = _FakeLM()
+
+    outputs = bench.generate_n_samples_batched(model, _build_instances_factory(num_problems), n)
+
+    assert outputs == [
+        ["sol-0-0", "sol-0-1", "sol-0-2"],
+        ["sol-1-0", "sol-1-1", "sol-1-2"],
+    ]
+    assert sorted(set(problem for problem, _ in model.generated)) == [0, 1]
+    assert bench.sample_manifest.generated_sample_count == 2

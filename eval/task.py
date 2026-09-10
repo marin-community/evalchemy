@@ -6,7 +6,7 @@ import random
 import sys
 from abc import ABC, abstractmethod
 from itertools import islice
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
@@ -40,8 +40,12 @@ from eval.contracts.sample_manifest import (
     SampleEntry,
     SampleManifest,
     SampleRequest,
+    canonical_json_identity,
 )
 from eval.contracts.task_outcome import TaskRoute
+
+
+_Sample = TypeVar("_Sample")
 
 
 class BaseBenchmark(ABC):
@@ -83,6 +87,7 @@ class BaseBenchmark(ABC):
         self._evaluation_max_length: Optional[int] = None
         self._evaluation_max_tokens: Optional[int] = None
         self._evaluation_limit: Optional[int] = None
+        self._limited_sample_ids: Dict[str, set[str]] = {}
         self._sample_manifest = SampleManifest(self.benchmark_name)
 
     @property
@@ -127,6 +132,7 @@ class BaseBenchmark(ABC):
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
         self._evaluation_limit = limit if limit is not None and limit > 0 else None
+        self._limited_sample_ids.clear()
         if max_length is not None and hasattr(self, "max_model_length"):
             self.max_model_length = max_length
         if max_tokens is not None:
@@ -144,6 +150,33 @@ class BaseBenchmark(ABC):
     def evaluation_limit(self) -> Optional[int]:
         """Return the normalized sample cap for this custom benchmark."""
         return self._evaluation_limit
+
+    def limit_samples(self, samples: Iterable[_Sample]) -> List[_Sample]:
+        """Materialize at most the configured number of source samples."""
+        if self.evaluation_limit is None:
+            return list(samples)
+        return list(islice(samples, self.evaluation_limit))
+
+    def _limit_instances(self, inputs: List[Instance], sample_namespace: str) -> List[Instance]:
+        """Enforce the sample cap at the common custom-benchmark inference boundary.
+
+        Selection is tracked per namespace and source identity so chunked callers
+        cannot exceed the cap, while repeated generations of an already-selected
+        sample (for example pass@k) remain valid.
+        """
+        if self.evaluation_limit is None:
+            return inputs
+
+        selected_ids = self._limited_sample_ids.setdefault(sample_namespace, set())
+        limited_inputs = []
+        for instance in inputs:
+            source_id = canonical_json_identity(instance.idx)
+            if source_id not in selected_ids:
+                if len(selected_ids) >= self.evaluation_limit:
+                    continue
+                selected_ids.add(source_id)
+            limited_inputs.append(instance)
+        return limited_inputs
 
     def attach_resume_manager(self, manager) -> None:
         """Attach a ResumeManager so ``compute`` skips already-done problems.
@@ -235,6 +268,7 @@ class BaseBenchmark(ABC):
         for sample_idx in range(n):
             seed = [s + sample_idx for s in base_seed]
             sample_instances = build_instances(sample_idx, seed)
+            sample_instances = self._limit_instances(sample_instances, DEFAULT_SAMPLE_NAMESPACE)
             for ordinal, instance in enumerate(sample_instances):
                 instance.sample_ordinal = ordinal
                 instance.sample_repeat = getattr(instance, "repeat_idx", sample_idx)
@@ -444,6 +478,7 @@ class BaseBenchmark(ABC):
         do_slice: bool = True,
         sample_namespace: str = DEFAULT_SAMPLE_NAMESPACE,
     ) -> List[str]:
+        inputs = self._limit_instances(inputs, sample_namespace)
         inputs = self._normalize_model_args(model, inputs)
         if inputs:
             # Prompt rendering depends on the selected model, so keep this bounded
