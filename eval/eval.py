@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -59,8 +60,9 @@ from eval.contracts.task_outcome import (
 )
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
+from eval.resume import lm_eval_native
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
-from eval.task import TaskManager as InstructTaskManager
+from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
 
 _BIT_CAP = 15_000
 
@@ -74,14 +76,20 @@ CHAT_BENCHMARK_ROUTE = TaskRoute.CUSTOM
 LM_EVAL_ROUTE = TaskRoute.LM_EVAL
 
 
-def _score_custom_task(work: tuple[str, Any, Any]) -> tuple[TaskOutcome, Any]:
-    task_name, benchmark, generation_result = work
+@dataclass(frozen=True)
+class _CustomTaskWork:
+    task_name: str
+    benchmark: BaseBenchmark
+    generation_result: Any
+
+
+def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
     try:
-        scored_result = benchmark.evaluate_responses(generation_result)
+        scored_result = work.benchmark.evaluate_responses(work.generation_result)
     except Exception as exc:
         return (
             TaskOutcome.failed(
-                task_name,
+                work.task_name,
                 CHAT_BENCHMARK_ROUTE,
                 FailureCategory.GRADING,
                 str(exc),
@@ -90,7 +98,10 @@ def _score_custom_task(work: tuple[str, Any, Any]) -> tuple[TaskOutcome, Any]:
             {},
         )
     metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
-    return custom_task_outcome(task_name, CHAT_BENCHMARK_ROUTE, generation_result, metrics), scored_result
+    return (
+        custom_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result, metrics),
+        scored_result,
+    )
 
 
 def resolve_task_routes(
@@ -366,50 +377,51 @@ def evaluate(
                         )
                     )
                 continue
-            generation_work.append((task, benchmark, generation_result))
+            generation_work.append(
+                _CustomTaskWork(
+                    task_name=task,
+                    benchmark=benchmark,
+                    generation_result=generation_result,
+                )
+            )
 
         if lm is not None and hasattr(lm, "upload_to_hub"):
             outcomes.extend(
-                exported_task_outcome(task, CHAT_BENCHMARK_ROUTE, generation_result)
-                for task, _benchmark, generation_result in generation_work
+                exported_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result)
+                for work in generation_work
             )
         elif generation_work and (lm.world_size <= 1 or lm.rank == 0):
             max_workers = min(len(generation_work), (os.cpu_count() or 1) * 2)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 evaluated = list(executor.map(_score_custom_task, generation_work))
 
-            # Store results using valid tasks for correct mapping.  Sample
-            # serialization is deliberately after scoring: it cannot alter a
-            # score, and it retains the generation result custom evaluators need.
-            for (task, benchmark, generation_result), (outcome, scored_result) in zip(generation_work, evaluated):
+            # Sample serialization happens after scoring, so it cannot alter a score.
+            for work, (outcome, scored_result) in zip(generation_work, evaluated):
                 outcomes.append(outcome)
                 if outcome.status is TaskStatus.FAILED:
                     continue
-                results["results"][task] = scored_result
+                results["results"][work.task_name] = scored_result
                 if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
                     continue
 
                 try:
-                    task_samples = benchmark.to_samples(generation_result, scored_result)
+                    task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
                 except Exception as e:
-                    eval_logger.warning("log_samples: could not serialize %s (%s)", task, e)
+                    eval_logger.warning("log_samples: could not serialize %s (%s)", work.task_name, e)
                     continue
                 if not task_samples:
-                    eval_logger.warning("log_samples: scored task %s produced no sample records", task)
+                    eval_logger.warning("log_samples: scored task %s produced no sample records", work.task_name)
                     continue
-                results.setdefault("samples", {})[task] = canonicalize_samples(task, task_samples)
-                results["results"][task] = without_embedded_samples(scored_result)
+                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(work.task_name, task_samples)
+                results["results"][work.task_name] = without_embedded_samples(scored_result)
 
     # Run pretrain evaluations if any exist
     if pretrain_tasks and args is not None:
-        # Stage 3b: route the lm-eval-native `simple_evaluate` call through
-        # the unified ResumeManager (supersedes lm-eval `--use_cache`, decision #5).
-        from eval.resume.lm_eval_native import resume_simple_evaluate
-
+        # Route lm-eval through the shared resume wrapper.
         resume_factory = getattr(args, "resume_manager_factory", None)
         for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
             try:
-                pretrain_results = resume_simple_evaluate(
+                pretrain_results = lm_eval_native.resume_simple_evaluate(
                     pretrain_evaluator.simple_evaluate,
                     resume_manager_factory=resume_factory,
                     model=args.model,

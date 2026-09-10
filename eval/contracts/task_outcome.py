@@ -57,7 +57,6 @@ class TaskOutcome:
     expected_count: int | None
     generated_count: int | None
     scored_count: int | None
-    diagnostics: tuple[str, ...] = ()
     failure: TaskFailure | None = None
     schema_version: Literal[1] = TASK_OUTCOME_SCHEMA_VERSION
 
@@ -97,7 +96,6 @@ class TaskOutcome:
             "expected_count": self.expected_count,
             "generated_count": self.generated_count,
             "scored_count": self.scored_count,
-            "diagnostics": list(self.diagnostics),
             "failure": asdict(self.failure) if self.failure is not None else None,
         }
 
@@ -125,7 +123,7 @@ def custom_task_outcome(
     generated_count = _record_count(generation_result)
     expected_count = _integer_field(generation_result, "total_examples")
     scored_count = _scored_count(scored_result, generated_count)
-    return _successful_outcome(
+    return _adapt_completed_outcome(
         task_name,
         route,
         scored_result,
@@ -166,8 +164,8 @@ def lm_eval_task_outcome(task_name: str, route: TaskRoute, result: Any) -> TaskO
                 "lm-eval omitted the requested task from its result document",
             )
         metrics = groups[task_name]
-    expected_count, scored_count = _lm_eval_counts(task_name, result)
-    return _successful_outcome(
+    expected_count, scored_count = lm_eval_task_counts(task_name, result)
+    return _adapt_completed_outcome(
         task_name,
         route,
         metrics,
@@ -246,37 +244,53 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
         )
     failed = []
     for task_name, value in serialized.items():
-        if not _serialized_outcome_valid(str(task_name), value):
+        try:
+            _task_outcome_from_mapping(str(task_name), value)
+        except (TypeError, ValueError) as exc:
             failed.append(
                 TaskOutcome.failed(
                     str(task_name),
                     _serialized_route(value),
                     FailureCategory.INVALID_RESULT,
-                    "result document contains an invalid task outcome",
+                    str(exc),
                 )
             )
     if failed:
         raise EvaluationRunError(failed)
 
 
-def _serialized_outcome_valid(task_name: str, value: Any) -> bool:
+def _task_outcome_from_mapping(task_name: str, value: Any) -> TaskOutcome:
     if not isinstance(value, Mapping):
-        return False
-    if value.get("schema_version") != TASK_OUTCOME_SCHEMA_VERSION or value.get("task_name") != task_name:
-        return False
+        raise TypeError("task outcome must be a mapping")
+    if value.get("schema_version") != TASK_OUTCOME_SCHEMA_VERSION:
+        raise ValueError(f"task outcome schema_version must be {TASK_OUTCOME_SCHEMA_VERSION}")
+    if value.get("task_name") != task_name:
+        raise ValueError("task outcome key does not match task_name")
     try:
         status = TaskStatus(value.get("status"))
-        TaskRoute(value.get("route"))
+        route = TaskRoute(value.get("route"))
     except (TypeError, ValueError):
-        return False
+        raise ValueError("task outcome has an unknown status or route") from None
+    metrics = value.get("metrics")
+    if not isinstance(metrics, Mapping):
+        raise TypeError("task outcome metrics must be a mapping")
+    if status is TaskStatus.FAILED:
+        raise ValueError("failed task outcome cannot be persisted")
     if value.get("failure") is not None:
-        return False
-    if status is TaskStatus.EXPORTED:
-        return value.get("generated_count") != 0
-    if status is not TaskStatus.SUCCEEDED or not _contains_finite_number(value.get("metrics")):
-        return False
-    counts = (value.get("expected_count"), value.get("generated_count"), value.get("scored_count"))
-    return all(count is None or isinstance(count, int) and not isinstance(count, bool) and count > 0 for count in counts)
+        raise ValueError("completed task outcome contains a failure")
+    outcome = TaskOutcome(
+        task_name=task_name,
+        route=route,
+        status=status,
+        metrics=dict(metrics),
+        expected_count=_serialized_count(value, "expected_count"),
+        generated_count=_serialized_count(value, "generated_count"),
+        scored_count=_serialized_count(value, "scored_count"),
+        failure=None,
+    )
+    if violation := _outcome_contract_violation(outcome):
+        raise ValueError(violation.message)
+    return outcome
 
 
 def _serialized_route(value: Any) -> TaskRoute:
@@ -288,7 +302,7 @@ def _serialized_route(value: Any) -> TaskRoute:
         return TaskRoute.UNKNOWN
 
 
-def _successful_outcome(
+def _adapt_completed_outcome(
     task_name: str,
     route: TaskRoute,
     metrics: Any,
@@ -311,21 +325,7 @@ def _successful_outcome(
             FailureCategory.GRADING,
             str(metrics["error"]),
         )
-    if not _contains_finite_number(metrics):
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INCOMPLETE_EVALUATION,
-            "task returned no finite numeric metrics",
-        )
-    if 0 in {count for count in (expected_count, generated_count, scored_count) if count is not None}:
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INCOMPLETE_EVALUATION,
-            "task reported zero sample coverage",
-        )
-    return TaskOutcome(
+    outcome = TaskOutcome(
         task_name=task_name,
         route=route,
         status=TaskStatus.SUCCEEDED,
@@ -334,6 +334,47 @@ def _successful_outcome(
         generated_count=generated_count,
         scored_count=scored_count,
     )
+    if violation := _outcome_contract_violation(outcome):
+        return TaskOutcome(
+            task_name=task_name,
+            route=route,
+            status=TaskStatus.FAILED,
+            metrics={},
+            expected_count=expected_count,
+            generated_count=generated_count,
+            scored_count=scored_count,
+            failure=violation,
+        )
+    return outcome
+
+
+def _outcome_contract_violation(outcome: TaskOutcome) -> TaskFailure | None:
+    if outcome.status is TaskStatus.FAILED:
+        return outcome.failure or TaskFailure(FailureCategory.INVALID_RESULT, "failed outcome has no failure detail")
+    if outcome.failure is not None:
+        return TaskFailure(FailureCategory.INVALID_RESULT, "completed task outcome contains a failure")
+    if outcome.status is TaskStatus.EXPORTED:
+        if outcome.generated_count == 0:
+            return TaskFailure(FailureCategory.INCOMPLETE_EVALUATION, "task exported zero generations")
+        return None
+    if not _contains_finite_number(outcome.metrics):
+        return TaskFailure(FailureCategory.INCOMPLETE_EVALUATION, "task returned no finite numeric metrics")
+    if 0 in {
+        count
+        for count in (outcome.expected_count, outcome.generated_count, outcome.scored_count)
+        if count is not None
+    }:
+        return TaskFailure(FailureCategory.INCOMPLETE_EVALUATION, "task reported zero sample coverage")
+    return None
+
+
+def _serialized_count(value: Mapping[str, Any], key: str) -> int | None:
+    count = value.get(key)
+    if count is None:
+        return None
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise ValueError(f"task outcome {key} must be a non-negative integer or null")
+    return count
 
 
 def _contains_finite_number(value: Any) -> bool:
@@ -384,7 +425,8 @@ def _integer_field(value: Any, key: str) -> int | None:
     return field if isinstance(field, int) and not isinstance(field, bool) else None
 
 
-def _lm_eval_counts(task_name: str, result: Mapping[str, Any]) -> tuple[int | None, int | None]:
+def lm_eval_task_counts(task_name: str, result: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    """Return lm-eval's original and effective counts from its result document."""
     counts = result.get("n-samples")
     if isinstance(counts, Mapping):
         task_counts = counts.get(task_name)

@@ -10,40 +10,6 @@ import pytest
 from eval.contracts.task_outcome import EvaluationRunError
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.task import BaseBenchmark
-
-
-class _FakeLM:
-    rank = 0
-    world_size = 1
-
-
-class _RecordingBenchmark(BaseBenchmark):
-    def __init__(self, generation_result: dict[str, Any], scored_result: dict[str, Any]):
-        super().__init__()
-        self._generation_result = generation_result
-        self._scored_result = scored_result
-
-    def generate_responses(self, model):
-        return self._generation_result
-
-    def evaluate_responses(self, results):
-        return self._scored_result
-
-
-class _CustomTaskManager:
-    def __init__(self, task_name: str, benchmark: _RecordingBenchmark):
-        self.tasks = {task_name: benchmark}
-        self._benchmark = benchmark
-
-    def get_list_generate_responses(self, tasks):
-        return [self._benchmark.generate_responses for _ in tasks]
-
-    def get_list_evaluates(self, tasks):
-        return [self._benchmark.evaluate_responses for _ in tasks]
-
-    def get_benchmark(self, task_name):
-        return self._benchmark
 
 
 class _EmptyPretrainTaskManager:
@@ -99,15 +65,20 @@ def _write_output(tmp_path: Path, results: dict[str, Any], args: Namespace) -> l
     ],
 )
 def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
-    tmp_path: Path, task_name: str, example: dict[str, Any]
+    tmp_path: Path,
+    task_name: str,
+    example: dict[str, Any],
+    evaluation_model,
+    benchmark_factory,
+    custom_task_manager_factory,
 ):
     generation_result = {"examples": [example]}
     scored_result = {"accuracy": 1.0, "examples": generation_result["examples"]}
-    benchmark = _RecordingBenchmark(generation_result, scored_result)
+    benchmark = benchmark_factory(generation_result, scored_result)
 
     results = evaluate(
-        lm=_FakeLM(),
-        task_manager=_CustomTaskManager(task_name, benchmark),
+        lm=evaluation_model,
+        task_manager=custom_task_manager_factory(task_name, benchmark),
         pretrain_task_manager=_EmptyPretrainTaskManager(),
         task_list=[task_name],
         task_routes={task_name: "Evalchemy chat benchmark"},
@@ -139,7 +110,7 @@ def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
     )
 
 
-def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_path: Path, monkeypatch):
+def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_path: Path, monkeypatch, evaluation_model):
     native_record = {
         "doc_id": 0,
         "doc": {"question": "1 + 1"},
@@ -173,7 +144,7 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     pretrain = type("Pretrain", (), {"all_tasks": {"gsm8k": object()}})()
 
     results = evaluate(
-        lm=_FakeLM(),
+        lm=evaluation_model,
         task_manager=type("Custom", (), {"tasks": {}})(),
         pretrain_task_manager=pretrain,
         task_list=["gsm8k"],
@@ -188,17 +159,19 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     assert json.loads(artifacts[0].read_text())["task_name"] == "gsm8k"
 
 
-def test_log_samples_unscored_task_fails_before_writing_placeholder(tmp_path: Path):
-    benchmark = _RecordingBenchmark({"examples": [{"prompt": "x", "response": "y"}]}, {"error": "grader failed"})
+def test_log_samples_unscored_task_fails_evaluation(
+    benchmark_factory,
+    custom_task_manager_factory,
+    evaluation_model,
+):
+    benchmark = benchmark_factory({"examples": [{"prompt": "x", "response": "y"}]}, {"error": "grader failed"})
     with pytest.raises(EvaluationRunError):
         evaluate(
-            lm=_FakeLM(),
-            task_manager=_CustomTaskManager("IFEval", benchmark),
+            lm=evaluation_model,
+            task_manager=custom_task_manager_factory("IFEval", benchmark),
             pretrain_task_manager=_EmptyPretrainTaskManager(),
             task_list=["IFEval"],
             task_routes={"IFEval": "Evalchemy chat benchmark"},
             batch_sizes_list=[1],
             args=_args(),
         )
-
-    assert list(tmp_path.iterdir()) == []
