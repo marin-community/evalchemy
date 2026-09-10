@@ -32,6 +32,7 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
 from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
 from eval.contracts.sample_manifest import (
@@ -779,15 +780,7 @@ class TaskManager:
                     sys.path.remove(item_path)
 
                 # Find benchmark class
-                benchmark_classes = [
-                    cls
-                    for _, cls in inspect.getmembers(module, inspect.isclass)
-                    if (
-                        issubclass(cls, BaseBenchmark)
-                        and cls != BaseBenchmark
-                        and cls.__module__.replace(".", "/") in eval_path
-                    )
-                ]
+                benchmark_classes = find_custom_benchmark_classes(module, BaseBenchmark)
 
                 if not benchmark_classes:
                     self.load_failures[item] = LookupError(f"No BaseBenchmark subclass found in {item}")
@@ -795,9 +788,14 @@ class TaskManager:
                     continue
 
                 if len(benchmark_classes) > 1:
-                    self.logger.warning(f"Multiple benchmark classes found in {item}, using first one")
+                    self.load_failures[item] = LookupError(
+                        f"Multiple BaseBenchmark subclasses found in {item}"
+                    )
+                    self.logger.warning(f"Multiple BaseBenchmark subclasses found in {item}")
+                    continue
 
                 benchmark_class = benchmark_classes[0]
+                validate_custom_benchmark_class(benchmark_class, BaseBenchmark)
 
                 # Check if this benchmark requires OpenAI as annotator model
                 requires_annotator = "annotator_model" in inspect.signature(benchmark_class.__init__).parameters

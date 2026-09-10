@@ -47,6 +47,7 @@ from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # reg
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
+from eval.contracts.conformance import build_task_contract_registry
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
@@ -223,19 +224,16 @@ def resolve_task_routes(
     task_list: List[str], task_manager: InstructTaskManager, pretrain_task_manager: PretrainTaskManager
 ) -> Dict[str, str]:
     """Resolve each selected task to the registry that will evaluate it."""
+    custom_tasks = set(task_manager.tasks) | set(getattr(task_manager, "load_failures", {}))
+    contracts = build_task_contract_registry(custom_tasks, pretrain_task_manager.all_tasks)
+    contracts_by_name = {contract.task_name: contract for contract in contracts}
     task_routes: Dict[str, str] = {}
     unknown_tasks: List[str] = []
-    available_tasks = sorted(set(task_manager.tasks) | set(pretrain_task_manager.all_tasks))
+    available_tasks = sorted(contracts_by_name)
 
     for task in dict.fromkeys(task_list):
-        if task in task_manager.tasks:
-            task_routes[task] = CHAT_BENCHMARK_ROUTE
-        elif task in getattr(task_manager, "load_failures", {}):
-            # Preserve the intended custom route so typed preflight can report
-            # the construction fault instead of mislabeling the task unknown.
-            task_routes[task] = CHAT_BENCHMARK_ROUTE
-        elif task in pretrain_task_manager.all_tasks:
-            task_routes[task] = LM_EVAL_ROUTE
+        if contract := contracts_by_name.get(task):
+            task_routes[task] = contract.route
         else:
             unknown_tasks.append(task)
 

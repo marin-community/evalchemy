@@ -7,9 +7,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from importlib.resources import files
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from lm_eval.api.instance import Instance
+if TYPE_CHECKING:
+    from lm_eval.api.instance import Instance
 
 from .failures import FailureCategory, FailurePhase, ModelRequestValidationError, classify_task_exception
 from .task_outcome import TaskFailure, TaskRoute
@@ -25,6 +26,7 @@ class ResourceKind(StrEnum):
     NETWORK_DATASET = "network_dataset"
 
 
+@runtime_checkable
 class ResourceRequirement(Protocol):
     """A serializable capability checked during static preparation."""
 
@@ -140,7 +142,7 @@ class EvaluationPreflightError(RuntimeError):
         super().__init__("Evaluation preflight failed: " + "; ".join(failures))
 
 
-def validate_model_request(instance: Instance) -> None:
+def validate_model_request(instance: "Instance") -> None:
     """Validate the common request shape after model-specific prompt preparation."""
     if instance.request_type != "generate_until":
         raise ModelRequestValidationError("custom benchmarks must issue generate_until requests")

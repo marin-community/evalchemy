@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import glob
 import os
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from eval.contracts.task_outcome import TaskOutcome, lm_eval_task_counts
+from eval.contracts.task_outcome import TaskOutcome, lm_eval_task_counts, validate_result_document
 
 
 class EvalResults(BaseModel):
@@ -23,11 +24,21 @@ class EvalResults(BaseModel):
 
     results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     task_outcomes: Dict[str, TaskOutcome] = Field(default_factory=dict)
+    task_preparations: Dict[str, Any] = Field(default_factory=dict)
+    generation_artifacts: Dict[str, Any] = Field(default_factory=dict)
     n_samples: Dict[str, Any] = Field(default_factory=dict, alias="n-samples")
     lm_eval_version: Optional[str] = None
     config: Dict[str, Any] = Field(default_factory=dict)
     model_name: Optional[str] = None
     model_source: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def require_shared_result_contract(cls, value: Any) -> Any:
+        """Reject legacy or malformed result dictionaries at every read path."""
+        if isinstance(value, Mapping):
+            validate_result_document(value)
+        return value
 
     @classmethod
     def load(cls, path: str) -> "EvalResults":
