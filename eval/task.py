@@ -38,10 +38,14 @@ from eval.contracts.sample_manifest import (
     SampleManifest,
     SampleRequest,
 )
+from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
+from eval.contracts.task_outcome import TaskRoute
 
 
 class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
+
+    RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
 
     def __init__(
         self,
@@ -76,12 +80,30 @@ class BaseBenchmark(ABC):
         self._evaluation_max_length: Optional[int] = None
         self._evaluation_max_tokens: Optional[int] = None
         self._evaluation_limit: Optional[int] = None
-        self._sample_manifest = SampleManifest(self.__class__.__name__.replace("Benchmark", ""))
+        self._sample_manifest = SampleManifest(self.benchmark_name)
+
+    @property
+    def benchmark_name(self) -> str:
+        """Return the canonical task name derived from the benchmark class."""
+        return self.__class__.__name__.replace("Benchmark", "")
 
     @property
     def sample_manifest(self) -> SampleManifest:
         """Return this benchmark run's shared sample lifecycle ledger."""
         return self._sample_manifest
+
+    def prepare(self, task_name: str | None = None) -> TaskPreparation:
+        """Validate static resources and loaded data without contacting a model."""
+        name = task_name or self.benchmark_name
+        return prepare_task(
+            name,
+            TaskRoute.CUSTOM,
+            self.RESOURCE_REQUIREMENTS,
+            self.validate_prepared_data,
+        )
+
+    def validate_prepared_data(self) -> None:
+        """Hook for dataset shape and representative-request validation."""
 
     def set_evaluation_limits(
         self,
@@ -199,7 +221,7 @@ class BaseBenchmark(ABC):
         if manager is None:
             return self.generate_n_samples(model, build_instances, n)
 
-        task_name = self.__class__.__name__.replace("Benchmark", "")
+        task_name = self.benchmark_name
         B = int(batch_size) if batch_size else self._passk_batch_size()
 
         # Build the full per-sample instance lists once; slice per batch below. This
@@ -420,9 +442,14 @@ class BaseBenchmark(ABC):
         sample_namespace: str = DEFAULT_SAMPLE_NAMESPACE,
     ) -> List[str]:
         inputs = self._normalize_model_args(model, inputs)
+        if inputs:
+            # Prompt rendering depends on the selected model, so keep this bounded
+            # representative check separate from static preflight while still failing
+            # before the first generation request is sent.
+            validate_model_request(inputs[0])
 
         # Add task_name to each instance
-        task_name = self.__class__.__name__.replace("Benchmark", "")
+        task_name = self.benchmark_name
         for instance in inputs:
             instance.task_name = task_name
 
@@ -703,6 +730,7 @@ class TaskManager:
         self.logger = logging.getLogger("TaskManager")
         self.tasks: Dict[str, Any] = {}
         self.benchmark_instances: Dict[str, BaseBenchmark] = {}
+        self.load_failures: Dict[str, BaseException] = {}
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
@@ -734,6 +762,7 @@ class TaskManager:
 
             eval_path = os.path.join(item_path, "eval_instruct.py")
             if not os.path.exists(eval_path):
+                self.load_failures[item] = FileNotFoundError(f"eval_instruct.py not found in {item}")
                 self.logger.warning(f"eval_instruct.py not found in {item}")
                 continue
 
@@ -742,8 +771,10 @@ class TaskManager:
                 sys.path.insert(0, item_path)
                 spec = importlib.util.spec_from_file_location(f"eval.{benchmarks_dir}.{item}.eval_instruct", eval_path)
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                sys.path.pop(0)
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    sys.path.remove(item_path)
 
                 # Find benchmark class
                 benchmark_classes = [
@@ -757,6 +788,7 @@ class TaskManager:
                 ]
 
                 if not benchmark_classes:
+                    self.load_failures[item] = LookupError(f"No BaseBenchmark subclass found in {item}")
                     self.logger.warning(f"No BaseBenchmark subclass found in {item}")
                     continue
 
@@ -780,11 +812,13 @@ class TaskManager:
                     self.logger.warning(
                         f"Not loading {item} benchmark as it requires OpenAI as annotator model but OPENAI_API_KEY is not set"
                     )
+                    self.load_failures[item] = RuntimeError("OPENAI_API_KEY is required by this benchmark")
                     continue
 
                 self._register_benchmark(item, benchmark_class)
 
             except Exception as e:
+                self.load_failures[item] = e
                 self.logger.error(f"Error loading benchmark from {item}: {str(e)}")
                 continue
 
@@ -828,6 +862,7 @@ class TaskManager:
             self.logger.debug(f"Successfully registered benchmark: {name}")
 
         except Exception as e:
+            self.load_failures[name] = e
             self.logger.error(f"Error registering benchmark {name}: {str(e)}")
 
     def get_list_generate_responses(self, task_list: List[str]) -> List[Callable]:

@@ -3,6 +3,7 @@ import random
 import time
 import logging
 from collections import defaultdict
+from importlib.resources import files
 from typing import Any, Dict, List, Optional
 import math
 import numpy as np
@@ -11,6 +12,11 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+from eval.contracts.preflight import (
+    NetworkDatasetRequirement,
+    PackageFileRequirement,
+    PythonDependencyRequirement,
+)
 from eval.task import BaseBenchmark
 
 
@@ -62,10 +68,13 @@ def format_cot_example(example: Dict[str, Any], including_answer: bool = True) -
     return prompt
 
 
+PROMPT_PACKAGE = "eval.chat_benchmarks.MMLUPro"
+PROMPT_RESOURCE = "initial_prompt.txt"
+
+
 def generate_cot_prompt(val_df: List[Dict[str, Any]], curr: Dict[str, Any], k: int) -> str:
     # Load base template
-    with open("./eval/chat_benchmarks/MMLUPro/initial_prompt.txt") as f:
-        base = f.read()
+    base = files(PROMPT_PACKAGE).joinpath(PROMPT_RESOURCE).read_text()
     subject = curr["category"]
     support = select_by_category(val_df, subject)[:k]
     prompt = base.replace("{$}", subject) + "\n"
@@ -93,6 +102,12 @@ class MMLUProBenchmark(BaseBenchmark):
     and multi-stage regex answer extraction, reporting both overall and per-area accuracy.
     """
 
+    RESOURCE_REQUIREMENTS = (
+        PackageFileRequirement(PROMPT_PACKAGE, PROMPT_RESOURCE),
+        PythonDependencyRequirement("transformers"),
+        NetworkDatasetRequirement("TIGER-Lab/MMLU-Pro"),
+    )
+
     def __init__(
         self,
         ntrain: int = 5,
@@ -118,6 +133,18 @@ class MMLUProBenchmark(BaseBenchmark):
         # prepare tokenizer for dynamic prompt length checks
         # model name will be set later in generate_responses
         self.tokenizer: Optional[AutoTokenizer] = None
+
+    def validate_prepared_data(self) -> None:
+        required_fields = {"answer", "category", "cot_content", "options", "question"}
+        if not self.test_examples or not self.val_examples:
+            raise ValueError("MMLU-Pro test and validation splits must both be non-empty")
+        for split_name, records in (("test", self.test_examples), ("validation", self.val_examples)):
+            missing = required_fields - set(records[0])
+            if missing:
+                raise ValueError(f"MMLU-Pro {split_name} records are missing fields: {sorted(missing)}")
+        representative = generate_cot_prompt(self.val_examples, self.test_examples[0], min(1, self.ntrain))
+        if not representative.strip():
+            raise ValueError("MMLU-Pro representative prompt is empty")
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         # initialize tokenizer on first use

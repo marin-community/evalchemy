@@ -33,6 +33,7 @@ class TaskRoute(StrEnum):
 class FailureCategory(StrEnum):
     """Failure classes needed at the task execution boundary."""
 
+    PREPARATION = "preparation"
     GENERATION = "generation"
     GRADING = "grading"
     INCOMPLETE_EVALUATION = "incomplete_evaluation"
@@ -272,6 +273,21 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
                 )
             ]
         )
+    from .preflight import validate_task_preparations
+
+    try:
+        validate_task_preparations(result.get("task_preparations", {}), [str(name) for name in serialized])
+    except (TypeError, ValueError) as exc:
+        raise EvaluationRunError(
+            [
+                TaskOutcome.failed(
+                    "<run>",
+                    TaskRoute.UNKNOWN,
+                    FailureCategory.INVALID_RESULT,
+                    str(exc),
+                )
+            ]
+        ) from exc
     failed = []
     for task_name, value in serialized.items():
         try:
