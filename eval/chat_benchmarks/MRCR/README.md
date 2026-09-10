@@ -5,12 +5,13 @@ corrected [`openai/mrcr`](https://huggingface.co/datasets/openai/mrcr) dataset.
 The dataset revision and its six parquet shards are pinned so scores do not
 change when the Hub repository changes.
 
-MRCR requires an explicit `--max_length`. It selects only complete published
-context-length bins supported by that window, interleaves the 2-, 4-, and
-8-needle cells, and routes each rendered prompt through Evalchemy's shared
-endpoint context preflight before transport. `--limit` applies to this balanced
-order; `--debug` selects two examples when no smaller explicit limit is
-provided.
+MRCR requires an explicit `--max_length`. It selects every example in the
+published context-length bins supported by that window, interleaves the 2-, 4-,
+and 8-needle cells, and routes each rendered prompt through Evalchemy's shared
+endpoint context preflight before transport. The corrected dataset can have
+slightly uneven cell counts after token lengths are recomputed, so selection
+does not assume a fixed count per cell. `--limit` applies to the balanced order;
+`--debug` selects two examples when no smaller explicit limit is provided.
 
 ```bash
 uvx --from "git+https://github.com/marin-community/evalchemy[mrcr]" eval \
