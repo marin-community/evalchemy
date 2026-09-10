@@ -8,13 +8,10 @@ is then aggregated into accuracy. Adapted from the HLE judge
 """
 
 import asyncio
-import logging
 import re
 from typing import Any, Dict, List, Tuple
 
 from openai import AsyncOpenAI
-
-logger = logging.getLogger(__name__)
 
 # SimpleQA-style judge prompt. The judge sees the question, the gold answer, and the
 # model's answer, and must emit exactly one of the three labels. The rubric explicitly
@@ -44,24 +41,18 @@ _LABEL_PATTERN = re.compile(r"correct|incorrect|not_attempted", re.IGNORECASE)
 # bound, so a modest semaphore keeps throughput high without tripping rate limits.
 DEFAULT_NUM_WORKERS = 16
 
-# Per-request timeout + retries on the judge client. 300s matches HLE; judge completions
-# are short (a single label) so this only fires on a stalled connection.
-client = AsyncOpenAI(timeout=300.0, max_retries=2)
-
 
 def _parse_judgment(text: str) -> str:
     """Reduce the judge's free-form text to one of the three labels (lowercased).
 
     The judge is prompted to emit a bare label, but in practice models occasionally wrap
     it in prose ("The answer is correct.") or capitalization; pull the first label token
-    out so a chatty judge is still scored. Falls back to ``"incorrect"`` only when no
-    label is recoverable (treated as a failed-to-answer, the conservative bucket).
+    out so a chatty judge is still scored. Responses without a label are infrastructure
+    failures and must not be recorded as model errors.
     """
-    if not text:
-        return "not_attempted"
     match = _LABEL_PATTERN.search(text)
     if match is None:
-        return "incorrect"
+        raise ValueError(f"unrecognized FinanceBench judgment: {text!r}")
     label = match.group(0).lower()
     # ``not_attempted`` contains the substring "attempted" and ``incorrect`` contains
     # ``correct``; prefer the longest label match at this position by checking the
@@ -74,34 +65,33 @@ async def judge_answer(
     gold_answer: str,
     predicted_answer: str,
     judge_model: str,
+    client: AsyncOpenAI,
 ) -> Tuple[str, str]:
     """Judge a single (question, gold, predicted) triple via the LLM judge.
 
     Returns a ``(label, raw)`` tuple where ``label`` is one of
     ``correct``/``incorrect``/``not_attempted`` and ``raw`` is the judge's verbatim
-    completion (kept for debugging / per-sample audit). On any API failure the item is
-    conservatively labeled ``incorrect`` so a flaky judge never inflates accuracy.
+    completion (kept for debugging / per-sample audit). Judge transport and response
+    failures propagate so infrastructure errors cannot be recorded as model errors.
     """
     prompt = JUDGE_PROMPT.format(
         question=question, gold=gold_answer, predicted=predicted_answer
     )
-    try:
-        response = await client.chat.completions.create(
-            model=judge_model,
-            max_tokens=16,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        return _parse_judgment(raw), raw
-    except Exception as e:  # network / rate-limit / parse -- never crash the eval
-        logger.warning(f"Judge call failed for question '{question[:60]}...': {e}")
-        return "incorrect", f"<judge_error: {e}>"
+    response = await client.chat.completions.create(
+        model=judge_model,
+        max_tokens=16,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = (response.choices[0].message.content or "").strip()
+    return _parse_judgment(raw), raw
 
 
 async def judge_all(
     items: List[Dict[str, Any]],
     judge_model: str,
+    api_key: str,
+    base_url: str,
     num_workers: int = DEFAULT_NUM_WORKERS,
 ) -> List[Tuple[str, str]]:
     """Judge every item in ``items`` concurrently.
@@ -111,6 +101,7 @@ async def judge_all(
     zip it back onto the examples.
     """
     semaphore = asyncio.Semaphore(num_workers)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=2)
 
     async def bound(item: Dict[str, Any]) -> Tuple[str, str]:
         async with semaphore:
@@ -119,6 +110,7 @@ async def judge_all(
                 str(item["answer"]),
                 item.get("model_output", "") or "",
                 judge_model,
+                client,
             )
 
     return await asyncio.gather(*[bound(item) for item in items])
@@ -127,7 +119,12 @@ async def judge_all(
 def judge(
     items: List[Dict[str, Any]],
     judge_model: str,
+    *,
+    api_key: str,
+    base_url: str,
     num_workers: int = DEFAULT_NUM_WORKERS,
 ) -> List[Tuple[str, str]]:
     """Synchronous entry point: run the async judge fan-out and block on the result."""
-    return asyncio.run(judge_all(items, judge_model, num_workers=num_workers))
+    return asyncio.run(
+        judge_all(items, judge_model, api_key=api_key, base_url=base_url, num_workers=num_workers)
+    )

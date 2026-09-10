@@ -28,6 +28,7 @@ Provide a direct, concise answer."""
 # ``gpt-4o-mini`` is the standard cheap-and-fast judge across the evalchemy LLM-judged
 # benchmarks (HLE / MixEval / WildBench / MTBench).
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
+DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 
 
 class FinanceBenchBenchmark(BaseBenchmark):
@@ -46,13 +47,13 @@ class FinanceBenchBenchmark(BaseBenchmark):
     Grading is LLM-as-judge (SimpleQA-style correct / incorrect / not_attempted) rather
     than exact match, because financial answers frequently differ from the gold only in
     formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). See ``judge.py``.
+    The judge uses ``JUDGE_API_KEY`` and optional ``JUDGE_BASE_URL`` credentials that
+    are separate from the candidate endpoint's ``OPENAI_API_KEY``.
 
     Link: https://github.com/patronus-ai/financebench
     """
 
-    # FinanceBench's judge is an OpenAI chat model, so this benchmark is skipped at load
-    # time when ``OPENAI_API_KEY`` is unset (TaskManager gates on this attribute).
-    REQUIRES_OPENAI_ANNOTATOR = True
+    REQUIRES_JUDGE_API_KEY = True
 
     def __init__(
         self,
@@ -86,6 +87,10 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
+        self.judge_api_key = os.environ.get("JUDGE_API_KEY")
+        if not self.judge_api_key:
+            raise ValueError("JUDGE_API_KEY is required by FinanceBench")
+        self.judge_base_url = os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
         # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
         self.judge_model = (
             annotator_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
@@ -157,7 +162,14 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.logger.info(
             f"Judging {total} FinanceBench responses with {judge_model}..."
         )
-        judgments = asyncio.run(judge_all(examples, judge_model))
+        judgments = asyncio.run(
+            judge_all(
+                examples,
+                judge_model,
+                api_key=self.judge_api_key,
+                base_url=self.judge_base_url,
+            )
+        )
 
         num_correct = 0
         num_incorrect = 0
