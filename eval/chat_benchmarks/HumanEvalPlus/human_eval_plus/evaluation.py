@@ -1,16 +1,18 @@
+import gzip
+import itertools
+import json
+import multiprocessing
 import os
 import sys
-import fire
-import json
-import gzip
-import regex
-import numpy as np
-import itertools
-
-from typing import *
-from tqdm.auto import tqdm
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import *
+
+import fire
+import numpy as np
+import regex
+from tqdm.auto import tqdm
+
 from .data import stream_jsonl
 from .execution import check_correctness
 
@@ -225,7 +227,12 @@ def evaluate_functional_correctness(
     problems = read_dataset(problem_file, dataset_type="humaneval")
     sample_jsonl = stream_jsonl_all(input_file)
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+    # check_correctness starts a child process for every completion. Running it
+    # from threads makes those forks race with process-wide descriptor owners
+    # such as filelock. Spawn top-level workers so each sandbox is launched by
+    # a single-threaded process instead.
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=context) as executor:
         futures = []
         completion_id = Counter()
         n_samples = 0
