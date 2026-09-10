@@ -91,6 +91,13 @@ jobs:
         # `uv tool run --from .` builds + installs the wheel in an isolated env, so this
         # proves the packaging, the console script, and the base import closure at once.
         run: uv tool run --python 3.12 --from . eval --help
+      - name: Exercise packaged benchmark resources outside the checkout
+        run: |
+          checkout="$PWD"
+          probe_dir="$(mktemp -d)"
+          cd "$probe_dir"
+          uv run --no-project --python 3.12 --with "$checkout" \
+            python "$checkout/scripts/ci/check_installed_resources.py"
       - name: Sync the lean base env
         run: uv sync --python 3.12
       - name: Assert no heavy deps leaked and empty-extra benchmarks import

@@ -47,6 +47,8 @@ from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # reg
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import LIST_OPENAI_MODELS
+from eval.contracts.preflight import prepare_requested_tasks
+from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
     TaskOutcome,
@@ -58,7 +60,6 @@ from eval.contracts.task_outcome import (
     validate_requested_outcomes,
     validate_result_document,
 )
-from eval.contracts.sample_manifest import SampleManifest
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import resolve_evaluation_limits
 from eval.resume import lm_eval_native
@@ -121,6 +122,10 @@ def resolve_task_routes(
 
     for task in dict.fromkeys(task_list):
         if task in task_manager.tasks:
+            task_routes[task] = CHAT_BENCHMARK_ROUTE
+        elif task in getattr(task_manager, "load_failures", {}):
+            # Preserve the intended custom route so typed preflight can report
+            # the construction fault instead of mislabeling the task unknown.
             task_routes[task] = CHAT_BENCHMARK_ROUTE
         elif task in pretrain_task_manager.all_tasks:
             task_routes[task] = LM_EVAL_ROUTE
@@ -337,7 +342,11 @@ def evaluate(
     if pretrain_tasks:
         eval_logger.info(f"Pretrain tasks to evaluate: {pretrain_tasks}")
 
-    results = {"results": {}, "task_outcomes": {}}
+    results = {
+        "results": {},
+        "task_outcomes": {},
+        "task_preparations": getattr(args, "task_preparations", {}),
+    }
     outcomes: list[TaskOutcome] = []
 
     # Run benchmark evaluations - sequential generation, parallel evaluation
@@ -647,6 +656,15 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         _include_paths.append(args.include_path)
     pretrain_task_manager = PretrainTaskManager(args.verbosity, include_path=_include_paths)
     task_routes = resolve_task_routes(task_list, task_manager, pretrain_task_manager)
+    preparations = prepare_requested_tasks(
+        task_list,
+        task_routes,
+        task_manager,
+        pretrain_task_manager,
+    )
+    args.task_preparations = {
+        preparation.task_name: preparation.to_dict() for preparation in preparations
+    }
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 
