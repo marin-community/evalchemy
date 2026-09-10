@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import platform
 import signal
+import shutil
 import subprocess
 import tempfile
 import gzip
@@ -25,9 +26,6 @@ def _unsafe_execute(sample, language_type, timeout, result_connection):
     if "python" in language_type.lower():
         with create_tempdir():
             # These system calls are needed when cleaning up tempdir.
-            import os
-            import shutil
-
             rmtree = shutil.rmtree
             rmdir = os.rmdir
             chdir = os.chdir
@@ -78,15 +76,15 @@ def check_correctness(
 
     context = multiprocessing.get_context("spawn")
     result_connection, child_connection = context.Pipe(duplex=False)
-    p = context.Process(target=_unsafe_execute, args=(sample, language_type, timeout, child_connection))
-    p.start()
+    process = context.Process(target=_unsafe_execute, args=(sample, language_type, timeout, child_connection))
+    process.start()
     child_connection.close()
-    p.join(timeout=timeout + 1)
-    if p.is_alive():
-        p.kill()
-        p.join()
+    process.join(timeout=timeout + 1)
+    if process.is_alive():
+        process.kill()
+        process.join()
 
-    result = result_connection.recv() if p.exitcode == 0 and result_connection.poll() else "timed out"
+    result = result_connection.recv() if process.exitcode == 0 and result_connection.poll() else "timed out"
     result_connection.close()
 
     return {

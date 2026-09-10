@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from eval.chat_benchmarks.CruxEval.execution import check_correctness
 
 
-def reject_fork(event, args):
+def reject_fork(event, _args):
     if event == "os.fork":
         raise RuntimeError("os.fork is unsafe")
 
