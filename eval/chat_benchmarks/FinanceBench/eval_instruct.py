@@ -95,9 +95,8 @@ class FinanceBenchBenchmark(BaseBenchmark):
             raise ValueError("JUDGE_API_KEY is required by FinanceBench")
         self.judge_base_url = judge_base_url or os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
         # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
-        self.judge_model = (
-            annotator_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
-        )
+        explicit_judge_model = annotator_model if annotator_model not in (None, "auto") else None
+        self.judge_model = explicit_judge_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """

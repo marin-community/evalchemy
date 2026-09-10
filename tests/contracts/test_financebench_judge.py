@@ -89,3 +89,13 @@ def test_financebench_does_not_accept_candidate_endpoint_key_as_judge_key(monkey
 
     assert manager.get_benchmark("FinanceBench") is None
     assert "JUDGE_API_KEY" in str(manager.load_failures["FinanceBench"])
+
+
+def test_financebench_auto_annotator_uses_dedicated_judge_model(monkeypatch):
+    monkeypatch.setenv("JUDGE_API_KEY", "judge-key")
+    monkeypatch.setenv("JUDGE_MODEL", "openai/gpt-oss-120b")
+
+    manager = TaskManager(task_list=["FinanceBench"], annotator_model="auto")
+
+    assert manager.load_failures == {}
+    assert manager.get_benchmark("FinanceBench").judge_model == "openai/gpt-oss-120b"
