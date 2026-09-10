@@ -81,14 +81,33 @@ def test_mrcr_streams_pinned_data_and_honors_balanced_global_limit(monkeypatch):
     assert scored["mrcr_8192_4needle"] == 1.0
 
 
-def test_mrcr_rejects_an_incomplete_requested_cell(monkeypatch):
+def test_mrcr_rejects_a_missing_requested_cell(monkeypatch):
     monkeypatch.setattr(mrcr, "load_dataset", lambda *args, **kwargs: {"train": iter([_row(2, "a")])})
     monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
     benchmark = mrcr.MRCRBenchmark()
     benchmark.set_evaluation_limits(max_length=8_192, max_tokens=256, limit=2)
 
-    with pytest.raises(ValueError, match="could not fill requested cells"):
+    with pytest.raises(ValueError, match="has no examples for requested cells"):
         benchmark.generate_responses(_Model())
+
+
+def test_mrcr_keeps_uneven_corrected_dataset_cells(monkeypatch):
+    rows = [
+        _row(2, "a"),
+        _row(2, "b"),
+        _row(4, "a"),
+        _row(8, "a"),
+        _row(8, "b"),
+        _row(8, "c"),
+    ]
+    monkeypatch.setattr(mrcr, "load_dataset", lambda *args, **kwargs: {"train": iter(rows)})
+    monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
+    benchmark = mrcr.MRCRBenchmark()
+    benchmark.set_evaluation_limits(max_length=8_192, max_tokens=256)
+
+    generated = benchmark.generate_responses(_Model())
+
+    assert [example["n_needles"] for example in generated["examples"]] == [2, 4, 8, 2, 8, 8]
 
 
 @pytest.mark.parametrize(

@@ -32,7 +32,6 @@ DATA_FILES = (
 )
 MRCR_BIN_UPPER_BOUNDS = (8_192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_288, 1_048_576)
 MRCR_NEEDLE_COUNTS = (2, 4, 8)
-MRCR_SAMPLES_PER_CELL = 100
 _OFFICIAL_TOKENIZER = tiktoken.get_encoding("o200k_base")
 PreparedPrompt = Union[List[Dict[str, str]], str]
 SelectedExample = tuple[Dict[str, Any], PreparedPrompt]
@@ -79,13 +78,6 @@ def score_response(response: str, answer: str, nonce: str) -> tuple[float, float
     response_body = response.removeprefix(nonce)
     answer_body = str(answer).removeprefix(nonce)
     return float(SequenceMatcher(None, response_body, answer_body).ratio()), 1.0
-
-
-def _cell_targets(desired_cells: List[tuple[int, int]], limit: Optional[int]) -> Dict[tuple[int, int], int]:
-    if limit is None:
-        return {cell: MRCR_SAMPLES_PER_CELL for cell in desired_cells}
-    complete_rounds, partial_round = divmod(limit, len(desired_cells))
-    return {cell: complete_rounds + (index < partial_round) for index, cell in enumerate(desired_cells)}
 
 
 def _interleave_cells(
@@ -142,9 +134,10 @@ class MRCRBenchmark(BaseBenchmark):
     def _collect_cells(
         self,
         model: LM,
-        targets: Dict[tuple[int, int], int],
+        desired_cells: List[tuple[int, int]],
     ) -> Dict[tuple[int, int], List[SelectedExample]]:
         cells: Dict[tuple[int, int], List[SelectedExample]] = defaultdict(list)
+        desired_cell_set = set(desired_cells)
         for source in self._load_rows():
             needles = int(source["n_needles"])
             if needles not in self.n_needles:
@@ -153,9 +146,7 @@ class MRCRBenchmark(BaseBenchmark):
             if upper is None:
                 continue
             cell = (upper, needles)
-            if cell not in targets:
-                continue
-            if len(cells[cell]) >= targets[cell]:
+            if cell not in desired_cell_set:
                 continue
 
             example = dict(source)
@@ -163,8 +154,6 @@ class MRCRBenchmark(BaseBenchmark):
             payload = self._prepare_messages(messages, model)
             example["mrcr_bin_upper"] = upper
             cells[cell].append((example, payload))
-            if all(len(cells[key]) >= target for key, target in targets.items()):
-                break
         return cells
 
     def _selected_examples(self, model: LM) -> List[SelectedExample]:
@@ -180,11 +169,10 @@ class MRCRBenchmark(BaseBenchmark):
         limit = self.evaluation_limit
         if self.debug:
             limit = min(limit, 2) if limit is not None else 2
-        targets = _cell_targets(desired_cells, limit)
-        cells = self._collect_cells(model, targets)
-        shortfalls = {cell: target - len(cells[cell]) for cell, target in targets.items() if len(cells[cell]) < target}
-        if shortfalls:
-            raise ValueError(f"pinned MRCR dataset could not fill requested cells: {shortfalls}")
+        cells = self._collect_cells(model, desired_cells)
+        missing_cells = [cell for cell in desired_cells if not cells[cell]]
+        if missing_cells:
+            raise ValueError(f"pinned MRCR dataset has no examples for requested cells: {missing_cells}")
         ordered = _interleave_cells(cells, desired_cells, limit)
 
         self.logger.info(
