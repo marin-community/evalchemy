@@ -182,7 +182,8 @@ def lm_eval_task_outcome(
         task_name,
         route,
         sample_manifest,
-        {"expected": expected_count, "scored": scored_count},
+        # lm-eval's original count is pre-limit; only effective describes scored coverage.
+        {"scored": scored_count},
     )
     if isinstance(manifest_result, TaskOutcome):
         return manifest_result

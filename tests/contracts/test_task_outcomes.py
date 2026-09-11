@@ -317,6 +317,27 @@ def test_lm_eval_outcome_rejects_result_count_that_disagrees_with_manifest():
     assert "manifest" in outcome.failure.message
 
 
+def test_lm_eval_outcome_accepts_limited_manifest_coverage():
+    manifest = SampleManifest("arc_easy")
+    entries = manifest.plan_batch([SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)])
+    manifest.mark_generated(entries, ["x", "y"])
+
+    outcome = lm_eval_task_outcome(
+        "arc_easy",
+        TaskRoute.LM_EVAL,
+        {
+            "results": {"arc_easy": {"acc,none": 1.0}},
+            "n-samples": {"arc_easy": {"original": 100, "effective": 2}},
+        },
+        manifest,
+    )
+
+    assert outcome.status is TaskStatus.SUCCEEDED
+    assert outcome.expected_count == 2
+    assert outcome.generated_count == 2
+    assert outcome.scored_count == 2
+
+
 def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monkeypatch):
     with pytest.raises(EvaluationRunError) as raised:
         _lm_eval_evaluate(monkeypatch, error=RuntimeError("grader crashed"))
