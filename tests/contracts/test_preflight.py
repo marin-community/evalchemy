@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Behavioral coverage for the shared task-preparation boundary."""
 
+import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import datasets
 import pytest
 from lm_eval.api.instance import Instance
 from lm_eval.models.api_models import JsonChatStr
@@ -22,6 +24,7 @@ from eval.contracts.preflight import (
     validate_task_preparations,
 )
 from eval.contracts.task_outcome import FailureCategory, TaskRoute
+from eval.eval import cli_evaluate, setup_custom_parser
 from eval.task import BaseBenchmark, TaskManager
 
 
@@ -55,6 +58,9 @@ class _RecordingModel:
     def generate_until(self, requests):
         self.requests.extend(requests)
         return ["answer" for _ in requests]
+
+    def apply_chat_template(self, messages):
+        return JsonChatStr(json.dumps(messages))
 
 
 def test_package_file_and_dependency_are_validated():
@@ -179,3 +185,76 @@ assert "Q?" in prompt
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("num_fewshot", "includes_validation"),
+    [(0, False), (1, True)],
+)
+def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, num_fewshot, includes_validation):
+    validation = {
+        "question": "Validation demonstration?",
+        "options": ["demo-a", "demo-b"],
+        "answer": "A",
+        "answer_index": 0,
+        "cot_content": "A: Let's think step by step. demo-a",
+        "category": "math",
+    }
+    question = {
+        "question": "Held-out question?",
+        "options": ["test-a", "test-b"],
+        "answer": "B",
+        "answer_index": 1,
+        "cot_content": "A: Let's think step by step. test-b",
+        "category": "math",
+    }
+    monkeypatch.setattr(
+        datasets,
+        "load_dataset",
+        lambda *_args, **_kwargs: {"validation": [validation], "test": [question]},
+    )
+
+    model = _RecordingModel()
+
+    def model_tokenizer(*_args, **_kwargs):
+        if num_fewshot == 0:
+            raise AssertionError("zero-shot prompting must not load or call a tokenizer")
+        return {"input_ids": SimpleNamespace(shape=(1, 32))}
+
+    def fail_auto_tokenizer(*_args, **_kwargs):
+        raise AssertionError("few-shot prompting must use the evaluation model's tokenizer")
+
+    model.tokenizer = model_tokenizer
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained",
+        fail_auto_tokenizer,
+    )
+    args = setup_custom_parser().parse_args(
+        [
+            "--model",
+            "hf",
+            "--tasks",
+            "MMLUPro",
+            "--num_fewshot",
+            str(num_fewshot),
+            "--batch_size",
+            "1",
+            "--max_length",
+            "65536",
+            "--max_tokens",
+            "1024",
+            "--apply_chat_template",
+            "--resume-mode",
+            "off",
+        ]
+    )
+    args.model = model
+    monkeypatch.setattr("eval.eval.setup_evaluation_tracker", lambda *_args: None)
+    monkeypatch.setattr("eval.eval.add_results_metadata", lambda *_args: None)
+    monkeypatch.setattr("eval.eval.handle_evaluation_output", lambda *_args: None)
+
+    cli_evaluate(args)
+
+    messages = json.loads(model.requests[0].args[0].prompt)
+    assert "Held-out question?" in messages[0]["content"]
+    assert ("Validation demonstration?" in messages[0]["content"]) is includes_validation

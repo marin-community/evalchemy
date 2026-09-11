@@ -110,7 +110,7 @@ class MMLUProBenchmark(BaseBenchmark):
 
     def __init__(
         self,
-        ntrain: int = 5,
+        num_fewshot: int = 5,
         max_model_length: int = 4096,
         max_tokens: int = 32768,
         debug: bool = False,
@@ -119,8 +119,10 @@ class MMLUProBenchmark(BaseBenchmark):
         seed: List[int] = [0, 1234, 1234, 1234],
     ):
         super().__init__(logger=logger, system_instruction=system_instruction)
+        if num_fewshot < 0:
+            raise ValueError("num_fewshot must be non-negative")
         self.dataset_name = "TIGER-Lab/MMLU-Pro"
-        self.ntrain = ntrain
+        self.num_fewshot = num_fewshot
         self.max_model_length = max_model_length
         self.max_new_tokens = max_tokens
         self.debug = debug
@@ -142,17 +144,32 @@ class MMLUProBenchmark(BaseBenchmark):
             missing = required_fields - set(records[0])
             if missing:
                 raise ValueError(f"MMLU-Pro {split_name} records are missing fields: {sorted(missing)}")
-        representative = generate_cot_prompt(self.val_examples, self.test_examples[0], min(1, self.ntrain))
+        representative = generate_cot_prompt(
+            self.val_examples,
+            self.test_examples[0],
+            min(1, self.num_fewshot),
+        )
         if not representative.strip():
             raise ValueError("MMLU-Pro representative prompt is empty")
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
-        # initialize tokenizer on first use
-        if self.tokenizer is None:
-            from transformers import AutoTokenizer
-
-            model_name = getattr(model, "pretrained", getattr(model, "model_args", {}).get("model"))
-            self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+        # Use the evaluation model's tokenizer for prompt sizing. Loading a fixed
+        # tokenizer here makes the context check wrong for every other model family.
+        if self.tokenizer is None and self.num_fewshot > 0:
+            model_tokenizer = getattr(model, "tokenizer", None)
+            if callable(model_tokenizer):
+                self.tokenizer = model_tokenizer
+            else:
+                model_name = getattr(model, "pretrained", None)
+                model_args = getattr(model, "model_args", None)
+                if model_name is None and isinstance(model_args, dict):
+                    model_name = model_args.get("model")
+                if not isinstance(model_name, str) or not model_name:
+                    raise ValueError(
+                        "MMLU-Pro few-shot prompt sizing requires the evaluation "
+                        "model's tokenizer or model identifier"
+                    )
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         instances = []
         for idx, ex in enumerate(self.test_examples):
@@ -160,14 +177,17 @@ class MMLUProBenchmark(BaseBenchmark):
                 break
 
             # dynamically choose k so prompt fits
-            k = self.ntrain
+            k = self.num_fewshot
+            prompt = generate_cot_prompt(self.val_examples, ex, k)
             while k > 0:
-                prompt = generate_cot_prompt(self.val_examples, ex, k)
+                if self.tokenizer is None:
+                    raise RuntimeError("MMLU-Pro tokenizer is required for few-shot prompt sizing")
                 toks = self.tokenizer(prompt, return_tensors="pt")
                 length = toks["input_ids"].shape[1]
                 if length < self.max_model_length - self.max_new_tokens:
                     break
                 k -= 1
+                prompt = generate_cot_prompt(self.val_examples, ex, k)
 
             # wrap prompt for harness
             messages = [{"role": "user", "content": prompt}]

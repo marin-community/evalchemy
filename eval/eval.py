@@ -749,6 +749,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         max_length=limits.max_length,
         max_tokens=limits.max_tokens,
         limit=getattr(args, "limit", None),
+        num_fewshot=args.num_fewshot,
         debug=args.debug,
         seed=args.seed,
         task_list=task_list,
