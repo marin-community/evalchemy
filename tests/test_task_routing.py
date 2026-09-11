@@ -25,6 +25,7 @@ def _cli_args(tasks):
         max_tokens=None,
         gen_kwargs=None,
         annotator_model="auto",
+        num_fewshot=0,
         debug=False,
         seed=[0, 1234, 1234, 1234],
         system_instruction=None,
