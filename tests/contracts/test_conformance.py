@@ -44,6 +44,21 @@ def test_custom_class_audit_rejects_untyped_resources_and_execution_modes():
         validate_custom_benchmark_class(Benchmark, BaseBenchmark)
 
 
+def test_custom_class_audit_rejects_overriding_the_shared_inference_guard():
+    class Benchmark(BaseBenchmark):
+        def generate_responses(self, model):
+            return {}
+
+        def evaluate_responses(self, results):
+            return {"score": 1.0}
+
+        def compute(self, model, inputs):
+            return model.generate_until(inputs)
+
+    with pytest.raises(TypeError, match="must not override BaseBenchmark.compute"):
+        validate_custom_benchmark_class(Benchmark, BaseBenchmark)
+
+
 def test_a_task_cannot_ambiguously_belong_to_both_routes():
     with pytest.raises(ValueError, match="both .* and lm-eval"):
         build_task_contract_registry(["collision"], ["collision"])
