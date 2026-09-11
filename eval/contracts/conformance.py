@@ -84,6 +84,11 @@ def validate_custom_benchmark_class(benchmark_class: type, base_class: type) -> 
         or inspect.isabstract(benchmark_class)
     ):
         raise TypeError("custom benchmark must be a concrete BaseBenchmark subclass")
+    if benchmark_class.compute is not base_class.compute:
+        raise TypeError(
+            "custom benchmark must not override BaseBenchmark.compute; "
+            "the shared method enforces evaluation limits"
+        )
     GraderExecutionMode(benchmark_class.GRADER_EXECUTION_MODE)
     requirements = benchmark_class.RESOURCE_REQUIREMENTS
     if not isinstance(requirements, tuple):
