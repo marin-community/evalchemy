@@ -14,6 +14,7 @@ from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
 """Version of the stable JSONL record envelope emitted by ``--log_samples``."""
+DEFAULT_FILTER_NAME = "none"
 
 
 def is_scored_result(result: Any) -> bool:
@@ -56,7 +57,7 @@ def canonicalize_samples(
         record.setdefault("arguments", [])
         record.setdefault("resps", [])
         record.setdefault("filtered_resps", [])
-        record.setdefault("filter", "none")
+        record.setdefault("filter", DEFAULT_FILTER_NAME)
         if manifest_entries:
             entry = manifest_entries[doc_id]
             record["sample_id"] = entry.sample_id
@@ -78,7 +79,7 @@ def canonicalize_samples(
 def _coalesce_lm_eval_filter_variants(
     samples: Sequence[Mapping[str, Any]], expected_sample_count: int
 ) -> list[Mapping[str, Any]]:
-    """Return one sample record per lm-eval document while retaining every filter result."""
+    """Coalesce complete lm-eval filter cohorts, leaving other record sets unchanged."""
     records = list(samples)
     if len(records) <= expected_sample_count:
         return records
@@ -87,7 +88,7 @@ def _coalesce_lm_eval_filter_variants(
     for sample in records:
         doc_id = sample.get("doc_id")
         filter_name = sample.get("filter")
-        if not isinstance(doc_id, (str, int)) or not isinstance(filter_name, str) or filter_name == "none":
+        if not isinstance(doc_id, (str, int)) or not isinstance(filter_name, str) or filter_name == DEFAULT_FILTER_NAME:
             return records
         if any(field not in sample for field in ("doc_hash", "prompt_hash", "target_hash")):
             return records
