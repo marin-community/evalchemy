@@ -162,6 +162,73 @@ def test_sample_logging_uses_manifest_identity_and_coordinates():
     assert records[0]["sample_repeat"] == 2
 
 
+def test_sample_logging_coalesces_lm_eval_filter_records_by_document():
+    manifest = SampleManifest("gsm8k")
+    entries = manifest.plan_batch(
+        [SampleRequest(source_id="first", ordinal=0), SampleRequest(source_id="second", ordinal=1)]
+    )
+    manifest.mark_generated(entries, ["answer-0", "answer-1"])
+
+    def sample(doc_id, filter_name, score):
+        return {
+            "doc_id": doc_id,
+            "doc": {"question": f"question-{doc_id}"},
+            "target": f"answer-{doc_id}",
+            "arguments": [[f"prompt-{doc_id}", {}]],
+            "resps": [[f"response-{doc_id}"]],
+            "filtered_resps": [f"filtered-{filter_name}-{doc_id}"],
+            "filter": filter_name,
+            "metrics": ["exact_match"],
+            "exact_match": score,
+            "doc_hash": f"doc-{doc_id}",
+            "prompt_hash": f"prompt-{doc_id}",
+            "target_hash": f"target-{doc_id}",
+        }
+
+    records = canonicalize_samples(
+        "gsm8k",
+        [
+            sample(0, "strict-match", 0.0),
+            sample(1, "strict-match", 1.0),
+            sample(0, "flexible-extract", 1.0),
+            sample(1, "flexible-extract", 1.0),
+        ],
+        manifest,
+    )
+
+    assert [record["source_id"] for record in records] == ["first", "second"]
+    assert records[0]["filter"] == "strict-match"
+    assert records[0]["filter_variants"] == [
+        {
+            "filter": "strict-match",
+            "filtered_resps": ["filtered-strict-match-0"],
+            "metrics": {"exact_match": 0.0},
+        },
+        {
+            "filter": "flexible-extract",
+            "filtered_resps": ["filtered-flexible-extract-0"],
+            "metrics": {"exact_match": 1.0},
+        },
+    ]
+
+
+def test_sample_logging_rejects_incomplete_lm_eval_filter_cohorts():
+    manifest = SampleManifest("gsm8k")
+    entries = manifest.plan_batch(
+        [SampleRequest(source_id="first", ordinal=0), SampleRequest(source_id="second", ordinal=1)]
+    )
+    manifest.mark_generated(entries, ["answer-0", "answer-1"])
+    shared = {"doc_hash": "doc", "prompt_hash": "prompt", "target_hash": "target"}
+    samples = [
+        {"doc_id": 0, "filter": "strict-match", **shared},
+        {"doc_id": 1, "filter": "strict-match", **shared},
+        {"doc_id": 0, "filter": "flexible-extract", **shared},
+    ]
+
+    with pytest.raises(SampleCoverageError, match="received 3 records"):
+        canonicalize_samples("gsm8k", samples, manifest)
+
+
 def test_passk_restores_are_included_in_manifest_coverage(tmp_path):
     fingerprint = RunFingerprint.from_run_inputs(
         model_repo="model",

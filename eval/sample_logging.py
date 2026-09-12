@@ -28,8 +28,9 @@ def canonicalize_samples(
 ) -> list[dict[str, Any]]:
     """Add the stable envelope to lm-eval-compatible sample records.
 
-    Existing lm-eval fields are retained unchanged.  The envelope makes task
-    identity and schema version explicit, while filling fields that custom
+    The first lm-eval filter record stays at the top level. Every filter's
+    response and metrics are stored under ``filter_variants``. The envelope makes
+    task identity and schema version explicit, while filling fields that custom
     benchmark adapters must provide for tracker-compatible JSONL.
     """
     manifest_entries = ()
@@ -37,6 +38,7 @@ def canonicalize_samples(
         manifest_entries = sample_manifest.sample_entries(namespace=task_name)
         if not manifest_entries and sample_manifest.task_name == task_name:
             manifest_entries = sample_manifest.sample_entries()
+        samples = _coalesce_lm_eval_filter_variants(samples, len(manifest_entries))
         if len(manifest_entries) != len(samples):
             raise SampleCoverageError(
                 f"{task_name}: sample logger received {len(samples)} records but the manifest "
@@ -71,6 +73,58 @@ def canonicalize_samples(
             record["drop_extractions"] = drop_extractions
         canonical.append(record)
     return canonical
+
+
+def _coalesce_lm_eval_filter_variants(
+    samples: Sequence[Mapping[str, Any]], expected_sample_count: int
+) -> list[Mapping[str, Any]]:
+    """Return one sample record per lm-eval document while retaining every filter result."""
+    records = list(samples)
+    if len(records) <= expected_sample_count:
+        return records
+
+    by_doc_id: dict[str | int, list[Mapping[str, Any]]] = {}
+    for sample in records:
+        doc_id = sample.get("doc_id")
+        filter_name = sample.get("filter")
+        if not isinstance(doc_id, (str, int)) or not isinstance(filter_name, str) or filter_name == "none":
+            return records
+        if any(field not in sample for field in ("doc_hash", "prompt_hash", "target_hash")):
+            return records
+        by_doc_id.setdefault(doc_id, []).append(sample)
+
+    if len(by_doc_id) != expected_sample_count:
+        return records
+
+    expected_filters: tuple[str, ...] | None = None
+    coalesced: list[Mapping[str, Any]] = []
+    for variants in by_doc_id.values():
+        filters = tuple(str(variant["filter"]) for variant in variants)
+        if len(filters) != len(set(filters)):
+            return records
+        if expected_filters is None:
+            expected_filters = filters
+        elif filters != expected_filters:
+            return records
+        signatures = {(variant["doc_hash"], variant["prompt_hash"], variant["target_hash"]) for variant in variants}
+        if len(signatures) != 1:
+            return records
+
+        primary = dict(variants[0])
+        primary["filter_variants"] = [_filter_variant(variant) for variant in variants]
+        coalesced.append(primary)
+    return coalesced
+
+
+def _filter_variant(sample: Mapping[str, Any]) -> dict[str, Any]:
+    metric_names = sample.get("metrics", ())
+    if isinstance(metric_names, (str, bytes)) or not isinstance(metric_names, Sequence):
+        metric_names = ()
+    return {
+        "filter": sample["filter"],
+        "filtered_resps": sample.get("filtered_resps", []),
+        "metrics": {str(name): sample.get(name) for name in metric_names},
+    }
 
 
 def _completion_artifacts(value: Any) -> Any | None:
