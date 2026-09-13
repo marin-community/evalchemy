@@ -29,10 +29,10 @@ def canonicalize_samples(
 ) -> list[dict[str, Any]]:
     """Add the stable envelope to lm-eval-compatible sample records.
 
-    The first lm-eval filter record stays at the top level. Every filter's
-    response and metrics are stored under ``filter_variants``. The envelope makes
-    task identity and schema version explicit, while filling fields that custom
-    benchmark adapters must provide for tracker-compatible JSONL.
+    With a sample manifest, complete lm-eval filter cohorts become one record
+    whose ``filter_variants`` retain every response and metric. The envelope
+    makes task identity and schema version explicit, while filling fields that
+    custom benchmark adapters must provide for tracker-compatible JSONL.
     """
     manifest_entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
