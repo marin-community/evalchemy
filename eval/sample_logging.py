@@ -14,6 +14,7 @@ from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
 """Version of the stable JSONL record envelope emitted by ``--log_samples``."""
+DEFAULT_FILTER_NAME = "none"
 
 
 def is_scored_result(result: Any) -> bool:
@@ -28,15 +29,17 @@ def canonicalize_samples(
 ) -> list[dict[str, Any]]:
     """Add the stable envelope to lm-eval-compatible sample records.
 
-    Existing lm-eval fields are retained unchanged.  The envelope makes task
-    identity and schema version explicit, while filling fields that custom
-    benchmark adapters must provide for tracker-compatible JSONL.
+    With a sample manifest, complete lm-eval filter cohorts become one record
+    whose ``filter_variants`` retain every response and metric. The envelope
+    makes task identity and schema version explicit, while filling fields that
+    custom benchmark adapters must provide for tracker-compatible JSONL.
     """
     manifest_entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
         manifest_entries = sample_manifest.sample_entries(namespace=task_name)
         if not manifest_entries and sample_manifest.task_name == task_name:
             manifest_entries = sample_manifest.sample_entries()
+        samples = _coalesce_lm_eval_filter_variants(samples, len(manifest_entries))
         if len(manifest_entries) != len(samples):
             raise SampleCoverageError(
                 f"{task_name}: sample logger received {len(samples)} records but the manifest "
@@ -54,7 +57,7 @@ def canonicalize_samples(
         record.setdefault("arguments", [])
         record.setdefault("resps", [])
         record.setdefault("filtered_resps", [])
-        record.setdefault("filter", "none")
+        record.setdefault("filter", DEFAULT_FILTER_NAME)
         if manifest_entries:
             entry = manifest_entries[doc_id]
             record["sample_id"] = entry.sample_id
@@ -71,6 +74,47 @@ def canonicalize_samples(
             record["drop_extractions"] = drop_extractions
         canonical.append(record)
     return canonical
+
+
+def _coalesce_lm_eval_filter_variants(
+    samples: Sequence[Mapping[str, Any]], expected_sample_count: int
+) -> list[Mapping[str, Any]]:
+    """Coalesce complete lm-eval filter cohorts, leaving other record sets unchanged."""
+    records = list(samples)
+    if len(records) <= expected_sample_count:
+        return records
+
+    by_doc_id: dict[str | int, list[Mapping[str, Any]]] = {}
+    for record in records:
+        doc_id = record.get("doc_id")
+        filter_name = record.get("filter")
+        if not isinstance(doc_id, (str, int)) or not isinstance(filter_name, str) or filter_name == DEFAULT_FILTER_NAME:
+            return records
+        by_doc_id.setdefault(doc_id, []).append(record)
+
+    if len(by_doc_id) != expected_sample_count:
+        return records
+
+    expected_filters = {record["filter"] for record in next(iter(by_doc_id.values()))}
+    if any(
+        len(variants) != len(expected_filters) or {record["filter"] for record in variants} != expected_filters
+        for variants in by_doc_id.values()
+    ):
+        return records
+
+    coalesced: list[Mapping[str, Any]] = []
+    for variants in by_doc_id.values():
+        primary = dict(variants[0])
+        primary["filter_variants"] = [
+            {
+                "filter": variant["filter"],
+                "filtered_resps": variant.get("filtered_resps", []),
+                "metrics": {str(name): variant.get(name) for name in variant.get("metrics", [])},
+            }
+            for variant in variants
+        ]
+        coalesced.append(primary)
+    return coalesced
 
 
 def _completion_artifacts(value: Any) -> Any | None:

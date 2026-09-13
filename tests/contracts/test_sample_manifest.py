@@ -162,6 +162,34 @@ def test_sample_logging_uses_manifest_identity_and_coordinates():
     assert records[0]["sample_repeat"] == 2
 
 
+def test_sample_logging_coalesces_complete_lm_eval_filter_cohorts():
+    manifest = SampleManifest("gsm8k")
+    entries = manifest.plan_batch([SampleRequest(source_id=str(doc_id), ordinal=doc_id) for doc_id in range(2)])
+    manifest.mark_generated(entries, ["answer-0", "answer-1"])
+    samples = [
+        {"doc_id": doc_id, "filter": filter_name, "filtered_resps": [filter_name], "metrics": ["score"], "score": doc_id}
+        for filter_name in ("strict", "flexible")
+        for doc_id in range(2)
+    ]
+
+    records = canonicalize_samples("gsm8k", samples, manifest)
+
+    assert [
+        (
+            record["source_id"],
+            record["filter"],
+            [(variant["filter"], variant["filtered_resps"], variant["metrics"]) for variant in record["filter_variants"]],
+        )
+        for record in records
+    ] == [
+        ("0", "strict", [("strict", ["strict"], {"score": 0}), ("flexible", ["flexible"], {"score": 0})]),
+        ("1", "strict", [("strict", ["strict"], {"score": 1}), ("flexible", ["flexible"], {"score": 1})]),
+    ]
+
+    with pytest.raises(SampleCoverageError, match="received 3 records"):
+        canonicalize_samples("gsm8k", samples[:-1], manifest)
+
+
 def test_passk_restores_are_included_in_manifest_coverage(tmp_path):
     fingerprint = RunFingerprint.from_run_inputs(
         model_repo="model",
