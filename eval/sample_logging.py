@@ -85,47 +85,36 @@ def _coalesce_lm_eval_filter_variants(
         return records
 
     by_doc_id: dict[str | int, list[Mapping[str, Any]]] = {}
-    for sample in records:
-        doc_id = sample.get("doc_id")
-        filter_name = sample.get("filter")
+    for record in records:
+        doc_id = record.get("doc_id")
+        filter_name = record.get("filter")
         if not isinstance(doc_id, (str, int)) or not isinstance(filter_name, str) or filter_name == DEFAULT_FILTER_NAME:
             return records
-        if any(field not in sample for field in ("doc_hash", "prompt_hash", "target_hash")):
-            return records
-        by_doc_id.setdefault(doc_id, []).append(sample)
+        by_doc_id.setdefault(doc_id, []).append(record)
 
     if len(by_doc_id) != expected_sample_count:
         return records
 
-    expected_filters: tuple[str, ...] | None = None
+    expected_filters = {record["filter"] for record in next(iter(by_doc_id.values()))}
+    if any(
+        len(variants) != len(expected_filters) or {record["filter"] for record in variants} != expected_filters
+        for variants in by_doc_id.values()
+    ):
+        return records
+
     coalesced: list[Mapping[str, Any]] = []
     for variants in by_doc_id.values():
-        filters = tuple(str(variant["filter"]) for variant in variants)
-        if len(filters) != len(set(filters)):
-            return records
-        if expected_filters is None:
-            expected_filters = filters
-        elif filters != expected_filters:
-            return records
-        signatures = {(variant["doc_hash"], variant["prompt_hash"], variant["target_hash"]) for variant in variants}
-        if len(signatures) != 1:
-            return records
-
         primary = dict(variants[0])
-        primary["filter_variants"] = [_filter_variant(variant) for variant in variants]
+        primary["filter_variants"] = [
+            {
+                "filter": variant["filter"],
+                "filtered_resps": variant.get("filtered_resps", []),
+                "metrics": {str(name): variant.get(name) for name in variant.get("metrics", [])},
+            }
+            for variant in variants
+        ]
         coalesced.append(primary)
     return coalesced
-
-
-def _filter_variant(sample: Mapping[str, Any]) -> dict[str, Any]:
-    metric_names = sample.get("metrics", ())
-    if isinstance(metric_names, (str, bytes)) or not isinstance(metric_names, Sequence):
-        metric_names = ()
-    return {
-        "filter": sample["filter"],
-        "filtered_resps": sample.get("filtered_resps", []),
-        "metrics": {str(name): sample.get(name) for name in metric_names},
-    }
 
 
 def _completion_artifacts(value: Any) -> Any | None:
