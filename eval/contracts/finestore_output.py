@@ -12,6 +12,7 @@ from lm_eval.utils import handle_non_serializable
 
 try:
     from finestore.eval import EvaluationStore, samples_from_lm_eval
+    from rigging.filesystem.storage_path import prefix_join
 
     _FINESTORE_IMPORT_ERROR: ImportError | None = None
 except ImportError as error:
@@ -53,10 +54,10 @@ def write_finestore_output(
 
     store = EvaluationStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
     try:
-        source_root = f"evalchemy/{_safe_name(source_prefix)}/native"
+        source_root = prefix_join(prefix_join("evalchemy", _safe_name(source_prefix)), "native")
         result_name = "__".join(_safe_name(task_name) for task_name in sorted(samples_by_task))
         store.add_source_artifact(
-            f"{source_root}/results_{result_name or 'run'}.json",
+            prefix_join(source_root, f"results_{result_name or 'run'}.json"),
             _results_json_bytes(results),
             content_type="application/json",
         )
@@ -65,7 +66,7 @@ def write_finestore_output(
                 continue
             safe_task_name = _safe_name(task_name)
             store.add_source_artifact(
-                f"{source_root}/samples_{safe_task_name}_native.jsonl",
+                prefix_join(source_root, f"samples_{safe_task_name}_native.jsonl"),
                 _sample_jsonl_bytes(task_samples),
                 content_type=_SOURCE_CONTENT_TYPE,
             )
