@@ -128,6 +128,20 @@ def setup_parser() -> argparse.ArgumentParser:
         help="The path to the output file where the result metrics will be saved. If the path is a directory and log_samples is true, the results will be saved in the directory. Else the parent directory will be used.",
     )
     parser.add_argument(
+        "--finestore_output_path",
+        default=None,
+        type=str,
+        metavar="DIR",
+        help="FineStore run root for native JSONL artifacts and normalized sample tables. Requires --log_samples.",
+    )
+    parser.add_argument(
+        "--finestore_output_prefix",
+        default="run",
+        type=str,
+        metavar="NAME",
+        help="Stable task-group name used to organize evaluator-native artifacts inside FineStore.",
+    )
+    parser.add_argument(
         "--limit",
         "-L",
         type=float,

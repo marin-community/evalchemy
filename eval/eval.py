@@ -48,6 +48,7 @@ from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import AUTO_ANNOTATOR_MODEL, LIST_OPENAI_MODELS
 from eval.contracts.conformance import build_task_contract_registry
+from eval.contracts.finestore_output import write_finestore_output
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
@@ -1058,6 +1059,16 @@ def handle_evaluation_output(
     if args.log_samples and hasattr(evaluation_tracker, "save_results_samples"):
         for task_name, task_samples in samples.items():
             evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
+
+    if args.finestore_output_path:
+        if not args.log_samples:
+            raise ValueError("--finestore_output_path requires --log_samples")
+        write_finestore_output(
+            args.finestore_output_path,
+            args.finestore_output_prefix,
+            results,
+            samples,
+        )
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "
