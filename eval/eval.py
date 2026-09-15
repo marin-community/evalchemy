@@ -160,6 +160,33 @@ def _record_generation_artifacts(results: dict[str, Any], work: _CustomTaskWork)
         results.setdefault("generation_artifacts", {})[work.task_name] = artifacts.to_dict()
 
 
+def _attach_benchmark_metadata(
+    results: dict[str, Any], args: argparse.Namespace, outcomes: Sequence[TaskOutcome]
+) -> None:
+    """Attach resolved or conservatively inferred metadata and canonical scores."""
+    metadata = list(getattr(args, "resolved_benchmark_metadata", ()))
+    described_tasks = {description.task for description in metadata}
+    for outcome in outcomes:
+        if (
+            outcome.status is TaskStatus.FAILED
+            or outcome.task_name in described_tasks
+            or outcome.task_name not in results["results"]
+        ):
+            continue
+        try:
+            metadata.append(
+                infer_benchmark_metadata(
+                    outcome.task_name,
+                    results["results"][outcome.task_name],
+                    n_attempted=outcome.expected_count,
+                )
+            )
+        except ValueError as exc:
+            eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
+    results["benchmark_metadata"] = {description.task: description.to_dict() for description in metadata}
+    results["canonical_results"] = canonicalize_results(results["results"], metadata)
+
+
 def _grade_custom_tasks(
     generation_work: Sequence[_CustomTaskWork],
     args: argparse.Namespace,
@@ -454,7 +481,6 @@ def evaluate(
 
     results = {
         "results": {},
-        "benchmark_metadata": getattr(args, "benchmark_metadata", {}),
         "task_outcomes": {},
         "task_preparations": getattr(args, "task_preparations", {}),
     }
@@ -625,27 +651,7 @@ def evaluate(
                     )
 
     results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
-    metadata = list(getattr(args, "resolved_benchmark_metadata", ()))
-    described_tasks = {description.task for description in metadata}
-    for outcome in outcomes:
-        if (
-            outcome.status is TaskStatus.FAILED
-            or outcome.task_name in described_tasks
-            or outcome.task_name not in results["results"]
-        ):
-            continue
-        try:
-            metadata.append(
-                infer_benchmark_metadata(
-                    outcome.task_name,
-                    results["results"][outcome.task_name],
-                    n_attempted=outcome.expected_count,
-                )
-            )
-        except ValueError as exc:
-            eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
-    results["benchmark_metadata"] = {description.task: description.to_dict() for description in metadata}
-    results["canonical_results"] = canonicalize_results(results["results"], metadata)
+    _attach_benchmark_metadata(results, args, outcomes)
     if getattr(lm, "rank", 0) == 0:
         validate_requested_outcomes(task_list, outcomes)
 
@@ -808,7 +814,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         limit=getattr(args, "limit", None),
     )
     args.resolved_benchmark_metadata = benchmark_metadata
-    args.benchmark_metadata = {metadata.task: metadata.to_dict() for metadata in benchmark_metadata}
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
+from eval.contracts.task_outcome import TaskRoute
+
 BENCHMARK_METADATA_SCHEMA_VERSION = 1
 
 
@@ -182,6 +184,16 @@ class LMEvalTaskManager(Protocol):
     def load_task_or_group(self, task_list: list[str]) -> Mapping[str, object]: ...
 
 
+class LMEvalTask(Protocol):
+    eval_docs: Sequence[object]
+
+    def get_config(self, name: str) -> Any: ...
+
+    def higher_is_better(self) -> Mapping[str, bool]: ...
+
+    def aggregation(self) -> Mapping[str, object]: ...
+
+
 def _task_objects(loaded: Mapping[str, object]) -> list[tuple[str, Any]]:
     tasks: list[tuple[str, Any]] = []
     for name, value in loaded.items():
@@ -192,7 +204,7 @@ def _task_objects(loaded: Mapping[str, object]) -> list[tuple[str, Any]]:
     return tasks
 
 
-def _lm_eval_metadata(task_name: str, task: Any, limit: int | None) -> BenchmarkMetadata:
+def _lm_eval_metadata(task_name: str, task: LMEvalTask, limit: int | None) -> BenchmarkMetadata:
     configured_metrics = task.get_config("metric_list") or []
     source_metrics = tuple(
         SourceMetric(str(metric["metric"]), bool(metric.get("higher_is_better", True)))
@@ -222,24 +234,22 @@ def _lm_eval_metadata(task_name: str, task: Any, limit: int | None) -> Benchmark
 
 def describe_benchmarks(
     task_names: Sequence[str],
-    task_routes: Mapping[str, object],
+    task_routes: Mapping[str, TaskRoute],
     custom_task_manager: CustomTaskManager,
     lm_eval_task_manager: LMEvalTaskManager,
     *,
     limit: int | None,
 ) -> tuple[BenchmarkMetadata, ...]:
-    """Describe requested tasks through one route-independent public contract."""
+    """Return every discoverable benchmark descriptor without blocking evaluation."""
     descriptions: list[BenchmarkMetadata] = []
     for task_name in task_names:
-        route_value = getattr(task_routes[task_name], "value", task_routes[task_name])
-        route = str(route_value)
-        if route == "Evalchemy chat benchmark":
+        if task_routes[task_name] is TaskRoute.CUSTOM:
             benchmark = custom_task_manager.get_benchmark(task_name)
             if benchmark is None:
                 raise LookupError(f"custom benchmark {task_name!r} was not constructed")
             try:
                 description = benchmark.describe(task_name)
-            except Exception as exc:  # Metadata must never gate an otherwise runnable benchmark.
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
                 warnings.warn(f"Could not describe benchmark {task_name!r}: {exc}", RuntimeWarning, stacklevel=2)
                 description = None
             if description is not None:
@@ -253,7 +263,7 @@ def describe_benchmarks(
         for name, task in task_objects:
             try:
                 descriptions.append(_lm_eval_metadata(name, task, limit))
-            except Exception as exc:  # Metadata must never gate an otherwise runnable benchmark.
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
                 warnings.warn(f"Could not describe benchmark {name!r}: {exc}", RuntimeWarning, stacklevel=2)
     return tuple(descriptions)
 

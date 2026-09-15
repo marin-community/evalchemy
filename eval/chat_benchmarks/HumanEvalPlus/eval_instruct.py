@@ -24,11 +24,15 @@ class HumanEvalPlusBenchmark(BaseBenchmark):
     METRIC_NAME_OVERRIDES = {"python_pass@1": "pass_at_1"}
 
     def benchmark_size(self) -> int:
-        count = 0
-        for language in self.languages:
-            problem_file = Path(self.data_dir) / f"humanevalplus-{language}.jsonl"
-            count += sum(1 for line in problem_file.read_text().splitlines() if line.strip())
-        return min(count, 2 * len(self.languages)) if self.debug else count
+        return sum(len(self.load_examples(language)) for language in self.languages)
+
+    def load_examples(self, language: str) -> List[Dict[str, Any]]:
+        problem_file = Path(self.data_dir) / f"humanevalplus-{language}.jsonl"
+        if not problem_file.exists():
+            self.logger.warning(f"Dataset file not found: {problem_file}")
+            return []
+        examples = [json.loads(line) for line in problem_file.read_text().splitlines() if line.strip()]
+        return examples[:2] if self.debug else examples
 
     def __init__(
         self,
@@ -89,17 +93,10 @@ Please continue to complete the function. You are not allowed to modify the give
 
         for lang in self.languages:
             try:
-                problem_file = os.path.join(self.data_dir, f"humanevalplus-{lang}.jsonl")
-                if not os.path.exists(problem_file):
-                    self.logger.warning(f"Dataset file not found: {problem_file}")
+                examples = self.load_examples(lang)
+                if not examples:
                     continue
-
-                examples = [json.loads(x) for x in open(problem_file) if x.strip()]
                 self.logger.info(f"Loaded {len(examples)} examples for {lang}")
-
-                if self.debug:
-                    examples = examples[:2]
-                    self.logger.info("Debug mode: using first 2 examples only")
 
                 all_instances = []
                 for idx, example in enumerate(examples):

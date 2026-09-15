@@ -60,7 +60,7 @@ class BaseBenchmark(ABC):
 
     RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
     GRADER_EXECUTION_MODE = GraderExecutionMode.SERIAL
-    METRICS: tuple[SourceMetric | str, ...] = ()
+    METRICS: tuple[str, ...] = ()
     PRIMARY_METRIC: str | None = None
     METRIC_NAME_OVERRIDES: Mapping[str, str] = MappingProxyType({})
     METRIC_KIND_OVERRIDES: Mapping[str, MetricKind | str] = MappingProxyType({})
@@ -122,10 +122,10 @@ class BaseBenchmark(ABC):
         )
 
     def benchmark_size(self) -> int | None:
-        """Return the prepared source-item count before Evalchemy's run limit."""
+        """Return the prepared pre-limit item count, or ``None`` when unknown."""
         return None
 
-    def benchmark_metrics(self) -> tuple[SourceMetric | str, ...]:
+    def benchmark_metrics(self) -> tuple[str, ...]:
         """Return source metrics for this benchmark's resolved run configuration."""
         if self.num_samples > 1:
             return tuple(f"pass@{k}" for k in self.pass_at_k if k <= self.num_samples)
@@ -135,18 +135,17 @@ class BaseBenchmark(ABC):
         """Return the source spelling of the preferred headline metric."""
         if self.num_samples > 1:
             metrics = self.benchmark_metrics()
-            names = [metric.name if isinstance(metric, SourceMetric) else metric for metric in metrics]
-            return "pass@1" if "pass@1" in names else (names[0] if names else None)
+            return "pass@1" if "pass@1" in metrics else (metrics[0] if metrics else None)
         return self.PRIMARY_METRIC
 
     def describe(self, task_name: str | None = None) -> BenchmarkMetadata | None:
-        """Return this benchmark's canonical metrics and coverage denominators."""
+        """Return canonical metrics and coverage, or ``None`` when metrics are undeclared."""
         source_metrics = self.benchmark_metrics()
         if not source_metrics:
             return None
         name = task_name or self.benchmark_name
         metrics, primary = resolve_metric_metadata(
-            tuple(metric if isinstance(metric, SourceMetric) else SourceMetric(metric) for metric in source_metrics),
+            tuple(SourceMetric(metric) for metric in source_metrics),
             primary_metric=self.benchmark_primary_metric(),
             name_overrides=self.METRIC_NAME_OVERRIDES,
             kind_overrides=self.METRIC_KIND_OVERRIDES,
