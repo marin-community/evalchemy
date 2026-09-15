@@ -1056,7 +1056,7 @@ def handle_evaluation_output(
             is_external=args.is_external_model,
         )
 
-    if args.log_samples and hasattr(evaluation_tracker, "save_results_samples"):
+    if args.log_samples and not args.finestore_output_path and hasattr(evaluation_tracker, "save_results_samples"):
         for task_name, task_samples in samples.items():
             evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
 

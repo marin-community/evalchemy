@@ -132,7 +132,10 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         type=str,
         metavar="DIR",
-        help="FineStore run root for native JSONL artifacts and normalized sample tables. Requires --log_samples.",
+        help=(
+            "FineStore run root for native JSON/JSONL artifacts and normalized sample tables. "
+            "When set, per-task sample JSONL is written only to FineStore. Requires --log_samples."
+        ),
     )
     parser.add_argument(
         "--finestore_output_prefix",

@@ -161,7 +161,8 @@ The results will be written out in `output_path`. If you have `jq` [installed](h
 - `--batch_size`: Batch size for inference
 - `--output_path`: Directory to save evaluation results
 - `--finestore_output_path`: FineStore run root for native JSON/JSONL source objects and normalized
-  sample tables. Requires `--log_samples` and the `serve-eval` extra.
+  sample tables. Per-task sample JSONL is written only to FineStore when this is set. Requires
+  `--log_samples` and the `serve-eval` extra.
 - `--finestore_output_prefix`: Stable task-group name for organizing source objects in FineStore.
 - `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
 - `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
@@ -478,6 +479,8 @@ retain their native fields unchanged. An unscored task (including one returning
 an `error`) writes no sample artifact, and a serialization failure never changes
 the task's score or creates a zero-byte placeholder.
 
-With `--finestore_output_path`, Evalchemy also stores the aggregate JSON and each task's canonical
-JSONL inside FineStore and writes one normalized evaluation sample per extraction filter. This keeps
-the evaluator-native records and dashboard-ready tables in the same archive.
+With `--finestore_output_path`, FineStore becomes the sample-output writer. Evalchemy serializes each
+task's canonical JSONL directly into a FineStore source artifact and writes one normalized evaluation
+sample per extraction filter; it does not create a second `samples_*.jsonl` under `--output_path`.
+The aggregate JSON remains under `--output_path` for the standard CLI contract and is also preserved
+as a FineStore source artifact.
