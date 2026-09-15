@@ -7,6 +7,33 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
 from eval.contracts.finestore_output import write_finestore_output
+from eval.contracts.lm_eval_normalization import sample_from_lm_eval
+
+
+def test_lm_eval_normalization_maps_multiple_choice_scores():
+    sample = sample_from_lm_eval(
+        "arc_easy",
+        {
+            "doc_id": 3,
+            "doc": {"choices": {"label": ["A", "B"], "text": ["3", "4"]}},
+            "target": "B",
+            "arguments": [["2 + 2 =", "3"], ["2 + 2 =", "4"]],
+            "resps": [[-2.0, False], [-0.1, True]],
+            "filtered_resps": [],
+            "filter": "none",
+            "metrics": ["acc_norm"],
+            "acc_norm": 1.0,
+        },
+    )
+
+    assert sample.prompt_text == "2 + 2 ="
+    assert sample.model_choice == 1
+    assert sample.target_choice == 1
+    assert [(choice.label, choice.text, choice.loglikelihood) for choice in sample.choices or []] == [
+        ("A", "3", -2.0),
+        ("B", "4", -0.1),
+    ]
+    assert sample.correct is True
 
 
 def test_finestore_output_preserves_jsonl_and_expands_filter_variants(

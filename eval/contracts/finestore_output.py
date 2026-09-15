@@ -11,8 +11,10 @@ from typing import Any
 from lm_eval.utils import handle_non_serializable
 
 try:
-    from finestore.eval import EvaluationStore, samples_from_lm_eval
+    from finestore.eval import EvaluationStore
     from rigging.filesystem.storage_path import prefix_join
+
+    from eval.contracts.lm_eval_normalization import samples_from_lm_eval
 
     _FINESTORE_IMPORT_ERROR: ImportError | None = None
 except ImportError as error:
