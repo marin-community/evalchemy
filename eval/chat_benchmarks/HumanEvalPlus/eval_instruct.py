@@ -19,6 +19,16 @@ class HumanEvalPlusBenchmark(BaseBenchmark):
     """
 
     GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
+    METRICS = ("python_pass@1",)
+    PRIMARY_METRIC = "python_pass@1"
+    METRIC_NAME_OVERRIDES = {"python_pass@1": "pass_at_1"}
+
+    def benchmark_size(self) -> int:
+        count = 0
+        for language in self.languages:
+            problem_file = Path(self.data_dir) / f"humanevalplus-{language}.jsonl"
+            count += sum(1 for line in problem_file.read_text().splitlines() if line.strip())
+        return min(count, 2 * len(self.languages)) if self.debug else count
 
     def __init__(
         self,
