@@ -48,7 +48,7 @@ from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import AUTO_ANNOTATOR_MODEL, LIST_OPENAI_MODELS
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.finestore_output import write_finestore_output
+from eval.contracts.finestore_output import require_finestore_output, write_finestore_output
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
@@ -687,6 +687,11 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         parser = setup_custom_parser()
         args = parse_eval_args(parser)
 
+    if args.finestore_output_path:
+        if not args.log_samples:
+            raise ValueError("--finestore_output_path requires --log_samples")
+        require_finestore_output()
+
     if args.config is not None:
         # This overwrites `--tasks` and `--batch_size`
         with open(args.config, "r") as file:
@@ -1021,6 +1026,10 @@ def handle_evaluation_output(
             Function handles outputs via side effects (logging, saving files)
             rather than returning values.
     """
+    if args.finestore_output_path:
+        if not args.log_samples:
+            raise ValueError("--finestore_output_path requires --log_samples")
+        require_finestore_output()
     validate_result_document(results)
     samples = results.pop("samples", {}) if args.log_samples else {}
 
@@ -1061,8 +1070,6 @@ def handle_evaluation_output(
             evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
 
     if args.finestore_output_path:
-        if not args.log_samples:
-            raise ValueError("--finestore_output_path requires --log_samples")
         write_finestore_output(
             args.finestore_output_path,
             args.finestore_output_prefix,

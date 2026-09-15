@@ -1,6 +1,5 @@
 import getpass
 import json
-import re
 import subprocess
 import time
 import uuid
@@ -20,7 +19,7 @@ from lm_eval.utils import hash_string, simple_parse_args_string
 
 # lm_eval.utils.eval_logger was removed upstream (>=0.4.8); use the vendored shim.
 from eval.lm_eval_compat import eval_logger
-from eval.native_serialization import results_json, samples_jsonl
+from eval.native_serialization import results_json, safe_artifact_name, samples_jsonl
 
 from database.models import Dataset, EvalResult, EvalSetting, Model
 from database.utils import create_db_engine, create_tables, get_model_from_db, get_or_add_model_by_name, sessionmaker
@@ -197,7 +196,7 @@ class DCEvaluationTracker:
             # Reuse the aggregated-results timestamp when present so the samples
             # files sit alongside the matching results_<date>.json.
             date_id = getattr(self, "date_id", None) or datetime.now().isoformat().replace(":", "-")
-            safe_task = re.sub(r"[^\w.-]", "_", str(task_name))
+            safe_task = safe_artifact_name(str(task_name))
             file_samples = path.joinpath(f"samples_{safe_task}_{date_id}.jsonl")
             file_samples.write_text(samples_jsonl(samples), encoding="utf-8")
             eval_logger.info(f"Wrote {len(samples or [])} samples for {task_name} to: {file_samples}")

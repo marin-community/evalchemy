@@ -16,6 +16,7 @@ def _cli_args(tasks):
         config=None,
         batch_size="1",
         output_path=None,
+        finestore_output_path=None,
         use_database=False,
         tasks=tasks,
         model_id=None,

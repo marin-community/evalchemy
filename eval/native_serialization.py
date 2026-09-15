@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from lm_eval.utils import handle_non_serializable
+
+
+def safe_artifact_name(value: str) -> str:
+    """Return a filesystem- and object-key-safe Evalchemy artifact name."""
+    return re.sub(r"[^\w.-]", "_", value) or "task"
 
 
 def results_json(results: Mapping[str, Any]) -> str:

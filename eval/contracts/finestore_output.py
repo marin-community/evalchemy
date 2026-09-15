@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from eval.native_serialization import results_json, samples_jsonl
+from eval.native_serialization import results_json, safe_artifact_name, samples_jsonl
 
 try:
     from finestore.eval import EvaluationStore
@@ -19,11 +18,15 @@ try:
 except ImportError as error:
     _FINESTORE_IMPORT_ERROR = error
 
-_SOURCE_CONTENT_TYPE = "application/x-ndjson"
+_SAMPLE_CONTENT_TYPE = "application/x-ndjson"
 
 
-def _safe_name(value: str) -> str:
-    return re.sub(r"[^\w.-]", "_", value) or "task"
+def require_finestore_output() -> None:
+    """Fail before evaluation when the FineStore output dependencies are unavailable."""
+    if _FINESTORE_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "--finestore_output_path requires the evalchemy[serve-eval] extra"
+        ) from _FINESTORE_IMPORT_ERROR
 
 
 def write_finestore_output(
@@ -33,15 +36,12 @@ def write_finestore_output(
     samples_by_task: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> None:
     """Write Evalchemy's native sources and normalized samples to a FineStore run."""
-    if _FINESTORE_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "--finestore_output_path requires the evalchemy[serve-eval] extra"
-        ) from _FINESTORE_IMPORT_ERROR
+    require_finestore_output()
 
     store = EvaluationStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
     try:
-        source_root = prefix_join(prefix_join("evalchemy", _safe_name(source_prefix)), "native")
-        result_name = "__".join(_safe_name(task_name) for task_name in sorted(samples_by_task))
+        source_root = prefix_join(prefix_join("evalchemy", safe_artifact_name(source_prefix)), "native")
+        result_name = "__".join(safe_artifact_name(task_name) for task_name in sorted(samples_by_task))
         store.add_source_artifact(
             prefix_join(source_root, f"results_{result_name or 'run'}.json"),
             results_json(results).encode(),
@@ -50,11 +50,11 @@ def write_finestore_output(
         for task_name, task_samples in samples_by_task.items():
             if not task_samples:
                 continue
-            safe_task_name = _safe_name(task_name)
+            safe_task_name = safe_artifact_name(task_name)
             store.add_source_artifact(
                 prefix_join(source_root, f"samples_{safe_task_name}_native.jsonl"),
                 samples_jsonl(task_samples).encode(),
-                content_type=_SOURCE_CONTENT_TYPE,
+                content_type=_SAMPLE_CONTENT_TYPE,
             )
             for record in task_samples:
                 for sample in samples_from_lm_eval(task_name, dict(record)):
