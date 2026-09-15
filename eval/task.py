@@ -6,7 +6,8 @@ import random
 import sys
 from abc import ABC, abstractmethod
 from itertools import islice
-from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar, Union
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
@@ -32,6 +33,12 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.benchmark_metadata import (
+    BenchmarkMetadata,
+    MetricKind,
+    SourceMetric,
+    resolve_metric_metadata,
+)
 from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
 from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
@@ -53,6 +60,10 @@ class BaseBenchmark(ABC):
 
     RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
     GRADER_EXECUTION_MODE = GraderExecutionMode.SERIAL
+    METRICS: tuple[str, ...] = ()
+    PRIMARY_METRIC: str | None = None
+    METRIC_NAME_OVERRIDES: Mapping[str, str] = MappingProxyType({})
+    METRIC_KIND_OVERRIDES: Mapping[str, MetricKind | str] = MappingProxyType({})
 
     def __init__(
         self,
@@ -109,6 +120,44 @@ class BaseBenchmark(ABC):
             self.RESOURCE_REQUIREMENTS,
             self.validate_prepared_data,
         )
+
+    def benchmark_size(self) -> int | None:
+        """Return the prepared pre-limit item count, or ``None`` when unknown."""
+        return None
+
+    def benchmark_metrics(self) -> tuple[str, ...]:
+        """Return source metrics for this benchmark's resolved run configuration."""
+        if self.num_samples > 1:
+            return tuple(f"pass@{k}" for k in self.pass_at_k if k <= self.num_samples)
+        return self.METRICS
+
+    def benchmark_primary_metric(self) -> str | None:
+        """Return the source spelling of the preferred headline metric."""
+        if self.num_samples > 1:
+            metrics = self.benchmark_metrics()
+            return "pass@1" if "pass@1" in metrics else (metrics[0] if metrics else None)
+        return self.PRIMARY_METRIC
+
+    def describe(self, task_name: str | None = None) -> BenchmarkMetadata | None:
+        """Return canonical metrics and coverage, or ``None`` when metrics are undeclared."""
+        source_metrics = self.benchmark_metrics()
+        if not source_metrics:
+            return None
+        name = task_name or self.benchmark_name
+        metrics, primary = resolve_metric_metadata(
+            tuple(SourceMetric(metric) for metric in source_metrics),
+            primary_metric=self.benchmark_primary_metric(),
+            name_overrides=self.METRIC_NAME_OVERRIDES,
+            kind_overrides=self.METRIC_KIND_OVERRIDES,
+        )
+        n_benchmark = self.benchmark_size()
+        n_attempted = (
+            min(self.evaluation_limit, n_benchmark)
+            if self.evaluation_limit is not None and n_benchmark is not None
+            else n_benchmark
+        )
+        primary_kind = next(metric.kind for metric in metrics if metric.name == primary)
+        return BenchmarkMetadata(name, primary, primary_kind, metrics, n_benchmark, n_attempted)
 
     def validate_prepared_data(self) -> None:
         """Hook for dataset shape and representative-request validation."""

@@ -136,6 +136,22 @@ class OlympiadBenchBenchmark(BaseBenchmark):
     pattern in this tree: the model is asked to box its final answer.
     """
 
+    METRICS = ("accuracy",)
+    PRIMARY_METRIC = "accuracy"
+
+    def benchmark_size(self) -> int:
+        return len(self.load_questions())
+
+    def benchmark_metrics(self):
+        if self.num_samples > 1:
+            return super().benchmark_metrics()
+        return ("accuracy_avg",) if self.n_repeat > 1 else self.METRICS
+
+    def benchmark_primary_metric(self):
+        if self.num_samples > 1:
+            return super().benchmark_primary_metric()
+        return "accuracy_avg" if self.n_repeat > 1 else self.PRIMARY_METRIC
+
     def __init__(
         self,
         data_file: Optional[str] = DEFAULT_DATA_FILE,

@@ -20,6 +20,12 @@ class MBPPPlusBenchmark(BaseBenchmark):
     """
 
     GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
+    METRICS = ("pass@1",)
+    PRIMARY_METRIC = "pass@1"
+
+    def benchmark_size(self) -> int:
+        problem_file = os.path.join(self.data_dir, "mbppplus.jsonl")
+        return sum(1 for _ in self.read_test_examples(problem_file))
 
     def __init__(
         self,

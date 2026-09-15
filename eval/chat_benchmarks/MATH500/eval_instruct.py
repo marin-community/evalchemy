@@ -23,6 +23,12 @@ class MATH500Benchmark(BaseBenchmark):
     Follows the evaluation logic of hendrycks_math answer extraction.
     """
 
+    METRICS = ("accuracy",)
+    PRIMARY_METRIC = "accuracy"
+
+    def benchmark_size(self) -> int:
+        return len(self.load_questions())
+
     def __init__(
         self,
         data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "math500.jsonl"),
