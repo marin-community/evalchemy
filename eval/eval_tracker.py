@@ -1,6 +1,5 @@
 import getpass
 import json
-import re
 import subprocess
 import time
 import uuid
@@ -16,10 +15,11 @@ except ModuleNotFoundError:
     torch = None
 from huggingface_hub import model_info
 from lm_eval.loggers.evaluation_tracker import GeneralConfigTracker
-from lm_eval.utils import handle_non_serializable, hash_string, simple_parse_args_string
+from lm_eval.utils import hash_string, simple_parse_args_string
 
 # lm_eval.utils.eval_logger was removed upstream (>=0.4.8); use the vendored shim.
 from eval.lm_eval_compat import eval_logger
+from eval.native_serialization import results_json, safe_artifact_name, samples_jsonl
 
 from database.models import Dataset, EvalResult, EvalSetting, Model
 from database.utils import create_db_engine, create_tables, get_model_from_db, get_or_add_model_by_name, sessionmaker
@@ -156,12 +156,7 @@ class DCEvaluationTracker:
                 # update initial results dict
                 results.update({"task_hashes": task_hashes})
                 results.update(asdict(self.general_config_tracker))
-                dumped = json.dumps(
-                    results,
-                    indent=2,
-                    default=handle_non_serializable,
-                    ensure_ascii=False,
-                )
+                dumped = results_json(results)
 
                 path = Path(self.output_path if self.output_path else Path.cwd())
                 path = path.joinpath(self.general_config_tracker.model_name_sanitized)
@@ -201,11 +196,9 @@ class DCEvaluationTracker:
             # Reuse the aggregated-results timestamp when present so the samples
             # files sit alongside the matching results_<date>.json.
             date_id = getattr(self, "date_id", None) or datetime.now().isoformat().replace(":", "-")
-            safe_task = re.sub(r"[^\w.-]", "_", str(task_name))
+            safe_task = safe_artifact_name(str(task_name))
             file_samples = path.joinpath(f"samples_{safe_task}_{date_id}.jsonl")
-            with file_samples.open("w", encoding="utf-8") as f:
-                for sample in samples or []:
-                    f.write(json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n")
+            file_samples.write_text(samples_jsonl(samples), encoding="utf-8")
             eval_logger.info(f"Wrote {len(samples or [])} samples for {task_name} to: {file_samples}")
         except Exception as e:
             eval_logger.warning(f"Could not save samples for {task_name}")

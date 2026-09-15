@@ -59,6 +59,8 @@ def _args(**overrides) -> Namespace:
         "batch_size": "1",
         "limit": None,
         "annotator_model": "auto",
+        "finestore_output_path": None,
+        "finestore_output_prefix": "run",
     }
     values.update(overrides)
     return Namespace(**values)
