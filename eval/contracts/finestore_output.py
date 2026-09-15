@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from lm_eval.utils import handle_non_serializable
+from eval.native_serialization import results_json, samples_jsonl
 
 try:
     from finestore.eval import EvaluationStore
@@ -21,21 +20,6 @@ except ImportError as error:
     _FINESTORE_IMPORT_ERROR = error
 
 _SOURCE_CONTENT_TYPE = "application/x-ndjson"
-
-
-def _results_json_bytes(results: Mapping[str, Any]) -> bytes:
-    return json.dumps(
-        results,
-        indent=2,
-        default=handle_non_serializable,
-        ensure_ascii=False,
-    ).encode()
-
-
-def _sample_jsonl_bytes(samples: Sequence[Mapping[str, Any]]) -> bytes:
-    return "".join(
-        json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n" for sample in samples
-    ).encode()
 
 
 def _safe_name(value: str) -> str:
@@ -60,7 +44,7 @@ def write_finestore_output(
         result_name = "__".join(_safe_name(task_name) for task_name in sorted(samples_by_task))
         store.add_source_artifact(
             prefix_join(source_root, f"results_{result_name or 'run'}.json"),
-            _results_json_bytes(results),
+            results_json(results).encode(),
             content_type="application/json",
         )
         for task_name, task_samples in samples_by_task.items():
@@ -69,7 +53,7 @@ def write_finestore_output(
             safe_task_name = _safe_name(task_name)
             store.add_source_artifact(
                 prefix_join(source_root, f"samples_{safe_task_name}_native.jsonl"),
-                _sample_jsonl_bytes(task_samples),
+                samples_jsonl(task_samples).encode(),
                 content_type=_SOURCE_CONTENT_TYPE,
             )
             for record in task_samples:

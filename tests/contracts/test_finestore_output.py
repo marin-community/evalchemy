@@ -1,6 +1,5 @@
 """Contract tests for Evalchemy's native FineStore output."""
 
-import json
 from pathlib import Path
 
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
@@ -8,6 +7,7 @@ from finestore.reader import ReadView
 
 from eval.contracts.finestore_output import write_finestore_output
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
+from eval.native_serialization import results_json, samples_jsonl
 
 
 def test_lm_eval_normalization_maps_multiple_choice_scores():
@@ -79,7 +79,7 @@ def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
 
     source = view.read_blob("sources/evalchemy/gsm8k_5shot/native/samples_gsm8k_native.jsonl")
     assert source is not None
-    assert json.loads(source) == record
+    assert source.decode() == samples_jsonl([record])
     aggregate = view.read_blob("sources/evalchemy/gsm8k_5shot/native/results_gsm8k.json")
     assert aggregate is not None
-    assert json.loads(aggregate) == results
+    assert aggregate.decode() == results_json(results)
