@@ -234,3 +234,5 @@ eval/serve_eval/runs/
 
 # Per-extra venvs built by scripts/ci/check_benchmark_extras.py
 .benchmark-extra-venvs/
+
+.venv/
