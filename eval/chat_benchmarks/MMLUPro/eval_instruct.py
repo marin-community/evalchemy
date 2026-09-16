@@ -183,8 +183,7 @@ class MMLUProBenchmark(BaseBenchmark):
             while k > 0:
                 if self.tokenizer is None:
                     raise RuntimeError("MMLU-Pro tokenizer is required for few-shot prompt sizing")
-                toks = self.tokenizer(prompt, return_tensors="pt")
-                length = toks["input_ids"].shape[1]
+                length = len(self.tokenizer.encode(prompt))
                 if length < self.max_model_length - self.max_new_tokens:
                     break
                 k -= 1

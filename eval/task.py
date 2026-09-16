@@ -42,6 +42,7 @@ from eval.contracts.benchmark_metadata import (
 from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
 from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
+from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_tokens
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
@@ -865,6 +866,9 @@ class TaskManager:
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
+        # Resolved once: every benchmark's generation budget is derived from the
+        # same stored prompt lengths (eval/contracts/prompt_lengths.md).
+        self.prompt_lengths = load_prompt_lengths()
 
         # Load benchmarks from directory
         self._load_benchmarks(benchmarks_dir)
@@ -978,9 +982,15 @@ class TaskManager:
                 valid_kwargs["system_instruction"] = self.benchmark_kwargs["system_instruction"]
 
             instance = benchmark_class(**valid_kwargs)
+            context_length = self.benchmark_kwargs.get("max_length")
             instance.set_evaluation_limits(
-                max_length=self.benchmark_kwargs.get("max_length"),
-                max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                max_length=context_length,
+                max_tokens=resolve_task_max_tokens(
+                    name,
+                    context_length=context_length,
+                    requested_max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                    prompt_lengths=self.prompt_lengths,
+                ),
                 limit=self.benchmark_kwargs.get("limit"),
             )
 
