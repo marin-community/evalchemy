@@ -12,6 +12,7 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
+from eval.contracts.sample_results import record_sample_metrics
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
@@ -156,11 +157,11 @@ def test_reasoning_aliases_are_scored_and_audited_in_every_task_path(choice, pip
     generated = _adapter().parse_generations(response)[0]
 
     if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]]}]
+        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
     else:
-        samples = _NativeBenchmark().to_samples(
-            {"examples": [{"problem": "1 + 1", "answer": "2", "model_output": generated}]}, {}
-        )
+        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
+        record_sample_metrics(example, accuracy=1.0)
+        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
     record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
 
     assert str(generated) == "reasoning"
@@ -261,11 +262,11 @@ def test_reasoning_responses_are_scored_and_audited_in_every_task_path(
     generated = _adapter(policy).parse_generations({**response, "choices": [choice]})[0]
 
     if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]]}]
+        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
     else:
-        samples = _NativeBenchmark().to_samples(
-            {"examples": [{"problem": "1 + 1", "answer": "2", "model_output": generated}]}, {}
-        )
+        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
+        record_sample_metrics(example, accuracy=1.0)
+        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
     record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
 
     expected_scorer_text = expected if policy == CompletionContentPolicy.COMBINE else message.get("content") or ""

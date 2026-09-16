@@ -6,7 +6,8 @@ import random
 import sys
 from abc import ABC, abstractmethod
 from itertools import islice
-from typing import Any, Callable, Dict, Iterable, List, Optional, Type, TypeVar, Union
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
@@ -32,9 +33,16 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.benchmark_metadata import (
+    BenchmarkMetadata,
+    MetricKind,
+    SourceMetric,
+    resolve_metric_metadata,
+)
 from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
 from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
+from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_tokens
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
@@ -42,7 +50,13 @@ from eval.contracts.sample_manifest import (
     SampleRequest,
     canonical_json_identity,
 )
+from eval.contracts.sample_results import (
+    SAMPLE_METRICS_ANNOTATION,
+    record_sample_metrics,
+    sample_metric_fields,
+)
 from eval.contracts.task_outcome import TaskRoute
+from eval.passk import estimate_pass_at_k
 
 
 _Sample = TypeVar("_Sample")
@@ -53,6 +67,10 @@ class BaseBenchmark(ABC):
 
     RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
     GRADER_EXECUTION_MODE = GraderExecutionMode.SERIAL
+    METRICS: tuple[str, ...] = ()
+    PRIMARY_METRIC: str | None = None
+    METRIC_NAME_OVERRIDES: Mapping[str, str] = MappingProxyType({})
+    METRIC_KIND_OVERRIDES: Mapping[str, MetricKind | str] = MappingProxyType({})
 
     def __init__(
         self,
@@ -109,6 +127,44 @@ class BaseBenchmark(ABC):
             self.RESOURCE_REQUIREMENTS,
             self.validate_prepared_data,
         )
+
+    def benchmark_size(self) -> int | None:
+        """Return the prepared pre-limit item count, or ``None`` when unknown."""
+        return None
+
+    def benchmark_metrics(self) -> tuple[str, ...]:
+        """Return source metrics for this benchmark's resolved run configuration."""
+        if self.num_samples > 1:
+            return tuple(f"pass@{k}" for k in self.pass_at_k if k <= self.num_samples)
+        return self.METRICS
+
+    def benchmark_primary_metric(self) -> str | None:
+        """Return the source spelling of the preferred headline metric."""
+        if self.num_samples > 1:
+            metrics = self.benchmark_metrics()
+            return "pass@1" if "pass@1" in metrics else (metrics[0] if metrics else None)
+        return self.PRIMARY_METRIC
+
+    def describe(self, task_name: str | None = None) -> BenchmarkMetadata | None:
+        """Return canonical metrics and coverage, or ``None`` when metrics are undeclared."""
+        source_metrics = self.benchmark_metrics()
+        if not source_metrics:
+            return None
+        name = task_name or self.benchmark_name
+        metrics, primary = resolve_metric_metadata(
+            tuple(SourceMetric(metric) for metric in source_metrics),
+            primary_metric=self.benchmark_primary_metric(),
+            name_overrides=self.METRIC_NAME_OVERRIDES,
+            kind_overrides=self.METRIC_KIND_OVERRIDES,
+        )
+        n_benchmark = self.benchmark_size()
+        n_attempted = (
+            min(self.evaluation_limit, n_benchmark)
+            if self.evaluation_limit is not None and n_benchmark is not None
+            else n_benchmark
+        )
+        primary_kind = next(metric.kind for metric in metrics if metric.name == primary)
+        return BenchmarkMetadata(name, primary, primary_kind, metrics, n_benchmark, n_attempted)
 
     def validate_prepared_data(self) -> None:
         """Hook for dataset shape and representative-request validation."""
@@ -388,6 +444,44 @@ class BaseBenchmark(ABC):
 
         n = int(num_samples if num_samples is not None else self.num_samples)
         return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
+
+    def record_repeated_accuracy(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        correct_by_repeat: Sequence[Sequence[Any]],
+    ) -> None:
+        """Record each example's accuracy averaged over its repeated completions.
+
+        Args:
+            examples: The graded examples, annotated in place.
+            correct_by_repeat: One score list per repetition, each ordered like
+                ``examples``. Booleans and partial-credit scores are both accepted.
+        """
+        if not correct_by_repeat:
+            raise ValueError(f"{self.benchmark_name}: cannot record per-sample accuracy without a repetition")
+        for index, example in enumerate(examples):
+            scores = [float(repeat[index]) for repeat in correct_by_repeat]
+            record_sample_metrics(example, accuracy=sum(scores) / len(scores))
+
+    def record_pass_at_k_metrics(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        num_correct: List[int],
+        num_samples: Optional[int] = None,
+        ks: Optional[List[int]] = None,
+    ) -> None:
+        """Record each problem's unbiased pass@k estimates as its per-sample metrics.
+
+        The per-problem estimates are the terms ``aggregate_pass_at_k`` averages,
+        so a sample artifact and the reported table stay reconcilable.
+        """
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        reportable = [k for k in (ks if ks is not None else self.pass_at_k) if k <= n]
+        if not reportable:
+            raise ValueError(f"{self.benchmark_name}: no requested pass@k is reportable from {n} samples")
+        estimates = {f"pass_at_{k}": estimate_pass_at_k(n, num_correct, k) for k in reportable}
+        for index, example in enumerate(examples):
+            record_sample_metrics(example, **{name: values[index] for name, values in estimates.items()})
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:
@@ -712,9 +806,8 @@ class BaseBenchmark(ABC):
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
-                    # Per-sample twin of the aggregate accuracy metric, for benchmarks whose
-                    # evaluate_responses annotates example["correct"] -- sample viewers filter on it.
-                    **({"accuracy": float(example["correct"])} if "correct" in example else {}),
+                    # The grader's own per-sample scores, in lm-eval's record shape.
+                    **sample_metric_fields(example),
                 }
             )
         return samples
@@ -742,6 +835,7 @@ class BaseBenchmark(ABC):
             "output",
             "correct",
             "score",
+            SAMPLE_METRICS_ANNOTATION,
         }
         return {key: value for key, value in example.items() if key not in generated_fields}
 
@@ -772,6 +866,9 @@ class TaskManager:
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
+        # Resolved once: every benchmark's generation budget is derived from the
+        # same stored prompt lengths (eval/contracts/prompt_lengths.md).
+        self.prompt_lengths = load_prompt_lengths()
 
         # Load benchmarks from directory
         self._load_benchmarks(benchmarks_dir)
@@ -885,9 +982,15 @@ class TaskManager:
                 valid_kwargs["system_instruction"] = self.benchmark_kwargs["system_instruction"]
 
             instance = benchmark_class(**valid_kwargs)
+            context_length = self.benchmark_kwargs.get("max_length")
             instance.set_evaluation_limits(
-                max_length=self.benchmark_kwargs.get("max_length"),
-                max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                max_length=context_length,
+                max_tokens=resolve_task_max_tokens(
+                    name,
+                    context_length=context_length,
+                    requested_max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                    prompt_lengths=self.prompt_lengths,
+                ),
                 limit=self.benchmark_kwargs.get("limit"),
             )
 

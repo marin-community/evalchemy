@@ -24,6 +24,12 @@ class AIME24Benchmark(BaseBenchmark):
     Follows the evaluation logic of hendrycks_math answer extraction.
     """
 
+    METRICS = ("accuracy_avg",)
+    PRIMARY_METRIC = "accuracy_avg"
+
+    def benchmark_size(self) -> int:
+        return len(self.load_questions())
+
     def __init__(
         self,
         data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "aime24.json"),
@@ -128,10 +134,13 @@ class AIME24Benchmark(BaseBenchmark):
 
         # Calculate accuracy for each repetition
         all_results = []
+        correct_by_repeat = []
         for i in range(self.n_repeat):
-            solved = sum(
-                [is_equiv(str(example["expected_answer"]), str(example["model_answers"][i])) for example in examples]
-            )
+            correct = [
+                is_equiv(str(example["expected_answer"]), str(example["model_answers"][i])) for example in examples
+            ]
+            correct_by_repeat.append(correct)
+            solved = sum(correct)
             all_results.append(
                 {
                     "repetition": i + 1,
@@ -140,6 +149,8 @@ class AIME24Benchmark(BaseBenchmark):
                     "accuracy": solved / num_questions,
                 }
             )
+
+        self.record_repeated_accuracy(examples, correct_by_repeat)
 
         # Calculate overall statistics
         solved_avg = np.mean([result["num_solved"] for result in all_results])

@@ -8,6 +8,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
 from eval.constants import AUTO_ANNOTATOR_MODEL
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 from .judge import judge_all
@@ -181,6 +182,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
         for example, (label, raw) in zip(examples, judgments):
             example["judge_label"] = label
             example["judge_raw"] = raw
+            record_sample_metrics(example, accuracy=label == "correct", not_attempted=label == "not_attempted")
             if label == "correct":
                 num_correct += 1
             elif label == "not_attempted":

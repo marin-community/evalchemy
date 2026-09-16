@@ -144,9 +144,11 @@ def test_mrcr_generated_scores_do_not_change_sample_document_hash(monkeypatch):
     monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
     benchmark = mrcr.MRCRBenchmark()
     example = _row(2, "a")
-    example.update({"score": 0.5, "prefix_hit": 1.0, "correct": 0.5})
+    example.update({"score": 0.5, "prefix_hit": 1.0, "mrcr_bin_upper": 8_192})
+    generated = {"examples": [example]}
 
-    sample = benchmark.to_samples({"examples": [example]}, {"mrcr_accuracy": 0.5})[0]
+    scored = benchmark.evaluate_responses(generated)
+    sample = benchmark.to_samples(generated, scored)[0]
 
     assert "score" not in sample["doc"]
     assert "prefix_hit" not in sample["doc"]

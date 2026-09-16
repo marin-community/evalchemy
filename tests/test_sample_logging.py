@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.task_outcome import EvaluationRunError
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
@@ -28,6 +29,8 @@ class _RecordingBenchmark(BaseBenchmark):
         return self.generation_result
 
     def evaluate_responses(self, results):
+        for example in results.get("examples", []):
+            record_sample_metrics(example, accuracy=1.0)
         return self.scored_result
 
 
@@ -129,7 +132,10 @@ def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
         "doc_hash",
         "prompt_hash",
         "target_hash",
+        "metrics",
     } <= record.keys()
+    assert record["metrics"] == ["accuracy"]
+    assert record["accuracy"] == 1.0
     assert all(
         key not in record["doc"] for key in {"model_output", "model_outputs", "gpt_completion", "response", "output"}
     )
@@ -146,6 +152,8 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
         "doc_hash": "doc",
         "prompt_hash": "prompt",
         "target_hash": "target",
+        "metrics": ["exact_match"],
+        "exact_match": 1.0,
     }
 
     def fake_simple_evaluate(*args, **kwargs):

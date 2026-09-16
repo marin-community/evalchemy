@@ -125,8 +125,11 @@ class AIME25Benchmark(BaseBenchmark):
 
         # Calculate accuracy for each repetition
         all_results = []
+        correct_by_repeat = []
         for i in range(self.n_repeat):
-            solved = sum([is_equiv(str(example["answer"]), example["model_answers"][i]) for example in examples])
+            correct = [is_equiv(str(example["answer"]), example["model_answers"][i]) for example in examples]
+            correct_by_repeat.append(correct)
+            solved = sum(correct)
             all_results.append(
                 {
                     "repetition": i + 1,
@@ -135,6 +138,8 @@ class AIME25Benchmark(BaseBenchmark):
                     "accuracy": solved / num_questions,
                 }
             )
+
+        self.record_repeated_accuracy(examples, correct_by_repeat)
 
         # Calculate overall statistics
         solved_avg = np.mean([result["num_solved"] for result in all_results])

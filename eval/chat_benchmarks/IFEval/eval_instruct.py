@@ -6,8 +6,9 @@ import os
 
 from lm_eval.api.model import LM
 from lm_eval.api.instance import Instance
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
-from .evaluation import evaluate_accuracy
+from .evaluation import PER_PROMPT_FOLLOW_RATE, evaluate_accuracy
 
 
 class IFEvalBenchmark(BaseBenchmark):
@@ -165,6 +166,14 @@ class IFEvalBenchmark(BaseBenchmark):
             input_file = os.path.join(self.data_dir, "input_data.jsonl")
             response_file = os.path.join(temp_dir, "ifeval.jsonl")
             result = evaluate_accuracy(response_file)
+            follow_rates = result.pop(PER_PROMPT_FOLLOW_RATE)
+            for example in results["examples"]:
+                rates = follow_rates[example["prompt"]]
+                record_sample_metrics(
+                    example,
+                    prompt_level_strict=rates["strict"],
+                    prompt_level_loose=rates["loose"],
+                )
 
             result.update(
                 {

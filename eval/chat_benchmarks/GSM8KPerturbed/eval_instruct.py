@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
 
@@ -176,6 +177,7 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             record["model_answer"] = answer
             record["no_answer"] = answer is None
             record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+            record_sample_metrics(record, accuracy=record["correct"], no_answer=record["no_answer"])
         clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
         for task in TASK_FILES:
             records = [r for r in results["examples"] if r["task"] == task]

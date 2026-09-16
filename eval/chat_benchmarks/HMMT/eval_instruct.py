@@ -129,13 +129,16 @@ class HMMTBenchmark(BaseBenchmark):
 
         # Calculate accuracy for each repetition
         all_results = []
+        correct_by_repeat = []
         for i in range(self.n_repeat):
             solved = 0
+            correct_by_repeat.append([])
             for example in examples:
                 gold_answer, _ = parse_answer(str(example["answer"]))
                 model_answer = example["model_answers"][i]
                 is_correct = check_answers(model_answer, gold_answer)
                 example["label"].append(is_correct)
+                correct_by_repeat[i].append(is_correct)
                 solved += is_correct
             all_results.append(
                 {
@@ -145,6 +148,8 @@ class HMMTBenchmark(BaseBenchmark):
                     "accuracy": solved / num_questions,
                 }
             )
+
+        self.record_repeated_accuracy(examples, correct_by_repeat)
 
         # Calculate overall statistics
         solved_avg = np.mean([result["num_solved"] for result in all_results])

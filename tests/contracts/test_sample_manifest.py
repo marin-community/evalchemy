@@ -153,7 +153,7 @@ def test_sample_logging_uses_manifest_identity_and_coordinates():
     entries = manifest.plan_batch([SampleRequest(source_id="source", ordinal=0, shard=1, repeat=2)])
     manifest.mark_generated(entries, ["answer"])
 
-    records = canonicalize_samples("task", [{"resps": ["answer"]}], manifest)
+    records = canonicalize_samples("task", [{"resps": ["answer"], "metrics": ["accuracy"], "accuracy": 1.0}], manifest)
 
     assert records[0]["sample_id"] == entries[0].sample_id
     assert records[0]["source_id"] == "source"

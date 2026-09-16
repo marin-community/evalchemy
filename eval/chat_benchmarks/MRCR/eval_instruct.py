@@ -12,6 +12,7 @@ from datasets import load_dataset
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.limits import (
     ContextWindowExceededError,
     encoded_token_count,
@@ -216,7 +217,6 @@ class MRCRBenchmark(BaseBenchmark):
             example["model_answer"] = output
             example["score"] = score
             example["prefix_hit"] = prefix_hit
-            example["correct"] = score
         return {"examples": examples}
 
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -225,6 +225,9 @@ class MRCRBenchmark(BaseBenchmark):
         examples = results["examples"]
         if not examples:
             raise ValueError("MRCR cannot aggregate an empty result set")
+
+        for example in examples:
+            record_sample_metrics(example, accuracy=float(example["score"]), prefix_hit=float(example["prefix_hit"]))
 
         metrics: Dict[str, Any] = {
             "num_total": len(examples),

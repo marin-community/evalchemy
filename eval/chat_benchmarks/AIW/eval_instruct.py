@@ -9,6 +9,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import is_equiv
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -142,10 +143,13 @@ class AIWBenchmark(BaseBenchmark):
         if results is None:
             return None
 
-        examples = results["examples"]
+        # Every generated example is graded, including the ones the reported
+        # aggregate excludes, so each persisted sample carries its own score.
+        for example in results["examples"]:
+            record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
 
         # Filter only the target IDs
-        examples = [ex for ex in examples if ex["id"] in self.TARGET_IDS]
+        examples = [ex for ex in results["examples"] if ex["id"] in self.TARGET_IDS]
         if not examples:
             self.logger.warning("No matching examples found for the given IDs.")
             return None
