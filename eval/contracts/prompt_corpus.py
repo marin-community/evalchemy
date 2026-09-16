@@ -20,34 +20,14 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-from eval.contracts.prompt_length import REFERENCE_TOKENIZER
+from eval.contracts.prompt_length import REFERENCE_TOKENIZER, BenchmarkPromptLength
 
 PLACEHOLDER_CREDENTIAL_VARIABLES = ("OPENAI_API_KEY", "JUDGE_API_KEY")
 PLACEHOLDER_CREDENTIAL = "prompt-corpus-render"
-
-
-@dataclass(frozen=True)
-class PromptCorpus:
-    """Measurements of every distinct prompt one benchmark renders."""
-
-    task_name: str
-    distinct_prompt_count: int
-    longest_prompt_chars: int
-    longest_prompt_tokens: int
-    sha256: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "distinct_prompt_count": self.distinct_prompt_count,
-            "longest_prompt_chars": self.longest_prompt_chars,
-            "longest_prompt_tokens": self.longest_prompt_tokens,
-            "sha256": self.sha256,
-        }
 
 
 class PromptCaptureLM:
@@ -61,7 +41,7 @@ class PromptCaptureLM:
     rank = 0
     world_size = 1
 
-    def __init__(self, tokenizer: Any, pretrained: str = REFERENCE_TOKENIZER):
+    def __init__(self, tokenizer: PreTrainedTokenizerBase, pretrained: str = REFERENCE_TOKENIZER):
         self.tokenizer = tokenizer
         # Benchmarks read the model identity under several names when they size a
         # prompt or pick a conversation template; all of them mean the reference.
@@ -78,8 +58,7 @@ class PromptCaptureLM:
         return ["" for _ in instances]
 
 
-def load_reference_tokenizer(name: str = REFERENCE_TOKENIZER) -> Any:
-    """Load the declared reference tokenizer."""
+def load_reference_tokenizer(name: str = REFERENCE_TOKENIZER) -> PreTrainedTokenizerBase:
     return AutoTokenizer.from_pretrained(name)
 
 
@@ -105,8 +84,10 @@ def placeholder_credentials():
                 os.environ[name] = value
 
 
-def render_prompt_corpus(task_name: str, tokenizer: Any) -> PromptCorpus:
+def render_prompt_corpus(task_name: str, tokenizer: PreTrainedTokenizerBase) -> BenchmarkPromptLength:
     """Measure every distinct prompt ``task_name`` renders, with no model call."""
+    # Local to break the cycle: eval.task reads the stored lengths from
+    # eval.contracts.prompt_length, which this module imports.
     from eval.task import TaskManager
 
     with placeholder_credentials():
@@ -121,15 +102,16 @@ def render_prompt_corpus(task_name: str, tokenizer: Any) -> PromptCorpus:
     return measure_prompts(task_name, model.prompts, tokenizer)
 
 
-def measure_prompts(task_name: str, prompts: Sequence[Any], tokenizer: Any) -> PromptCorpus:
+def measure_prompts(
+    task_name: str, prompts: Sequence[Any], tokenizer: PreTrainedTokenizerBase
+) -> BenchmarkPromptLength:
     """Reduce captured prompts to the stored measurements."""
     if not prompts:
         raise ValueError(f"{task_name} rendered no prompts")
     rendered = sorted({_prompt_text(prompt, tokenizer) for prompt in prompts})
     digest = hashlib.sha256(json.dumps(rendered, ensure_ascii=False).encode("utf-8")).hexdigest()
     longest = max(rendered, key=len)
-    return PromptCorpus(
-        task_name=task_name,
+    return BenchmarkPromptLength(
         distinct_prompt_count=len(rendered),
         longest_prompt_chars=len(longest),
         longest_prompt_tokens=max(len(tokenizer.encode(text, add_special_tokens=False)) for text in rendered),
@@ -137,7 +119,7 @@ def measure_prompts(task_name: str, prompts: Sequence[Any], tokenizer: Any) -> P
     )
 
 
-def _prompt_text(prompt: Any, tokenizer: Any) -> str:
+def _prompt_text(prompt: Any, tokenizer: PreTrainedTokenizerBase) -> str:
     """Return one captured request as the text the endpoint will receive."""
     if isinstance(prompt, str):
         return prompt

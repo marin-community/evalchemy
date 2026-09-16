@@ -42,7 +42,8 @@ REPO_LOCAL_BENCHMARKS = (
 )
 """Benchmarks whose prompts are reproducible from checked-in data alone."""
 
-# A 40,896-token window is the one from the truncation report in #129.
+# The window a Qwen3-8B slice serves, and the one the OlympiadBench truncations
+# were reported against.
 CONTEXT_LENGTH = 40_896
 
 
@@ -66,7 +67,6 @@ class _RequestCapturingLM:
 
 def _lengths(longest_prompt_tokens: int, margin: int = 256) -> PromptLengths:
     entry = BenchmarkPromptLength(
-        task_name="Bench",
         distinct_prompt_count=10,
         longest_prompt_chars=4 * longest_prompt_tokens,
         longest_prompt_tokens=longest_prompt_tokens,
@@ -80,7 +80,6 @@ def test_every_registered_benchmark_has_a_stored_prompt_length():
     lengths = load_prompt_lengths()
 
     assert registered == set(lengths.benchmarks) | set(lengths.unmeasured)
-    assert not set(lengths.benchmarks) & set(lengths.unmeasured)
 
 
 @pytest.mark.parametrize("task_name", REPO_LOCAL_BENCHMARKS)

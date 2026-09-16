@@ -39,7 +39,6 @@ class PromptLengthError(ValueError):
 class BenchmarkPromptLength:
     """One benchmark's measured prompt corpus."""
 
-    task_name: str
     distinct_prompt_count: int
     longest_prompt_chars: int
     longest_prompt_tokens: int
@@ -179,4 +178,4 @@ def _entry(task_name: Any, value: Any) -> BenchmarkPromptLength:
     digest = value.get("sha256")
     if not isinstance(digest, str) or len(digest) != 64:
         raise PromptLengthError(f"{task_name}: sha256 must be a 64-character digest")
-    return BenchmarkPromptLength(task_name=task_name, sha256=digest, **fields)
+    return BenchmarkPromptLength(sha256=digest, **fields)
