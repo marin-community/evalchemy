@@ -216,15 +216,22 @@ def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, num_fewsh
 
     model = _RecordingModel()
 
-    def model_tokenizer(*_args, **_kwargs):
-        if num_fewshot == 0:
-            raise AssertionError("zero-shot prompting must not load or call a tokenizer")
-        return {"input_ids": SimpleNamespace(shape=(1, 32))}
+    class _ModelTokenizer:
+        """Callable tokenizer stand-in that can only count encoded ids."""
+
+        @staticmethod
+        def encode(_prompt):
+            if num_fewshot == 0:
+                raise AssertionError("zero-shot prompting must not load or call a tokenizer")
+            return [0] * 32
+
+        def __call__(self, *_args, **_kwargs):
+            raise AssertionError("prompt sizing must count encoded ids, not build tensors")
 
     def fail_auto_tokenizer(*_args, **_kwargs):
         raise AssertionError("few-shot prompting must use the evaluation model's tokenizer")
 
-    model.tokenizer = model_tokenizer
+    model.tokenizer = _ModelTokenizer()
     monkeypatch.setattr(
         "transformers.AutoTokenizer.from_pretrained",
         fail_auto_tokenizer,

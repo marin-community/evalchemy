@@ -234,3 +234,7 @@ eval/serve_eval/runs/
 
 # Per-extra venvs built by scripts/ci/check_benchmark_extras.py
 .benchmark-extra-venvs/
+
+# LiveCodeBenchv5/LiveCodeBenchv5_official load their dataset with cache_dir="./", so
+# measuring or running them drops a multi-gigabyte cache in the working directory.
+livecodebench___code_generation_lite*

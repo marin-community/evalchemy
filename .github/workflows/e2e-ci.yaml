@@ -90,7 +90,8 @@ jobs:
       - name: Run task contract tests
         run: >-
           uv run --python 3.12 --extra dev
-          --extra humanevalplus --extra mbpp --extra mbppplus --extra ifeval --extra mrcr
+          --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
+          --extra ifeval --extra mrcr
           pytest tests/contracts/ -q
 
   lean-install:
