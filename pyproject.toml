@@ -101,12 +101,12 @@ dev = [
 # The serve-and-eval runner (eval/serve_eval/): the run/validate CLIs use click,
 # parse results/spec JSON with pydantic, and load the run config (qwen-tiny.yaml) with
 # pydantic-settings. marin-rigging exports bounded, best-effort lifecycle records to
-# Finelog without pulling marin-core. This is an optional extra, not a base dependency:
-# base evalchemy evaluates fine without the runner. The regression gate
-# (eval/regression/) reuses these same deps.
+# Finelog without pulling marin-core. marin-finestore writes native evaluation artifacts
+# and normalized tables when --finestore_output_path is set. This is an optional extra,
+# not a base dependency: base evalchemy evaluates fine without the runner. The regression
+# gate (eval/regression/) reuses these same deps.
 #
-# s3fs gives fsspec an s3:// backend so an endpoint-eval job can route its result
-# artifacts (results JSON + per-sample --output_path tree) to durable S3/R2 object
+# s3fs gives fsspec an s3:// backend so FineStore can write to durable S3/R2 object
 # storage instead of a pod-local path that is garbage-collected when the pod ends.
 # The eval pod inherits AWS creds + FSSPEC_S3 (endpoint + virtual-host addressing) from
 # its runtime env, so bare `fsspec.core.url_to_fs("s3://...")` authenticates with no extra
@@ -116,6 +116,7 @@ serve-eval = [
     "pydantic-settings>=2",
     "pyyaml",
     "s3fs",
+    "marin-finestore>=0.2.113.dev35019671596",
     "marin-rigging>=0.2.67.dev30673006835",
 ]
 

@@ -53,6 +53,7 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
+from eval.contracts.finestore_output import require_finestore_output, write_finestore_output
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
@@ -719,6 +720,11 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         parser = setup_custom_parser()
         args = parse_eval_args(parser)
 
+    if args.finestore_output_path:
+        if not args.log_samples:
+            raise ValueError("--finestore_output_path requires --log_samples")
+        require_finestore_output()
+
     if args.config is not None:
         # This overwrites `--tasks` and `--batch_size`
         with open(args.config, "r") as file:
@@ -1061,6 +1067,10 @@ def handle_evaluation_output(
             Function handles outputs via side effects (logging, saving files)
             rather than returning values.
     """
+    if args.finestore_output_path:
+        if not args.log_samples:
+            raise ValueError("--finestore_output_path requires --log_samples")
+        require_finestore_output()
     validate_result_document(results)
     samples = results.pop("samples", {}) if args.log_samples else {}
 
@@ -1096,9 +1106,17 @@ def handle_evaluation_output(
             is_external=args.is_external_model,
         )
 
-    if args.log_samples and hasattr(evaluation_tracker, "save_results_samples"):
+    if args.log_samples and not args.finestore_output_path and hasattr(evaluation_tracker, "save_results_samples"):
         for task_name, task_samples in samples.items():
             evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
+
+    if args.finestore_output_path:
+        write_finestore_output(
+            args.finestore_output_path,
+            args.finestore_output_prefix,
+            results,
+            samples,
+        )
 
     utils.eval_logger.info(
         f"Eval arugments: {args.model} ({args.model_args}), gen_kwargs: ({args.gen_kwargs}), "

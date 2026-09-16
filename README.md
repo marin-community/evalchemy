@@ -160,6 +160,10 @@ The results will be written out in `output_path`. If you have `jq` [installed](h
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
 - `--output_path`: Directory to save evaluation results
+- `--finestore_output_path`: FineStore run root for native JSON/JSONL source objects and normalized
+  sample tables. Per-task sample JSONL is written only to FineStore when this is set. Requires
+  `--log_samples` and the `serve-eval` extra.
+- `--finestore_output_prefix`: Stable task-group name for organizing source objects in FineStore.
 - `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
 - `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
 
@@ -474,3 +478,9 @@ and normalized completion in `resps` and `filtered_resps`; lm-eval-native tasks
 retain their native fields unchanged. An unscored task (including one returning
 an `error`) writes no sample artifact, and a serialization failure never changes
 the task's score or creates a zero-byte placeholder.
+
+With `--finestore_output_path`, FineStore becomes the sample-output writer. Evalchemy serializes each
+task's canonical JSONL directly into a FineStore source artifact and writes one normalized evaluation
+sample per extraction filter; it does not create a second `samples_*.jsonl` under `--output_path`.
+The aggregate JSON remains under `--output_path` for the standard CLI contract and is also preserved
+as a FineStore source artifact.

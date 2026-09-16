@@ -357,7 +357,7 @@ def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monke
     ],
 )
 def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result):
-    args = Namespace(log_samples=False, show_config=False, wandb_args=None)
+    args = Namespace(log_samples=False, show_config=False, wandb_args=None, finestore_output_path=None)
     tracker = SimpleNamespace(
         save_results_aggregated=lambda **_kwargs: pytest.fail("invalid results must not be persisted")
     )
