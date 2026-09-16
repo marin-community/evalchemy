@@ -40,6 +40,38 @@ def test_lm_eval_normalization_maps_multiple_choice_scores():
     assert sample.correct is True
 
 
+def test_normalized_metrics_exclude_sample_identity_coordinates():
+    sample = sample_from_lm_eval(
+        "MATH500",
+        {
+            "schema_version": 1,
+            "task_name": "MATH500",
+            "doc_id": 0,
+            "doc": {"problem": "1 + 1"},
+            "target": "2",
+            "arguments": [["1 + 1", {}]],
+            "resps": [["2"]],
+            "filtered_resps": ["2"],
+            "filter": "none",
+            "doc_hash": "doc",
+            "prompt_hash": "prompt",
+            "target_hash": "target",
+            "sample_id": "abc",
+            "source_id": 3,
+            "sample_ordinal": 7,
+            "sample_namespace": "MATH500",
+            "sample_shard": None,
+            "sample_repeat": 2,
+            "metrics": ["accuracy"],
+            "accuracy": 1.0,
+        },
+    )
+
+    assert sample.metrics == {"accuracy": 1.0}
+    assert sample.grading is not None
+    assert (sample.grading.metric, sample.grading.score) == ("accuracy", 1.0)
+
+
 def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
     tmp_path: Path,
 ):

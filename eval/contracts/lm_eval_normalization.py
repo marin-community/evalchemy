@@ -7,26 +7,14 @@ from collections.abc import Mapping
 
 from finestore.eval import Choice, EvalSample, Grading, Message, SampleKind
 
+from eval.contracts.sample_results import RESERVED_RECORD_FIELDS
+
 _PRIMARY_METRIC_PRIORITY = ("exact_match", "accuracy", "acc_norm", "acc", "pass@1")
 _FILTER_PRIORITY = ("flexible-extract",)
-_STRUCTURAL_KEYS = frozenset(
-    {
-        "doc",
-        "doc_id",
-        "target",
-        "arguments",
-        "resps",
-        "filtered_resps",
-        "filter",
-        "filter_variants",
-        "metrics",
-        "schema_version",
-        "task_name",
-        "doc_hash",
-        "prompt_hash",
-        "target_hash",
-    }
-)
+# Everything a sample record carries that is not one of its metrics. Sample identity
+# coordinates are numeric, so harvesting metrics without this would record a sample's
+# ordinal and repeat index as scores.
+_STRUCTURAL_KEYS = RESERVED_RECORD_FIELDS
 
 
 def _base_metric(name: str) -> str:
