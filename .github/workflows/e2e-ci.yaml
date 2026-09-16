@@ -91,7 +91,7 @@ jobs:
         run: >-
           uv run --python 3.12 --extra dev
           --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
-          --extra ifeval --extra mrcr
+          --extra ifeval --extra mrcr --extra serve-eval
           pytest tests/contracts/ -q
 
   lean-install:
