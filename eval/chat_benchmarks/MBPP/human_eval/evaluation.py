@@ -8,6 +8,7 @@ from typing import *
 from tqdm.auto import tqdm
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from .data import stream_jsonl
 from .execution import check_correctness
 
@@ -298,4 +299,8 @@ def evaluate_functional_correctness(
     else:
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
+    # Per-task outcomes so the caller can record per-sample metrics.
+    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
+        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    }
     return pass_at_k

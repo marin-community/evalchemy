@@ -17,6 +17,7 @@ from eval.graders.answer_extraction import (
     extract_boxed_answer,
     extraction_failure,
 )
+from eval.contracts.sample_results import record_sample_metrics
 from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.task import BaseBenchmark
 
@@ -135,6 +136,22 @@ class OlympiadBenchBenchmark(BaseBenchmark):
     via ``is_equiv`` (with a numerical-exact fallback). Follows the MATH500/AMC23
     pattern in this tree: the model is asked to box its final answer.
     """
+
+    METRICS = ("accuracy",)
+    PRIMARY_METRIC = "accuracy"
+
+    def benchmark_size(self) -> int:
+        return len(self.load_questions())
+
+    def benchmark_metrics(self):
+        if self.num_samples > 1:
+            return super().benchmark_metrics()
+        return ("accuracy_avg",) if self.n_repeat > 1 else self.METRICS
+
+    def benchmark_primary_metric(self):
+        if self.num_samples > 1:
+            return super().benchmark_primary_metric()
+        return "accuracy_avg" if self.n_repeat > 1 else self.PRIMARY_METRIC
 
     def __init__(
         self,
@@ -355,6 +372,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 sum(int(grade_answer(ans, ex["answer"])) for ans in ex["model_answers"])
                 for ex in examples
             ]
+            self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
             results.update(
                 {
@@ -369,11 +387,12 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         if self.n_repeat > 1:
             all_results = []
+            correct_by_repeat = []
             for repeat_idx in range(self.n_repeat):
-                solved = sum(
-                    grade_answer(example["model_answers"][repeat_idx], example["answer"])
-                    for example in examples
+                correct_by_repeat.append(
+                    [grade_answer(example["model_answers"][repeat_idx], example["answer"]) for example in examples]
                 )
+                solved = sum(correct_by_repeat[repeat_idx])
                 all_results.append(
                     {
                         "repetition": repeat_idx + 1,
@@ -383,6 +402,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                     }
                 )
 
+            self.record_repeated_accuracy(examples, correct_by_repeat)
             accuracies = [result["accuracy"] for result in all_results]
             results.update(
                 {
@@ -397,10 +417,10 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             )
             return results
 
-        solved = sum(
-            grade_answer(example["model_answer"], example["answer"])
-            for example in examples
-        )
+        correct = [grade_answer(example["model_answer"], example["answer"]) for example in examples]
+        for example, is_correct in zip(examples, correct):
+            record_sample_metrics(example, accuracy=is_correct)
+        solved = sum(correct)
 
         results.update(
             {

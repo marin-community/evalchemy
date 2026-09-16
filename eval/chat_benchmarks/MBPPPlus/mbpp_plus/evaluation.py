@@ -13,6 +13,7 @@ import numpy as np
 import regex
 from tqdm.auto import tqdm
 
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from .data import stream_jsonl
 from .execution import check_correctness
 
@@ -288,4 +289,8 @@ def evaluate_functional_correctness(
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
     pass_at_k["scored_count"] = int(np.sum(total))
+    # Per-task outcomes so the caller can record per-sample metrics.
+    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
+        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    }
     return pass_at_k

@@ -11,6 +11,7 @@ from lm_eval.api.model import LM
 from .mbpp_plus.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
 from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -20,6 +21,12 @@ class MBPPPlusBenchmark(BaseBenchmark):
     """
 
     GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
+    METRICS = ("pass@1",)
+    PRIMARY_METRIC = "pass@1"
+
+    def benchmark_size(self) -> int:
+        problem_file = os.path.join(self.data_dir, "mbppplus.jsonl")
+        return sum(1 for _ in self.read_test_examples(problem_file))
 
     def __init__(
         self,
@@ -230,6 +237,10 @@ Here is my problem:
             problem_file=problem_file,
             language="python",
         )
+
+        pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
+        for example in results["examples"]:
+            record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
 
         for metric, value in result.items():
             evaluation_results[f"{metric}"] = value

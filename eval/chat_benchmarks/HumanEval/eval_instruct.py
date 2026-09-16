@@ -10,6 +10,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from human_eval.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from eval.task import BaseBenchmark
 
 
@@ -175,6 +176,10 @@ Please continue to complete the function. You are not allowed to modify the give
                     problem_file=problem_file,
                     language=lang,
                 )
+
+                # HumanEval persists no sample records, so the per-task outcomes its
+                # grader reports have no consumer here and must not become a metric.
+                result.pop(PER_TASK_PASS_RATE_FIELD, None)
 
                 for metric, value in result.items():
                     evaluation_results[f"{lang}_{metric}"] = value

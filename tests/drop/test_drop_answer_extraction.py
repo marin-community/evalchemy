@@ -112,7 +112,13 @@ def test_extract_unmarked_entity_after_incidental_number():
 def test_unmarked_entity_extraction_is_classified_in_sample_artifacts():
     response = "Quarterback JaMarcus Russell completed a 20-yard touchdown pass to Chaz Schilens."
     selected = extract_drop_answer(response)
-    record = canonicalize_samples("drop", [{"resps": [[response]], "filtered_resps": [[selected]]}])[0]
+    sample = {
+        "resps": [[response]],
+        "filtered_resps": [[selected]],
+        "metrics": ["f1"],
+        "f1": 1.0,
+    }
+    record = canonicalize_samples("drop", [sample])[0]
 
     assert str(selected) == "Chaz Schilens"
     assert record["drop_extractions"][0][0]["classification"] == "entity"

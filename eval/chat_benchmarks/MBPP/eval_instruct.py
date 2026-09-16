@@ -10,6 +10,7 @@ from pathlib import Path
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from human_eval.evaluation import evaluate_functional_correctness
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -220,6 +221,10 @@ Here is my problem:
                 language="python",
                 is_mbpp=True,
             )
+
+            pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
+            for example in results["examples"]:
+                record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
 
             result.update(
                 {
