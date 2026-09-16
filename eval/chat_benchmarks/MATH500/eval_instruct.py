@@ -7,6 +7,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
 
@@ -179,6 +180,7 @@ class MATH500Benchmark(BaseBenchmark):
             num_correct = [
                 sum(int(bool(is_equiv(str(ex["answer"]), ans))) for ans in ex["model_answers"]) for ex in examples
             ]
+            self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
             results.update(
                 {
@@ -192,9 +194,9 @@ class MATH500Benchmark(BaseBenchmark):
 
         solved = 0
         for example in examples:
-            # Annotated per example so to_samples can emit a per-sample accuracy alongside the aggregate.
-            example["correct"] = bool(is_equiv(str(example["answer"]), example["model_answer"]))
-            solved += example["correct"]
+            correct = bool(is_equiv(str(example["answer"]), example["model_answer"]))
+            record_sample_metrics(example, accuracy=correct)
+            solved += correct
 
         results.update(
             {

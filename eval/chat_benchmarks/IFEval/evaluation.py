@@ -11,6 +11,10 @@ from .evaluation_main import (
 )
 
 
+PER_PROMPT_FOLLOW_RATE = "per_prompt_follow_rate"
+"""Report field mapping each prompt to its strict and loose follow rates."""
+
+
 def get_report(outputs):
     prompt_total = 0
     prompt_correct = 0
@@ -60,11 +64,11 @@ def evaluate_accuracy(response_filename):
     inputs = read_prompt_list(response_filename)
     prompt_to_response = read_prompt_to_response_dict(response_filename)
 
-    for func, output_file in [
-        (test_instruction_following_strict, "eval_results_strict"),
-        (test_instruction_following_loose, "eval_restuls_loose"),
+    follow_rate_by_prompt = collections.defaultdict(dict)
+    for func, protocol in [
+        (test_instruction_following_strict, "strict"),
+        (test_instruction_following_loose, "loose"),
     ]:
-        # logging.info(f"Generating {output_file}")
         outputs = []
         for inp in inputs:
             outputs.append(func(inp, prompt_to_response))
@@ -73,5 +77,10 @@ def evaluate_accuracy(response_filename):
         accuracy = sum(follow_all_instructions) / len(outputs)
 
         logging.info(f"Accuracy: {accuracy}")
+        for output in outputs:
+            follow_rate_by_prompt[output.prompt][protocol] = float(output.follow_all_instructions)
 
-    return get_report(outputs)
+    report = get_report(outputs)
+    # Per-prompt outcomes so the caller can record per-sample metrics.
+    report[PER_PROMPT_FOLLOW_RATE] = dict(follow_rate_by_prompt)
+    return report

@@ -7,7 +7,7 @@ import sys
 from abc import ABC, abstractmethod
 from itertools import islice
 from types import MappingProxyType
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Type, TypeVar, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
@@ -49,7 +49,13 @@ from eval.contracts.sample_manifest import (
     SampleRequest,
     canonical_json_identity,
 )
+from eval.contracts.sample_results import (
+    SAMPLE_METRICS_ANNOTATION,
+    record_sample_metrics,
+    sample_metric_fields,
+)
 from eval.contracts.task_outcome import TaskRoute
+from eval.passk import estimate_pass_at_k
 
 
 _Sample = TypeVar("_Sample")
@@ -438,6 +444,44 @@ class BaseBenchmark(ABC):
         n = int(num_samples if num_samples is not None else self.num_samples)
         return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
 
+    def record_repeated_accuracy(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        correct_by_repeat: Sequence[Sequence[Any]],
+    ) -> None:
+        """Record each example's accuracy averaged over its repeated completions.
+
+        Args:
+            examples: The graded examples, annotated in place.
+            correct_by_repeat: One score list per repetition, each ordered like
+                ``examples``. Booleans and partial-credit scores are both accepted.
+        """
+        if not correct_by_repeat:
+            raise ValueError(f"{self.benchmark_name}: cannot record per-sample accuracy without a repetition")
+        for index, example in enumerate(examples):
+            scores = [float(repeat[index]) for repeat in correct_by_repeat]
+            record_sample_metrics(example, accuracy=sum(scores) / len(scores))
+
+    def record_pass_at_k_metrics(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        num_correct: List[int],
+        num_samples: Optional[int] = None,
+        ks: Optional[List[int]] = None,
+    ) -> None:
+        """Record each problem's unbiased pass@k estimates as its per-sample metrics.
+
+        The per-problem estimates are the terms ``aggregate_pass_at_k`` averages,
+        so a sample artifact and the reported table stay reconcilable.
+        """
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        reportable = [k for k in (ks if ks is not None else self.pass_at_k) if k <= n]
+        if not reportable:
+            raise ValueError(f"{self.benchmark_name}: no requested pass@k is reportable from {n} samples")
+        estimates = {f"pass_at_{k}": estimate_pass_at_k(n, num_correct, k) for k in reportable}
+        for index, example in enumerate(examples):
+            record_sample_metrics(example, **{name: values[index] for name, values in estimates.items()})
+
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:
             if self._evaluation_max_tokens is not None:
@@ -761,9 +805,8 @@ class BaseBenchmark(ABC):
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
-                    # Per-sample twin of the aggregate accuracy metric, for benchmarks whose
-                    # evaluate_responses annotates example["correct"] -- sample viewers filter on it.
-                    **({"accuracy": float(example["correct"])} if "correct" in example else {}),
+                    # The grader's own per-sample scores, in lm-eval's record shape.
+                    **sample_metric_fields(example),
                 }
             )
         return samples
@@ -791,6 +834,7 @@ class BaseBenchmark(ABC):
             "output",
             "correct",
             "score",
+            SAMPLE_METRICS_ANNOTATION,
         }
         return {key: value for key, value in example.items() if key not in generated_fields}
 

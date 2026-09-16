@@ -307,4 +307,8 @@ def evaluate_functional_correctness(
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
     pass_at_k["scored_count"] = int(np.sum(total))
+    # Per-task outcomes so the caller can record per-sample metrics.
+    pass_at_k["per_task_pass_rate"] = {
+        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    }
     return pass_at_k

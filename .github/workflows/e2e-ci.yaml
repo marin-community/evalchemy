@@ -78,6 +78,21 @@ jobs:
       - name: Run grader parity tests
         run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
 
+  contracts:
+    # The framework-wide task contracts, including the per-sample metrics every
+    # benchmark's grader must record. The extras are the ones whose graders the
+    # conformance cases drive; the rest ride on the lean base.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run task contract tests
+        run: >-
+          uv run --python 3.12 --extra dev
+          --extra humanevalplus --extra mbpp --extra mbppplus --extra ifeval --extra mrcr
+          pytest tests/contracts/ -q
+
   lean-install:
     # Guard the lean (torch-free) base install: the wheel builds, the `eval` console
     # script runs, and the math/code core benchmarks import -- all with no torch/vllm/ray.

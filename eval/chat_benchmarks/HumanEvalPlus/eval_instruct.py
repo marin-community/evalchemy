@@ -10,6 +10,7 @@ from lm_eval.api.model import LM
 from .human_eval_plus.evaluation import evaluate_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
 from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -185,6 +186,11 @@ Please continue to complete the function. You are not allowed to modify the give
                 problem_file=problem_file,
                 language=lang,
             )
+
+            pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
+            for example in results["examples"]:
+                if example["language"] == lang:
+                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
 
             for metric, value in result.items():
                 if metric == "scored_count":
