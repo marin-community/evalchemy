@@ -10,6 +10,7 @@ from typing import Any
 
 from eval.completion_response import CompletionText
 from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
+from eval.contracts.sample_results import validate_sample_metrics
 from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
@@ -33,6 +34,10 @@ def canonicalize_samples(
     whose ``filter_variants`` retain every response and metric. The envelope
     makes task identity and schema version explicit, while filling fields that
     custom benchmark adapters must provide for tracker-compatible JSONL.
+
+    Raises:
+        SampleMetricsError: If a record reached this boundary without the
+            per-sample metrics its grader owes every scored sample.
     """
     manifest_entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
@@ -73,6 +78,7 @@ def canonicalize_samples(
         if drop_extractions is not None:
             record["drop_extractions"] = drop_extractions
         canonical.append(record)
+    validate_sample_metrics(task_name, canonical)
     return canonical
 
 

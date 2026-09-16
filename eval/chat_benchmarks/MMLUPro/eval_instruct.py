@@ -17,6 +17,7 @@ from eval.contracts.preflight import (
     PackageFileRequirement,
     PythonDependencyRequirement,
 )
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -232,6 +233,7 @@ class MMLUProBenchmark(BaseBenchmark):
             area_stats[cat]["total"] += 1
             area_stats[cat]["corr"] += correct
             correct_flags.append(correct)
+            record_sample_metrics(ex, accuracy=correct)
 
         n = len(correct_flags)
         flags_arr = np.asarray(correct_flags, dtype=float)

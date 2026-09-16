@@ -32,9 +32,9 @@ def test_cruxeval_sample_cap_emits_one_record_per_direction(tmp_path):
     model = _CandidateModel()
 
     generated = benchmark.generate_responses(model)
-    samples = benchmark.to_samples(generated, {"input_pass@1": 0.0, "output_pass@1": 0.0})
+    scored = benchmark.evaluate_responses(generated)
+    samples = benchmark.to_samples(generated, scored)
     canonical = canonicalize_samples("CruxEval", samples, benchmark.sample_manifest)
-    generated["temp_dir_obj"].cleanup()
 
     assert model.generated_ids == ["sample_0", "sample_0"]
     assert [sample["sample_namespace"] for sample in canonical] == ["input", "output"]

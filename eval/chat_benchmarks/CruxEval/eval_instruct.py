@@ -11,6 +11,7 @@ from lm_eval.api.model import LM
 import re
 import itertools
 
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
 from .evaluation import evaluate_generations
@@ -305,6 +306,10 @@ class CruxEvalBenchmark(BaseBenchmark):
                     examples=examples,
                     tmp_dir=temp_dir,
                 )
+
+                pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
+                for example in results[task]:
+                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
 
                 for metric, value in result.items():
                     evaluation_results[f"{task}_{metric}"] = value

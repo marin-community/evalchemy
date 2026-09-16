@@ -190,8 +190,10 @@ class JEEBenchBenchmark(BaseBenchmark):
 
         # Calculate accuracy for each repetition
         all_results = []
+        correct_by_repeat = []
         for i in range(self.n_repeat):
-            solved = sum([example["score"][i] for example in examples])
+            correct_by_repeat.append([example["score"][i] for example in examples])
+            solved = sum(correct_by_repeat[i])
             all_results.append(
                 {
                     "repetition": i + 1,
@@ -200,6 +202,8 @@ class JEEBenchBenchmark(BaseBenchmark):
                     "accuracy": solved / num_questions,
                 }
             )
+
+        self.record_repeated_accuracy(examples, correct_by_repeat)
 
         # Calculate overall statistics
         solved_avg = np.mean([result["num_solved"] for result in all_results])
