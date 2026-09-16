@@ -12,9 +12,10 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
+from eval.contracts.sample_results import record_sample_metrics
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
-from lm_eval.models.openai_completions import LocalChatCompletion, OpenAIChatCompletion
+from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
 
 
 def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
@@ -43,6 +44,27 @@ def _openai_payload(model: str) -> dict:
     )
 
 
+def _local_chat_payload(stops: list[str]) -> dict:
+    adapter = object.__new__(LocalChatCompletion)
+    adapter.model = "served-model"
+    adapter._max_gen_toks = 256
+    return adapter._create_payload(
+        messages=[{"role": "user", "content": "Question"}],
+        gen_kwargs={"max_gen_toks": 32, "until": stops},
+    )
+
+
+def _local_completions_payload(stops: list[str]) -> dict:
+    adapter = object.__new__(LocalCompletionsAPI)
+    adapter.model = "served-model"
+    adapter._max_gen_toks = 256
+    return adapter._create_payload(
+        messages="Question",
+        generate=True,
+        gen_kwargs={"max_gen_toks": 32, "until": stops},
+    )
+
+
 def test_gpt5_payload_uses_openai_provider_generation_controls():
     payload = _openai_payload("gpt-5")
 
@@ -54,8 +76,31 @@ def test_gpt5_payload_uses_openai_provider_generation_controls():
 def test_non_openai_alias_with_five_retains_configured_generation_controls(model):
     payload = _openai_payload(model)
 
-    assert payload["stop"][:2] == ["<|im_end|>", "\nQuestion:"]
+    assert payload["stop"][:2] == ["\nQuestion:", "<|im_end|>"]
     assert payload["temperature"] == 0
+
+
+def test_local_chat_payload_prioritizes_semantic_stops_within_openai_limit():
+    payload = _local_chat_payload(
+        [
+            "<|im_end|>",
+            "<|eot_id|>",
+            "<|end_of_text|>",
+            "<|endoftext|>",
+            "Question:",
+            "\nQ:",
+            "\n[Question]",
+            "\nUser:",
+        ]
+    )
+
+    assert payload["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
+
+
+def test_local_completions_payload_uses_the_same_bounded_stop_policy():
+    stops = ["<|im_end|>", "<|eot_id|>", "Question:", "\nQ:", "\n[Question]", "\nUser:"]
+
+    assert _local_completions_payload(stops)["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
 
 
 class _NativeBenchmark(BaseBenchmark):
@@ -112,11 +157,11 @@ def test_reasoning_aliases_are_scored_and_audited_in_every_task_path(choice, pip
     generated = _adapter().parse_generations(response)[0]
 
     if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]]}]
+        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
     else:
-        samples = _NativeBenchmark().to_samples(
-            {"examples": [{"problem": "1 + 1", "answer": "2", "model_output": generated}]}, {}
-        )
+        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
+        record_sample_metrics(example, accuracy=1.0)
+        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
     record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
 
     assert str(generated) == "reasoning"
@@ -217,11 +262,11 @@ def test_reasoning_responses_are_scored_and_audited_in_every_task_path(
     generated = _adapter(policy).parse_generations({**response, "choices": [choice]})[0]
 
     if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]]}]
+        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
     else:
-        samples = _NativeBenchmark().to_samples(
-            {"examples": [{"problem": "1 + 1", "answer": "2", "model_output": generated}]}, {}
-        )
+        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
+        record_sample_metrics(example, accuracy=1.0)
+        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
     record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
 
     expected_scorer_text = expected if policy == CompletionContentPolicy.COMBINE else message.get("content") or ""

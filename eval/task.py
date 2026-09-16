@@ -6,7 +6,8 @@ import random
 import sys
 from abc import ABC, abstractmethod
 from itertools import islice
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from types import MappingProxyType
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
 import numpy as np
@@ -32,9 +33,44 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.benchmark_metadata import (
+    BenchmarkMetadata,
+    MetricKind,
+    SourceMetric,
+    resolve_metric_metadata,
+)
+from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
+from eval.contracts.grading import GraderExecutionMode
+from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
+from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_tokens
+from eval.contracts.sample_manifest import (
+    DEFAULT_SAMPLE_NAMESPACE,
+    SampleEntry,
+    SampleManifest,
+    SampleRequest,
+    canonical_json_identity,
+)
+from eval.contracts.sample_results import (
+    SAMPLE_METRICS_ANNOTATION,
+    record_sample_metrics,
+    sample_metric_fields,
+)
+from eval.contracts.task_outcome import TaskRoute
+from eval.passk import estimate_pass_at_k
+
+
+_Sample = TypeVar("_Sample")
+
 
 class BaseBenchmark(ABC):
     """Abstract base class for implementing LLM evaluation benchmarks."""
+
+    RESOURCE_REQUIREMENTS: tuple[ResourceRequirement, ...] = ()
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SERIAL
+    METRICS: tuple[str, ...] = ()
+    PRIMARY_METRIC: str | None = None
+    METRIC_NAME_OVERRIDES: Mapping[str, str] = MappingProxyType({})
+    METRIC_KIND_OVERRIDES: Mapping[str, MetricKind | str] = MappingProxyType({})
 
     def __init__(
         self,
@@ -68,18 +104,91 @@ class BaseBenchmark(ABC):
         # using a different output budget.
         self._evaluation_max_length: Optional[int] = None
         self._evaluation_max_tokens: Optional[int] = None
+        self._evaluation_limit: Optional[int] = None
+        self._limited_sample_ids: Dict[str, set[str]] = {}
+        self._sample_manifest = SampleManifest(self.benchmark_name)
 
-    def set_evaluation_limits(self, *, max_length: Optional[int] = None, max_tokens: Optional[int] = None) -> None:
+    @property
+    def benchmark_name(self) -> str:
+        """Return the canonical task name derived from the benchmark class."""
+        return self.__class__.__name__.replace("Benchmark", "")
+
+    @property
+    def sample_manifest(self) -> SampleManifest:
+        """Return this benchmark run's shared sample lifecycle ledger."""
+        return self._sample_manifest
+
+    def prepare(self, task_name: str | None = None) -> TaskPreparation:
+        """Validate static resources and loaded data without contacting a model."""
+        name = task_name or self.benchmark_name
+        return prepare_task(
+            name,
+            TaskRoute.CUSTOM,
+            self.RESOURCE_REQUIREMENTS,
+            self.validate_prepared_data,
+        )
+
+    def benchmark_size(self) -> int | None:
+        """Return the prepared pre-limit item count, or ``None`` when unknown."""
+        return None
+
+    def benchmark_metrics(self) -> tuple[str, ...]:
+        """Return source metrics for this benchmark's resolved run configuration."""
+        if self.num_samples > 1:
+            return tuple(f"pass@{k}" for k in self.pass_at_k if k <= self.num_samples)
+        return self.METRICS
+
+    def benchmark_primary_metric(self) -> str | None:
+        """Return the source spelling of the preferred headline metric."""
+        if self.num_samples > 1:
+            metrics = self.benchmark_metrics()
+            return "pass@1" if "pass@1" in metrics else (metrics[0] if metrics else None)
+        return self.PRIMARY_METRIC
+
+    def describe(self, task_name: str | None = None) -> BenchmarkMetadata | None:
+        """Return canonical metrics and coverage, or ``None`` when metrics are undeclared."""
+        source_metrics = self.benchmark_metrics()
+        if not source_metrics:
+            return None
+        name = task_name or self.benchmark_name
+        metrics, primary = resolve_metric_metadata(
+            tuple(SourceMetric(metric) for metric in source_metrics),
+            primary_metric=self.benchmark_primary_metric(),
+            name_overrides=self.METRIC_NAME_OVERRIDES,
+            kind_overrides=self.METRIC_KIND_OVERRIDES,
+        )
+        n_benchmark = self.benchmark_size()
+        n_attempted = (
+            min(self.evaluation_limit, n_benchmark)
+            if self.evaluation_limit is not None and n_benchmark is not None
+            else n_benchmark
+        )
+        primary_kind = next(metric.kind for metric in metrics if metric.name == primary)
+        return BenchmarkMetadata(name, primary, primary_kind, metrics, n_benchmark, n_attempted)
+
+    def validate_prepared_data(self) -> None:
+        """Hook for dataset shape and representative-request validation."""
+
+    def set_evaluation_limits(
+        self,
+        *,
+        max_length: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> None:
         """Attach Evalchemy's resolved limits to this custom benchmark.
 
         ``max_length`` is already supplied to the LM adapter through
         ``model_args``.  MMLU-Pro additionally owns its prompt-budgeting logic,
         so synchronize its legacy field here.  ``max_tokens`` is forced on every
         generated ``Instance`` in :meth:`_normalize_model_args`, including
-        benchmarks with a hard-coded per-task default.
+        benchmarks with a hard-coded per-task default. ``limit`` gives custom
+        benchmarks the same positive sample cap as native lm-eval tasks.
         """
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
+        self._evaluation_limit = limit if limit is not None and limit > 0 else None
+        self._limited_sample_ids.clear()
         if max_length is not None and hasattr(self, "max_model_length"):
             self.max_model_length = max_length
         if max_tokens is not None:
@@ -92,6 +201,38 @@ class BaseBenchmark(ABC):
             config = getattr(self, "config", None)
             if config is not None and hasattr(config, "max_new_token"):
                 config.max_new_token = max_tokens
+
+    @property
+    def evaluation_limit(self) -> Optional[int]:
+        """Return the normalized sample cap for this custom benchmark."""
+        return self._evaluation_limit
+
+    def limit_samples(self, samples: Iterable[_Sample]) -> List[_Sample]:
+        """Materialize at most the configured number of source samples."""
+        if self.evaluation_limit is None:
+            return list(samples)
+        return list(islice(samples, self.evaluation_limit))
+
+    def _limit_instances(self, inputs: List[Instance], sample_namespace: str) -> List[Instance]:
+        """Enforce the sample cap at the common custom-benchmark inference boundary.
+
+        Selection is tracked per namespace and source identity so chunked callers
+        cannot exceed the cap, while repeated generations of an already-selected
+        sample (for example pass@k) remain valid.
+        """
+        if self.evaluation_limit is None:
+            return inputs
+
+        selected_ids = self._limited_sample_ids.setdefault(sample_namespace, set())
+        limited_inputs = []
+        for instance in inputs:
+            source_id = canonical_json_identity(instance.idx)
+            if source_id not in selected_ids:
+                if len(selected_ids) >= self.evaluation_limit:
+                    continue
+                selected_ids.add(source_id)
+            limited_inputs.append(instance)
+        return limited_inputs
 
     def attach_resume_manager(self, manager) -> None:
         """Attach a ResumeManager so ``compute`` skips already-done problems.
@@ -172,7 +313,7 @@ class BaseBenchmark(ABC):
         if manager is None:
             return self.generate_n_samples(model, build_instances, n)
 
-        task_name = self.__class__.__name__.replace("Benchmark", "")
+        task_name = self.benchmark_name
         B = int(batch_size) if batch_size else self._passk_batch_size()
 
         # Build the full per-sample instance lists once; slice per batch below. This
@@ -182,7 +323,26 @@ class BaseBenchmark(ABC):
         per_sample_instances: List[List[Instance]] = []
         for sample_idx in range(n):
             seed = [s + sample_idx for s in base_seed]
-            per_sample_instances.append(build_instances(sample_idx, seed))
+            sample_instances = build_instances(sample_idx, seed)
+            sample_instances = self._limit_instances(sample_instances, DEFAULT_SAMPLE_NAMESPACE)
+            for ordinal, instance in enumerate(sample_instances):
+                instance.sample_ordinal = ordinal
+                instance.sample_repeat = getattr(instance, "repeat_idx", sample_idx)
+            per_sample_instances.append(sample_instances)
+
+        passk_entries = [
+            self.sample_manifest.plan_batch(
+                [
+                    SampleRequest(
+                        source_id=instance.idx,
+                        ordinal=instance.sample_ordinal,
+                        repeat=instance.sample_repeat,
+                    )
+                    for instance in sample_instances
+                ]
+            )
+            for sample_idx, sample_instances in enumerate(per_sample_instances)
+        ]
 
         num_problems = len(per_sample_instances[0]) if per_sample_instances else 0
         # batch_idx -> list of problem indices it covers
@@ -197,8 +357,14 @@ class BaseBenchmark(ABC):
         skipped = 0
         for batch_idx, problem_idxs in enumerate(batches):
             unit = {"task": task_name, "batch_idx": batch_idx}
+            batch_entries = [
+                passk_entries[sample_idx][problem_idx]
+                for sample_idx in range(n)
+                for problem_idx in problem_idxs
+            ]
             if manager.should_skip(unit):
                 payload = restored[canonical_unit_key(unit)]
+                self.sample_manifest.validate_prior_entries([payload], batch_entries)
                 # payload["outputs"] is keyed by problem index (as strings in JSON)
                 stored = payload["outputs"]
                 for pidx in problem_idxs:
@@ -222,7 +388,16 @@ class BaseBenchmark(ABC):
             if model.rank == 0:
                 for pidx in problem_idxs:
                     per_problem_outputs[pidx] = batch_per_problem[pidx]
-                manager.record(unit, {"outputs": {str(pidx): batch_per_problem[pidx] for pidx in problem_idxs}})
+                manager.record(
+                    unit,
+                    {
+                        "outputs": {
+                            str(pidx): batch_per_problem[pidx]
+                            for pidx in problem_idxs
+                        },
+                        "samples": [entry.to_dict() for entry in batch_entries],
+                    },
+                )
 
         if skipped:
             self.logger.info(
@@ -233,7 +408,13 @@ class BaseBenchmark(ABC):
         manager.finalize()
         if model.rank != 0:
             return None
-        return [list(p) for p in per_problem_outputs]
+        completed = [list(problem_outputs) for problem_outputs in per_problem_outputs]
+        for sample_idx, entries in enumerate(passk_entries):
+            self.sample_manifest.mark_generated(
+                entries,
+                [problem_outputs[sample_idx] for problem_outputs in completed],
+            )
+        return completed
 
     def _passk_batch_size(self) -> int:
         """Fingerprinted pass@k problem-batch size ``B``. Defaults to all problems in one batch.
@@ -263,6 +444,44 @@ class BaseBenchmark(ABC):
 
         n = int(num_samples if num_samples is not None else self.num_samples)
         return _agg(n, num_correct, ks if ks is not None else self.pass_at_k)
+
+    def record_repeated_accuracy(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        correct_by_repeat: Sequence[Sequence[Any]],
+    ) -> None:
+        """Record each example's accuracy averaged over its repeated completions.
+
+        Args:
+            examples: The graded examples, annotated in place.
+            correct_by_repeat: One score list per repetition, each ordered like
+                ``examples``. Booleans and partial-credit scores are both accepted.
+        """
+        if not correct_by_repeat:
+            raise ValueError(f"{self.benchmark_name}: cannot record per-sample accuracy without a repetition")
+        for index, example in enumerate(examples):
+            scores = [float(repeat[index]) for repeat in correct_by_repeat]
+            record_sample_metrics(example, accuracy=sum(scores) / len(scores))
+
+    def record_pass_at_k_metrics(
+        self,
+        examples: Sequence[Dict[str, Any]],
+        num_correct: List[int],
+        num_samples: Optional[int] = None,
+        ks: Optional[List[int]] = None,
+    ) -> None:
+        """Record each problem's unbiased pass@k estimates as its per-sample metrics.
+
+        The per-problem estimates are the terms ``aggregate_pass_at_k`` averages,
+        so a sample artifact and the reported table stay reconcilable.
+        """
+        n = int(num_samples if num_samples is not None else self.num_samples)
+        reportable = [k for k in (ks if ks is not None else self.pass_at_k) if k <= n]
+        if not reportable:
+            raise ValueError(f"{self.benchmark_name}: no requested pass@k is reportable from {n} samples")
+        estimates = {f"pass_at_{k}": estimate_pass_at_k(n, num_correct, k) for k in reportable}
+        for index, example in enumerate(examples):
+            record_sample_metrics(example, **{name: values[index] for name, values in estimates.items()})
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         for instance in instances:
@@ -335,37 +554,71 @@ class BaseBenchmark(ABC):
         return messages
 
     def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
-        """Resume unit key for one instance: ``{task, problem_idx}`` (+``repeat_idx``).
+        """Return the legacy resume key, preserving opaque source IDs.
 
-        ``instance.idx`` is the problem index (the 4th positional arg at instance
-        construction). AIME24's ``n_repeat`` loop and the native pass@k scaffold set
-        ``instance.repeat_idx`` per pass, so each (problem, repeat) is its own unit —
-        giving per-seed resume granularity (scope doc, Stage 3a).
+        New records use :class:`SampleEntry` IDs. This helper remains for reading
+        existing manifests and intentionally no longer coerces IDs to integers.
         """
-        key: Dict[str, Any] = {"task": task_name, "problem_idx": int(instance.idx)}
+        key: Dict[str, Any] = {"task": task_name, "problem_idx": instance.idx}
         repeat_idx = getattr(instance, "repeat_idx", None)
         if repeat_idx is not None:
-            key["repeat_idx"] = int(repeat_idx)
+            key["repeat_idx"] = repeat_idx
         return key
 
-    def compute(self, model: LM, inputs: List[Instance], do_slice: bool = True) -> List[str]:
+    def compute(
+        self,
+        model: LM,
+        inputs: List[Instance],
+        do_slice: bool = True,
+        sample_namespace: str = DEFAULT_SAMPLE_NAMESPACE,
+    ) -> List[str]:
+        inputs = self._limit_instances(inputs, sample_namespace)
         inputs = self._normalize_model_args(model, inputs)
+        if inputs:
+            # Prompt rendering depends on the selected model, so keep this bounded
+            # representative check separate from static preflight while still failing
+            # before the first generation request is sent.
+            validate_model_request(inputs[0])
 
         # Add task_name to each instance
-        task_name = self.__class__.__name__.replace("Benchmark", "")
+        task_name = self.benchmark_name
         for instance in inputs:
             instance.task_name = task_name
 
+        world_size = int(getattr(model, "world_size", 1))
+        entries = self.sample_manifest.plan_batch(
+            [
+                SampleRequest(
+                    source_id=instance.idx,
+                    ordinal=getattr(instance, "sample_ordinal", ordinal),
+                    namespace=sample_namespace,
+                    shard=ordinal % world_size if world_size > 1 and do_slice else None,
+                    repeat=getattr(
+                        instance,
+                        "repeat_idx",
+                        getattr(instance, "sample_repeat", None),
+                    ),
+                )
+                for ordinal, instance in enumerate(inputs)
+            ]
+        )
+
         if model.world_size > 1 and do_slice:
             prompts = list(islice(inputs, model.rank, len(inputs), model.world_size))
+            prompt_entries = list(islice(entries, model.rank, len(entries), model.world_size))
         else:
             prompts = inputs
+            prompt_entries = list(entries)
 
-        results = self._generate_with_resume(model, task_name, prompts)
+        results = self._generate_with_resume(model, task_name, prompts, prompt_entries)
         if model.world_size > 1:
             all_results = [None for _ in range(model.world_size)]
-
             dist.all_gather_object(all_results, results)
+
+            all_entries = None
+            if not do_slice:
+                all_entries = [None for _ in range(model.world_size)]
+                dist.all_gather_object(all_entries, prompt_entries)
 
             # Merge results from all ranks
             length = sum(len(res) for res in all_results if res is not None)
@@ -374,11 +627,29 @@ class BaseBenchmark(ABC):
                 if sub_results is not None:
                     for i, item in enumerate(sub_results):
                         merged[i * model.world_size + rank] = item
+            merged_entries = entries
+            if all_entries is not None:
+                merged_entries = []
+                for rank, rank_entries in enumerate(all_entries):
+                    if rank_entries is not None:
+                        self.sample_manifest.adopt_entries(rank_entries)
+                        for i, entry in enumerate(rank_entries):
+                            position = i * model.world_size + rank
+                            if position >= len(merged_entries):
+                                merged_entries.extend([None] * (position - len(merged_entries) + 1))
+                            merged_entries[position] = entry
+            self.sample_manifest.mark_generated(merged_entries, merged)
             return merged
         else:
             return results
 
-    def _generate_with_resume(self, model: LM, task_name: str, prompts: List[Instance]) -> List[str]:
+    def _generate_with_resume(
+        self,
+        model: LM,
+        task_name: str,
+        prompts: List[Instance],
+        entries: List[SampleEntry],
+    ) -> List[str]:
         """Generate over this rank's prompt slice, skipping resume-done units.
 
         When no manager is attached (the default) this is exactly
@@ -400,7 +671,9 @@ class BaseBenchmark(ABC):
         # the ``{task, batch_idx}`` unit only (decision #4). When suspended this is a
         # plain generate, exactly as if no manager were attached.
         if manager is None or getattr(self, "_suspend_resume", False):
-            return model.generate_until(prompts)
+            outputs = model.generate_until(prompts)
+            self.sample_manifest.mark_generated(entries, outputs)
+            return outputs
 
         # Ensure the resume decision (fresh / resume / refuse) is made before we
         # consult done units; ``decide`` is idempotent and is the place a material
@@ -408,17 +681,23 @@ class BaseBenchmark(ABC):
         manager.decide()
 
         restored = manager.restore()  # {unit_key: payload} for completed units
-        keys = [self._unit_key(task_name, inst) for inst in prompts]
+        self.sample_manifest.validate_prior_entries(list(restored.values()), entries)
+        keys = [entry.resume_unit(task_name) for entry in entries]
 
         remaining_instances: List[Instance] = []
         remaining_positions: List[int] = []
         results: List[Optional[str]] = [None] * len(prompts)
         skipped = 0
-        from eval.resume import canonical_unit_key
+        from eval.resume import find_restored_payload
 
         for pos, (inst, unit) in enumerate(zip(prompts, keys)):
-            if manager.should_skip(unit):
-                results[pos] = restored[canonical_unit_key(unit)]["output"]
+            restored_match = find_restored_payload(
+                restored,
+                [unit, self._unit_key(task_name, inst)],
+            )
+            if restored_match is not None:
+                _, payload = restored_match
+                results[pos] = payload["output"]
                 skipped += 1
             else:
                 remaining_instances.append(inst)
@@ -432,11 +711,16 @@ class BaseBenchmark(ABC):
 
         if remaining_instances:
             new_outputs = model.generate_until(remaining_instances)
+            self.sample_manifest.validate_output_count(len(remaining_instances), new_outputs)
             for pos, inst, output in zip(remaining_positions, remaining_instances, new_outputs):
                 results[pos] = output
-                manager.record(self._unit_key(task_name, inst), {"output": output})
+                manager.record(
+                    keys[pos],
+                    {"output": output, "sample": entries[pos].to_dict()},
+                )
 
         manager.finalize()
+        self.sample_manifest.mark_generated(entries, results)
         return results
 
     @abstractmethod
@@ -492,6 +776,7 @@ class BaseBenchmark(ABC):
             if "model_outputs" in example:  # native pass@k: list of completions
                 resps = list(example.get("model_outputs", []))
                 filtered = list(example.get("model_answers", []))
+                extraction_errors = example.get("answer_extraction_errors")
             else:  # single-sample path
                 response = next(
                     (
@@ -503,6 +788,8 @@ class BaseBenchmark(ABC):
                 )
                 resps = [response]
                 filtered = [example.get("model_answer", example.get("generation", response))]
+                extraction_error = example.get("answer_extraction_error")
+                extraction_errors = [extraction_error] if extraction_error is not None else None
 
             doc_hash = hash_string(_json.dumps(self._sample_doc(example), indent=2, default=_hns, ensure_ascii=False))
             samples.append(
@@ -514,13 +801,13 @@ class BaseBenchmark(ABC):
                     "arguments": [[prompt, gen_kwargs]],
                     "resps": [resps],
                     "filtered_resps": filtered,
+                    **({"answer_extraction_errors": extraction_errors} if extraction_errors is not None else {}),
                     "filter": "none",
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
-                    # Per-sample twin of the aggregate accuracy metric, for benchmarks whose
-                    # evaluate_responses annotates example["correct"] -- sample viewers filter on it.
-                    **({"accuracy": float(example["correct"])} if "correct" in example else {}),
+                    # The grader's own per-sample scores, in lm-eval's record shape.
+                    **sample_metric_fields(example),
                 }
             )
         return samples
@@ -540,11 +827,15 @@ class BaseBenchmark(ABC):
             "model_answer",
             "model_outputs",
             "model_answers",
+            "answer_extraction_error",
+            "answer_extraction_errors",
             "gpt_completion",
             "generation",
             "response",
             "output",
             "correct",
+            "score",
+            SAMPLE_METRICS_ANNOTATION,
         }
         return {key: value for key, value in example.items() if key not in generated_fields}
 
@@ -571,9 +862,13 @@ class TaskManager:
         self.logger = logging.getLogger("TaskManager")
         self.tasks: Dict[str, Any] = {}
         self.benchmark_instances: Dict[str, BaseBenchmark] = {}
+        self.load_failures: Dict[str, BaseException] = {}
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
+        # Resolved once: every benchmark's generation budget is derived from the
+        # same stored prompt lengths (eval/contracts/prompt_lengths.md).
+        self.prompt_lengths = load_prompt_lengths()
 
         # Load benchmarks from directory
         self._load_benchmarks(benchmarks_dir)
@@ -602,6 +897,7 @@ class TaskManager:
 
             eval_path = os.path.join(item_path, "eval_instruct.py")
             if not os.path.exists(eval_path):
+                self.load_failures[item] = FileNotFoundError(f"eval_instruct.py not found in {item}")
                 self.logger.warning(f"eval_instruct.py not found in {item}")
                 continue
 
@@ -610,28 +906,28 @@ class TaskManager:
                 sys.path.insert(0, item_path)
                 spec = importlib.util.spec_from_file_location(f"eval.{benchmarks_dir}.{item}.eval_instruct", eval_path)
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                sys.path.pop(0)
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    sys.path.remove(item_path)
 
                 # Find benchmark class
-                benchmark_classes = [
-                    cls
-                    for _, cls in inspect.getmembers(module, inspect.isclass)
-                    if (
-                        issubclass(cls, BaseBenchmark)
-                        and cls != BaseBenchmark
-                        and cls.__module__.replace(".", "/") in eval_path
-                    )
-                ]
+                benchmark_classes = find_custom_benchmark_classes(module, BaseBenchmark)
 
                 if not benchmark_classes:
+                    self.load_failures[item] = LookupError(f"No BaseBenchmark subclass found in {item}")
                     self.logger.warning(f"No BaseBenchmark subclass found in {item}")
                     continue
 
                 if len(benchmark_classes) > 1:
-                    self.logger.warning(f"Multiple benchmark classes found in {item}, using first one")
+                    self.load_failures[item] = LookupError(
+                        f"Multiple BaseBenchmark subclasses found in {item}"
+                    )
+                    self.logger.warning(f"Multiple BaseBenchmark subclasses found in {item}")
+                    continue
 
                 benchmark_class = benchmark_classes[0]
+                validate_custom_benchmark_class(benchmark_class, BaseBenchmark)
 
                 # Check if this benchmark requires OpenAI as annotator model
                 requires_annotator = "annotator_model" in inspect.signature(benchmark_class.__init__).parameters
@@ -648,11 +944,13 @@ class TaskManager:
                     self.logger.warning(
                         f"Not loading {item} benchmark as it requires OpenAI as annotator model but OPENAI_API_KEY is not set"
                     )
+                    self.load_failures[item] = RuntimeError("OPENAI_API_KEY is required by this benchmark")
                     continue
 
                 self._register_benchmark(item, benchmark_class)
 
             except Exception as e:
+                self.load_failures[item] = e
                 self.logger.error(f"Error loading benchmark from {item}: {str(e)}")
                 continue
 
@@ -684,9 +982,16 @@ class TaskManager:
                 valid_kwargs["system_instruction"] = self.benchmark_kwargs["system_instruction"]
 
             instance = benchmark_class(**valid_kwargs)
+            context_length = self.benchmark_kwargs.get("max_length")
             instance.set_evaluation_limits(
-                max_length=self.benchmark_kwargs.get("max_length"),
-                max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                max_length=context_length,
+                max_tokens=resolve_task_max_tokens(
+                    name,
+                    context_length=context_length,
+                    requested_max_tokens=self.benchmark_kwargs.get("max_tokens"),
+                    prompt_lengths=self.prompt_lengths,
+                ),
+                limit=self.benchmark_kwargs.get("limit"),
             )
 
             self.tasks[name] = benchmark_class
@@ -695,6 +1000,7 @@ class TaskManager:
             self.logger.debug(f"Successfully registered benchmark: {name}")
 
         except Exception as e:
+            self.load_failures[name] = e
             self.logger.error(f"Error registering benchmark {name}: {str(e)}")
 
     def get_list_generate_responses(self, task_list: List[str]) -> List[Callable]:

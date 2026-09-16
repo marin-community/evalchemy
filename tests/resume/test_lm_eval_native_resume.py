@@ -41,6 +41,11 @@ from eval.resume.lm_eval_native import (  # noqa: E402
     _request_unit_key,
     resume_simple_evaluate,
 )
+from eval.contracts.sample_manifest import (  # noqa: E402
+    SampleCoverageError,
+    SampleIdentityError,
+    SampleManifest,
+)
 
 
 class _FakeLM:
@@ -66,6 +71,9 @@ class _FakeLM:
             outs.append(f"gen-{pid}-{ds}-{len(self.generated)}")
         return outs
 
+    def set_cache_hook(self, hook):
+        self.cache_hook = hook
+
 
 def _reqs(n, do_sample=False, doc_id_base=0, same_ctx=False):
     """Build n generate_until Instances with explicit doc_id (lm-eval's problem index).
@@ -88,9 +96,15 @@ def _fingerprint():
     return RunFingerprint.from_run_inputs(model_repo="m", task_name="gsm8k", task_data_digest="sha256:x")
 
 
-def _make_wrapped(lm, manager, task_name="gsm8k", interop_db=None):
+def _make_wrapped(lm, manager=None, task_name="gsm8k", sample_manifest=None, interop_db=None):
     cls = _make_resume_caching_lm_cls()
-    return cls(lm, manager, task_name, interop_db=interop_db)
+    return cls(
+        lm,
+        manager,
+        task_name,
+        sample_manifest=sample_manifest,
+        interop_db=interop_db,
+    )
 
 
 # --- (1) flag-off byte-identical -------------------------------------------------------------
@@ -136,6 +150,115 @@ def test_flag_off_writes_no_resume_dir(tmp_path):
         tasks=["gsm8k"],
     )
     assert not (tmp_path / "resume").exists()
+
+
+def test_manifest_wraps_lm_eval_even_when_resume_is_disabled():
+    manifest = SampleManifest("gsm8k")
+    lm = _FakeLM()
+    wrapped = _make_wrapped(lm, sample_manifest=manifest)
+    requests = _reqs(2)
+    for request in requests:
+        request.task_name = "gsm8k"
+        request.repeats = 1
+
+    assert len(wrapped.generate_until(requests)) == 2
+    manifest.validate_generated()
+    assert manifest.expected_sample_count == 2
+    assert manifest.generated_sample_count == 2
+    assert manifest.scored_sample_count == 0
+
+
+def test_lm_eval_short_response_is_a_coverage_failure():
+    class _ShortLM(_FakeLM):
+        def generate_until(self, requests, *args, **kwargs):
+            return ["one"]
+
+    manifest = SampleManifest("gsm8k")
+    wrapped = _make_wrapped(_ShortLM(), sample_manifest=manifest)
+    requests = _reqs(2)
+    for request in requests:
+        request.task_name = "gsm8k"
+        request.repeats = 1
+
+    with pytest.raises(SampleCoverageError, match="returned 1 outputs for 2"):
+        wrapped.generate_until(requests)
+
+
+def test_lm_eval_likelihood_choices_share_one_sample_identity():
+    class _LikelihoodLM(_FakeLM):
+        def loglikelihood(self, requests, *args, **kwargs):
+            return [(-1.0, False) for _ in requests]
+
+    manifest = SampleManifest("arc_easy")
+    wrapped = _make_wrapped(
+        _LikelihoodLM(),
+        task_name="arc_easy",
+        sample_manifest=manifest,
+    )
+    requests = [
+        Instance("loglikelihood", {"question": "q"}, ("q", choice), choice_idx)
+        for choice_idx, choice in enumerate(("a", "b", "c", "d"))
+    ]
+    for request in requests:
+        request.task_name = "arc_easy"
+        request.doc_id = 7
+        request.repeats = 1
+
+    assert len(wrapped.loglikelihood(requests)) == 4
+    manifest.validate_generated()
+    assert manifest.generated_sample_count == 1
+
+
+def test_lm_eval_missing_doc_id_fails_before_model_request():
+    manifest = SampleManifest("gsm8k")
+    lm = _FakeLM()
+    wrapped = _make_wrapped(lm, sample_manifest=manifest)
+    request = _reqs(1)[0]
+    request.doc_id = None
+    request.repeats = 1
+
+    with pytest.raises(SampleIdentityError, match="source_id is missing"):
+        wrapped.generate_until([request])
+
+    assert lm.generated == []
+
+
+def test_manifest_observes_stock_lm_eval_cache_hits(tmp_path):
+    requests = _reqs(1)
+    requests[0].task_name = "gsm8k"
+    requests[0].repeats = 1
+    cache_path = str(tmp_path / "cache")
+
+    def fake_simple_evaluate(**kwargs):
+        return {
+            "outputs": kwargs["model"].generate_until(requests),
+            "results": {"gsm8k": {"acc": 1.0}},
+        }
+
+    first_lm = _FakeLM()
+    first_manifest = SampleManifest("gsm8k")
+    resume_simple_evaluate(
+        fake_simple_evaluate,
+        model=first_lm,
+        tasks=["gsm8k"],
+        use_cache=cache_path,
+        sample_manifest=first_manifest,
+    )
+    assert len(first_lm.generated) == 1
+
+    second_lm = _FakeLM()
+    second_manifest = SampleManifest("gsm8k")
+    result = resume_simple_evaluate(
+        fake_simple_evaluate,
+        model=second_lm,
+        tasks=["gsm8k"],
+        use_cache=cache_path,
+        sample_manifest=second_manifest,
+    )
+
+    assert result["outputs"] == ["gen-0-False-1"]
+    assert second_lm.generated == []
+    second_manifest.validate_generated()
 
 
 # --- off mode (manager attached but inert) ---------------------------------------------------

@@ -2,12 +2,15 @@
 
 from collections.abc import Sequence
 
-END_OF_TURN_SEQUENCES: tuple[str, ...] = (
+TOKEN_SENTINEL_SEQUENCES: tuple[str, ...] = (
     "<|im_end|>",
     "<|eot_id|>",
     "<|end_of_text|>",
     "<|endoftext|>",
     "</s>",
+)
+END_OF_TURN_SEQUENCES: tuple[str, ...] = (
+    *TOKEN_SENTINEL_SEQUENCES,
     "\nYou are an AI assistant",
     "\nQuestion:",
     "\nQ:",
@@ -33,15 +36,31 @@ HUMANEVAL_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
     "\n```",
     *END_OF_TURN_SEQUENCES,
 ]
-# OpenAI-compatible completions endpoints accept at most four request stops.
+def _is_token_sentinel(stop: str) -> bool:
+    return stop in TOKEN_SENTINEL_SEQUENCES
+
+
+def bounded_request_stops(
+    stops: Sequence[str], max_stops: int = OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES
+) -> list[str]:
+    """Choose API request stops while retaining task-semantic boundaries.
+
+    OpenAI-compatible chat APIs accept at most four stop sequences. Tokenizer
+    sentinels are useful fallbacks, but models need not emit them; textual task
+    boundaries therefore take precedence when the complete scorer policy does
+    not fit in the request.
+    """
+    unique_stops = list(dict.fromkeys(stops))
+    semantic = [stop for stop in unique_stops if not _is_token_sentinel(stop)]
+    token_sentinels = [stop for stop in unique_stops if _is_token_sentinel(stop)]
+    return (semantic + token_sentinels)[:max_stops]
+
+
 # The scorer still applies the complete set after generation, including the
 # omitted ``print``, code-fence, and chat turn boundaries.
-HUMANEVAL_REQUEST_STOP_SEQUENCES: list[str] = [  # noqa: ml-module-globals
-    "\nclass",
-    "\ndef",
-    "\n#",
-    "\nif",
-]
+HUMANEVAL_REQUEST_STOP_SEQUENCES: list[str] = bounded_request_stops(  # noqa: ml-module-globals
+    HUMANEVAL_STOP_SEQUENCES
+)
 
 
 def truncate_at_stop(text: str, stops: Sequence[str] = END_OF_TURN_SEQUENCES) -> str:

@@ -12,10 +12,10 @@ then pass the same resolved values to native and custom benchmarks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import copy
 import json
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 MAX_OUTPUT_ALIASES = ("max_tokens", "max_new_tokens", "max_gen_toks")
 MODEL_LENGTH_ALIASES = ("max_length", "max_model_len")
@@ -24,6 +24,66 @@ MODEL_LENGTH_ALIASES = ("max_length", "max_model_len")
 # more than the requested ~50-character wiggle room: tokenization and endpoint
 # templates are not guaranteed to be byte-identical across every provider.
 DEFAULT_CONTEXT_SAFETY_TOKENS = 64
+
+
+class MissingContextLengthError(ValueError):
+    """Raised when a task cannot select inputs without a context length."""
+
+
+class ContextWindowExceededError(ValueError):
+    """Raised when a prompt and its required output cannot fit a context window."""
+
+    def __init__(self, *, context_length: int, required_tokens: int):
+        self.context_length = context_length
+        self.required_tokens = required_tokens
+        super().__init__(f"request requires {required_tokens} tokens but the context window is {context_length} tokens")
+
+
+def require_context_length(context_length: int | None, *, task_name: str) -> int:
+    """Return an explicit context length or raise a typed configuration error."""
+    if context_length is None:
+        raise MissingContextLengthError(
+            f"{task_name} requires an explicit max_length so unsupported examples can be excluded"
+        )
+    return _as_positive_int(context_length, "max_length")
+
+
+def encoded_token_count(encode: Callable[[str], Sequence[Any]], text: str) -> int:
+    """Count text tokens with a caller-supplied encoder."""
+    if not isinstance(text, str):
+        raise TypeError(f"text must be a string, got {type(text).__name__}")
+    return len(encode(text))
+
+
+def message_content_token_count(encode: Callable[[str], Sequence[Any]], messages: Sequence[Mapping[str, Any]]) -> int:
+    """Count message content without provider-specific chat framing."""
+    total = 0
+    for message in messages:
+        if not isinstance(message, Mapping) or not isinstance(message.get("content"), str):
+            raise TypeError("each message must be a mapping with string content")
+        total += encoded_token_count(encode, message["content"])
+    return total
+
+
+def ensure_context_window(
+    *,
+    context_length: int,
+    prompt_tokens: int,
+    output_tokens: int,
+    safety_tokens: int = DEFAULT_CONTEXT_SAFETY_TOKENS,
+) -> None:
+    """Raise a typed error unless the complete request fits its context window."""
+    for name, value in (
+        ("context_length", context_length),
+        ("prompt_tokens", prompt_tokens),
+        ("output_tokens", output_tokens),
+        ("safety_tokens", safety_tokens),
+    ):
+        if not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    required_tokens = prompt_tokens + output_tokens + safety_tokens
+    if required_tokens > context_length:
+        raise ContextWindowExceededError(context_length=context_length, required_tokens=required_tokens)
 
 
 def parse_key_value_args(value: Optional[str | Mapping[str, Any]]) -> dict[str, Any]:
@@ -73,12 +133,13 @@ def safe_generation_cap(
     ):
         if not isinstance(value, int) or value < 0:
             raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    ensure_context_window(
+        context_length=context_length,
+        prompt_tokens=prompt_tokens,
+        output_tokens=1,
+        safety_tokens=safety_tokens,
+    )
     available = context_length - prompt_tokens - safety_tokens
-    if available < 1:
-        raise ValueError(
-            "rendered prompt exhausts the endpoint context budget: "
-            f"context_length={context_length}, prompt_tokens={prompt_tokens}, safety_tokens={safety_tokens}"
-        )
     return min(requested_max_tokens, available)
 
 

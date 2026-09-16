@@ -11,6 +11,7 @@ from eval.generation_stops import (
     GSM8K_STOP_SEQUENCES,
     OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES,
     HUMANEVAL_REQUEST_STOP_SEQUENCES,
+    bounded_request_stops,
     truncate_at_stop,
 )
 from eval.lm_eval_tasks.humaneval.scoring import build_predictions
@@ -45,6 +46,15 @@ def test_humaneval_scoring_discards_boundaries_omitted_from_the_request(response
 
 def test_humaneval_request_stops_fit_the_completions_api():
     assert len(HUMANEVAL_REQUEST_STOP_SEQUENCES) == OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES
+
+
+def test_bounded_request_stops_prefer_semantic_boundaries_to_token_sentinels():
+    assert bounded_request_stops(GSM8K_STOP_SEQUENCES) == [
+        "\nYou are an AI assistant",
+        "Question:",
+        "\nQ:",
+        "\n[Question]",
+    ]
 
 
 def test_generation_task_overrides_use_shared_stop_sequences():

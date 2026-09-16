@@ -3,6 +3,7 @@ import random
 import time
 import logging
 from collections import defaultdict
+from importlib.resources import files
 from typing import Any, Dict, List, Optional
 import math
 import numpy as np
@@ -11,6 +12,12 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+from eval.contracts.preflight import (
+    NetworkDatasetRequirement,
+    PackageFileRequirement,
+    PythonDependencyRequirement,
+)
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -62,10 +69,13 @@ def format_cot_example(example: Dict[str, Any], including_answer: bool = True) -
     return prompt
 
 
+PROMPT_PACKAGE = "eval.chat_benchmarks.MMLUPro"
+PROMPT_RESOURCE = "initial_prompt.txt"
+
+
 def generate_cot_prompt(val_df: List[Dict[str, Any]], curr: Dict[str, Any], k: int) -> str:
     # Load base template
-    with open("./eval/chat_benchmarks/MMLUPro/initial_prompt.txt") as f:
-        base = f.read()
+    base = files(PROMPT_PACKAGE).joinpath(PROMPT_RESOURCE).read_text()
     subject = curr["category"]
     support = select_by_category(val_df, subject)[:k]
     prompt = base.replace("{$}", subject) + "\n"
@@ -93,9 +103,15 @@ class MMLUProBenchmark(BaseBenchmark):
     and multi-stage regex answer extraction, reporting both overall and per-area accuracy.
     """
 
+    RESOURCE_REQUIREMENTS = (
+        PackageFileRequirement(PROMPT_PACKAGE, PROMPT_RESOURCE),
+        PythonDependencyRequirement("transformers"),
+        NetworkDatasetRequirement("TIGER-Lab/MMLU-Pro"),
+    )
+
     def __init__(
         self,
-        ntrain: int = 5,
+        num_fewshot: int = 5,
         max_model_length: int = 4096,
         max_tokens: int = 32768,
         debug: bool = False,
@@ -104,8 +120,10 @@ class MMLUProBenchmark(BaseBenchmark):
         seed: List[int] = [0, 1234, 1234, 1234],
     ):
         super().__init__(logger=logger, system_instruction=system_instruction)
+        if num_fewshot < 0:
+            raise ValueError("num_fewshot must be non-negative")
         self.dataset_name = "TIGER-Lab/MMLU-Pro"
-        self.ntrain = ntrain
+        self.num_fewshot = num_fewshot
         self.max_model_length = max_model_length
         self.max_new_tokens = max_tokens
         self.debug = debug
@@ -119,13 +137,40 @@ class MMLUProBenchmark(BaseBenchmark):
         # model name will be set later in generate_responses
         self.tokenizer: Optional[AutoTokenizer] = None
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        # initialize tokenizer on first use
-        if self.tokenizer is None:
-            from transformers import AutoTokenizer
+    def validate_prepared_data(self) -> None:
+        required_fields = {"answer", "category", "cot_content", "options", "question"}
+        if not self.test_examples or not self.val_examples:
+            raise ValueError("MMLU-Pro test and validation splits must both be non-empty")
+        for split_name, records in (("test", self.test_examples), ("validation", self.val_examples)):
+            missing = required_fields - set(records[0])
+            if missing:
+                raise ValueError(f"MMLU-Pro {split_name} records are missing fields: {sorted(missing)}")
+        representative = generate_cot_prompt(
+            self.val_examples,
+            self.test_examples[0],
+            min(1, self.num_fewshot),
+        )
+        if not representative.strip():
+            raise ValueError("MMLU-Pro representative prompt is empty")
 
-            model_name = getattr(model, "pretrained", getattr(model, "model_args", {}).get("model"))
-            self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+    def generate_responses(self, model: LM) -> Dict[str, Any]:
+        # Use the evaluation model's tokenizer for prompt sizing. Loading a fixed
+        # tokenizer here makes the context check wrong for every other model family.
+        if self.tokenizer is None and self.num_fewshot > 0:
+            model_tokenizer = getattr(model, "tokenizer", None)
+            if callable(model_tokenizer):
+                self.tokenizer = model_tokenizer
+            else:
+                model_name = getattr(model, "pretrained", None)
+                model_args = getattr(model, "model_args", None)
+                if model_name is None and isinstance(model_args, dict):
+                    model_name = model_args.get("model")
+                if not isinstance(model_name, str) or not model_name:
+                    raise ValueError(
+                        "MMLU-Pro few-shot prompt sizing requires the evaluation "
+                        "model's tokenizer or model identifier"
+                    )
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         instances = []
         for idx, ex in enumerate(self.test_examples):
@@ -133,14 +178,16 @@ class MMLUProBenchmark(BaseBenchmark):
                 break
 
             # dynamically choose k so prompt fits
-            k = self.ntrain
+            k = self.num_fewshot
+            prompt = generate_cot_prompt(self.val_examples, ex, k)
             while k > 0:
-                prompt = generate_cot_prompt(self.val_examples, ex, k)
-                toks = self.tokenizer(prompt, return_tensors="pt")
-                length = toks["input_ids"].shape[1]
+                if self.tokenizer is None:
+                    raise RuntimeError("MMLU-Pro tokenizer is required for few-shot prompt sizing")
+                length = len(self.tokenizer.encode(prompt))
                 if length < self.max_model_length - self.max_new_tokens:
                     break
                 k -= 1
+                prompt = generate_cot_prompt(self.val_examples, ex, k)
 
             # wrap prompt for harness
             messages = [{"role": "user", "content": prompt}]
@@ -185,6 +232,7 @@ class MMLUProBenchmark(BaseBenchmark):
             area_stats[cat]["total"] += 1
             area_stats[cat]["corr"] += correct
             correct_flags.append(correct)
+            record_sample_metrics(ex, accuracy=correct)
 
         n = len(correct_flags)
         flags_arr = np.asarray(correct_flags, dtype=float)

@@ -78,6 +78,22 @@ jobs:
       - name: Run grader parity tests
         run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
 
+  contracts:
+    # The framework-wide task contracts, including the per-sample metrics every
+    # benchmark's grader must record. The extras are the ones whose graders the
+    # conformance cases drive; the rest ride on the lean base.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Run task contract tests
+        run: >-
+          uv run --python 3.12 --extra dev
+          --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
+          --extra ifeval --extra mrcr
+          pytest tests/contracts/ -q
+
   lean-install:
     # Guard the lean (torch-free) base install: the wheel builds, the `eval` console
     # script runs, and the math/code core benchmarks import -- all with no torch/vllm/ray.
@@ -91,10 +107,19 @@ jobs:
         # `uv tool run --from .` builds + installs the wheel in an isolated env, so this
         # proves the packaging, the console script, and the base import closure at once.
         run: uv tool run --python 3.12 --from . eval --help
+      - name: Exercise packaged benchmark resources outside the checkout
+        run: |
+          checkout="$PWD"
+          probe_dir="$(mktemp -d)"
+          cd "$probe_dir"
+          uv run --no-project --python 3.12 --with "$checkout" \
+            python "$checkout/scripts/ci/check_installed_resources.py"
       - name: Sync the lean base env
         run: uv sync --python 3.12
       - name: Assert no heavy deps leaked and empty-extra benchmarks import
         run: uv run python scripts/ci/check_lean_install.py
+      - name: Enumerate every task under the shared lifecycle contract
+        run: uv run python scripts/ci/check_task_contracts.py
 
   benchmark-extras:
     # Assert each per-benchmark extra is self-sufficient and torch-free: sync base + that

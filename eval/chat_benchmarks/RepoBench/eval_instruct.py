@@ -80,10 +80,12 @@ class RepoBenchmark(BaseBenchmark):
                 all_instances = []
                 # Split dataset across ranks for parallel construction
                 # Get subset of dataset for this rank using built-in slice functionality
-                rank_dataset = list(islice(dataset, model.rank, len(dataset), model.world_size))
+                rank_dataset = list(
+                    islice(enumerate(dataset), model.rank, len(dataset), model.world_size)
+                )
 
                 # Process examples for this rank's shard
-                for idx, example in enumerate(rank_dataset):
+                for idx, example in rank_dataset:
                     prompt = construct_prompt(
                         example, tokenizer=model.tokenizer, max_token_nums=self.max_tokens, language=lang
                     )
@@ -104,8 +106,14 @@ class RepoBenchmark(BaseBenchmark):
                             idx,
                         )
                     )
+                    all_instances[-1].sample_ordinal = idx
                 self.logger.info("Generating responses for RepoBench...")
-                outputs = self.compute(model, all_instances, do_slice=False)
+                outputs = self.compute(
+                    model,
+                    all_instances,
+                    do_slice=False,
+                    sample_namespace=f"{lang}:{subset}",
+                )
 
                 # Only rank 0 should save the results
                 if model.rank != 0:
@@ -162,7 +170,11 @@ class RepoBenchmark(BaseBenchmark):
                         )
                     )
 
-                outputs = self.compute(model, all_instances, do_slice=False)
+                outputs = self.compute(
+                    model,
+                    all_instances,
+                    sample_namespace=f"legacy:{lang}:{subset}",
+                )
 
                 if model.rank != 0:
                     continue

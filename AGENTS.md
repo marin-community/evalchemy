@@ -104,7 +104,11 @@ The runner prints scores; the gate decides pass/fail. Keep that split.
 
 - **`marin-ci.yaml`** — every PR: `infra/pre-commit.py` over the changed files, and
   `marin-style sync --check` to catch a drifted `.agents/` vendor.
-- **`e2e-ci.yaml`** — every PR: the `tests/e2e` harness; `lean-install` (builds the wheel,
+- **`e2e-ci.yaml`** — every PR: the `tests/e2e` harness; `contracts`, the registry-wide
+  `tests/contracts` suite (every benchmark's grader must record per-sample metrics, and
+  every benchmark carries a stored prompt length — see
+  `eval/contracts/prompt_lengths.md`);
+  `lean-install` (builds the wheel,
   runs the `eval` entry point, and asserts the torch-free core imports benchmarks with
   empty extras and no torch/vllm/ray); and `benchmark-extras`, which syncs each non-empty
   per-benchmark extra in isolation, asserts that it stays torch-free, and exec-imports its
@@ -133,7 +137,8 @@ This repo is a fork of [mlfoundations/evalchemy](https://github.com/mlfoundation
 and still tracks upstream. Most of `eval/` is upstream code.
 
 **Marin owns** `eval/serve_eval/`, `eval/regression/`, `eval/lm_eval_tasks/`,
-`eval/graders/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
+`eval/graders/`, `eval/contracts/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
+`tests/contracts/`,
 `tests/uncheatable_eval/`, `scripts/ci/`,
 `scripts/benchmarks/`, `packages/evalchemy-config/`, `infra/`, and the Marin workflows.
 New Marin work goes here, and the Marin standards (`infra/pre-commit.py`) apply here.

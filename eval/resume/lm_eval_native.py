@@ -19,13 +19,12 @@ and a per-rank manifest that matches lm-eval's `_rank<R>.db` layout. The manager
 still **READS** any pre-existing `_rank<R>.db` so a run that already has one keeps
 its prior completions (interop, not removal).
 
-Flag-off invariant (global #1): when no manager is attached, `resume_simple_evaluate`
-calls upstream `simple_evaluate(**kwargs)` verbatim — the gsm8k path is byte-identical
-to today and no `resume/` dir is written. The wrapper LM is constructed only when a
-manager is active.
+With no manager and no sample manifest, `resume_simple_evaluate` calls upstream
+`simple_evaluate(**kwargs)` verbatim. The evaluation driver supplies a manifest,
+which activates request accounting but writes no resume state.
 
-Unit key: `{task, problem_idx}` for greedy; `{task, problem_idx, sample_idx}` when the
-request is sampled (`do_sample=True`) — fixing the n>1 key collision lm-eval has.
+New unit key: `{task, sample_id}`, where `sample_id` is the shared opaque unit identity.
+The legacy problem/sample-index form remains read-only for existing resume directories.
 """
 
 from __future__ import annotations
@@ -33,6 +32,15 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Dict, List, Optional
+
+from eval.contracts.sample_manifest import (
+    DEFAULT_SAMPLE_NAMESPACE,
+    SampleEntry,
+    SampleIdentityError,
+    SampleManifest,
+    SampleRequest,
+    canonical_json_identity,
+)
 
 from .manager import ResumeManager
 
@@ -63,6 +71,75 @@ def _request_unit_key(task_name: str, req: Any, sample_seen: Dict[Any, int]) -> 
     return unit
 
 
+def _plan_request_batch(
+    manifest: SampleManifest, requests: List[Any]
+) -> tuple[List[SampleEntry | None], tuple[SampleEntry, ...]]:
+    """Map lm-eval request clones to stable sample units before an LM call.
+
+    Multiple-choice requests share a document identity, while repeated sampling
+    clones the same ``Instance`` object. Distributed padding may clone it beyond
+    its declared repeat count; those padding calls are deliberately not samples.
+    """
+    occurrences: Dict[int, int] = {}
+    sampled_occurrences: Dict[tuple[str, str], int] = {}
+    ordinals: Dict[tuple[str, str], int] = {}
+    planned: Dict[tuple[str, str, int | None], SampleRequest] = {}
+    request_keys: List[tuple[str, str, int | None] | None] = []
+
+    for request in requests:
+        source_id = getattr(request, "doc_id", None)
+        namespace = getattr(request, "task_name", None) or DEFAULT_SAMPLE_NAMESPACE
+        try:
+            encoded_source = canonical_json_identity(source_id)
+        except SampleIdentityError as exc:
+            raise SampleIdentityError(
+                f"{manifest.task_name}: lm-eval sample source_id {exc}"
+            ) from exc
+
+        object_key = id(request)
+        object_occurrence = occurrences.get(object_key, 0)
+        occurrences[object_key] = object_occurrence + 1
+        repeats = getattr(request, "repeats", None) or 1
+        if object_occurrence >= repeats:
+            request_keys.append(None)
+            continue
+        source_key = (namespace, encoded_source)
+        ordinal = ordinals.setdefault(source_key, len(ordinals))
+        gen_kwargs = request.args[1] if len(request.args) > 1 and isinstance(request.args[1], dict) else {}
+        sampled = bool(gen_kwargs.get("do_sample", False))
+        if sampled:
+            repeat = sampled_occurrences.get(source_key, 0)
+            sampled_occurrences[source_key] = repeat + 1
+        elif repeats > 1:
+            repeat = object_occurrence
+        else:
+            repeat = None
+        unit_key = (namespace, encoded_source, repeat)
+        planned.setdefault(
+            unit_key,
+            SampleRequest(
+                source_id=source_id,
+                ordinal=ordinal,
+                namespace=namespace,
+                shard=None,
+                repeat=repeat,
+            ),
+        )
+        request_keys.append(unit_key)
+
+    entries = manifest.plan_batch(list(planned.values()))
+    by_key = dict(zip(planned, entries))
+    return [by_key[key] if key is not None else None for key in request_keys], entries
+
+
+def _track_request_method(self, method_name: str, requests: List[Any], *args: Any, **kwargs: Any):
+    request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
+    outputs = getattr(self.lm, method_name)(requests, *args, **kwargs)
+    self._sample_manifest.validate_output_count(len(requests), outputs)
+    self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
+    return outputs
+
+
 def _make_resume_caching_lm_cls():
     """Build the `ResumeCachingLM` class as an `lm_eval.api.model.LM` subclass.
 
@@ -86,14 +163,16 @@ def _make_resume_caching_lm_cls():
         a pre-existing `_rank<R>.db` for interop.
         """
 
-        def __init__(self, lm, manager, task_name, interop_db=None):
+        def __init__(self, lm, manager, task_name, sample_manifest=None, interop_db=None):
             super().__init__()
             self.lm = lm
             self._manager = manager
             self._task_name = task_name
+            self._sample_manifest = sample_manifest or SampleManifest(task_name)
             self._interop_db = interop_db
             self._interop_cache: Dict[str, Any] = {}
-            manager.decide()  # refuse loudly on a material delta before any generation
+            if manager is not None:
+                manager.decide()  # refuse loudly on a material delta before any generation
             if interop_db:
                 self._load_interop_db(interop_db)
 
@@ -106,13 +185,13 @@ def _make_resume_caching_lm_cls():
         def world_size(self):
             return getattr(self.lm, "world_size", 1)
 
-        # loglikelihood paths are greedy-scored and out of gsm8k-generation scope —
-        # delegate verbatim to the underlying LM (no resume layer).
+        # Likelihood requests are not resumable yet, but still cross the shared
+        # identity and coverage boundary.
         def loglikelihood(self, requests, *a, **k):
-            return self.lm.loglikelihood(requests, *a, **k)
+            return _track_request_method(self, "loglikelihood", requests, *a, **k)
 
         def loglikelihood_rolling(self, requests, *a, **k):
-            return self.lm.loglikelihood_rolling(requests, *a, **k)
+            return _track_request_method(self, "loglikelihood_rolling", requests, *a, **k)
 
         # The chat-template protocol members below are DEFINED on the base `LM`
         # class (`tokenizer_name` raises NotImplementedError; `chat_template` /
@@ -244,23 +323,40 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
     case `CachingLM` bypasses entirely.
     """
     manager = self._manager
+    request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
+    if manager is None:
+        outputs = self.lm.generate_until(requests, *args, **kwargs)
+        self._sample_manifest.validate_output_count(len(requests), outputs)
+        self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
+        return outputs
     results: List[Optional[str]] = [None] * len(requests)
 
     # Build a unit key per request (stable doc_id-based; sample_idx for sampled).
-    sample_seen: Dict[Any, int] = {}
-    keys = [_request_unit_key(self._task_name, req, sample_seen) for req in requests]
+    keys = [
+        entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {})
+        for req, entry in zip(requests, request_entries)
+    ]
+    legacy_sample_seen: Dict[Any, int] = {}
+    legacy_keys = [
+        _request_unit_key(self._task_name, req, legacy_sample_seen) for req in requests
+    ]
 
     restored = manager.restore()  # {canonical_key: payload}
-    from .manifest import canonical_unit_key
+    self._sample_manifest.validate_prior_entries(list(restored.values()), unique_entries)
+    from .manifest import find_restored_payload
 
     remaining_reqs: List[Any] = []
     remaining_positions: List[int] = []
     skipped = 0
     interop_hits = 0
 
-    for pos, (req, unit) in enumerate(zip(requests, keys)):
-        if manager.should_skip(unit):
-            results[pos] = restored[canonical_unit_key(unit)]["output"]
+    for pos, (req, unit, legacy_unit) in enumerate(zip(requests, keys, legacy_keys)):
+        restored_match = find_restored_payload(restored, [unit, legacy_unit])
+        if restored_match is not None:
+            # Read pre-schema resume records, then write only the shared opaque
+            # identity for all newly completed work.
+            _, payload = restored_match
+            results[pos] = payload["output"]
             skipped += 1
             continue
         # Interop: a pre-existing lm-eval `_rank<R>.db` may already hold this
@@ -269,7 +365,11 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
         cached = self._interop_lookup(req)
         if cached is not None:
             results[pos] = cached
-            manager.record(unit, {"output": cached})
+            if request_entries[pos] is not None:
+                manager.record(
+                    unit,
+                    {"output": cached, "sample": request_entries[pos].to_dict()},
+                )
             interop_hits += 1
             continue
         remaining_reqs.append(req)
@@ -288,22 +388,33 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
 
     if remaining_reqs:
         new_outputs = self.lm.generate_until(remaining_reqs, *args, **kwargs)
+        self._sample_manifest.validate_output_count(len(remaining_reqs), new_outputs)
         for pos, req, output in zip(remaining_positions, remaining_reqs, new_outputs):
             results[pos] = output
-            manager.record(keys[pos], {"output": output})
+            if request_entries[pos] is not None:
+                manager.record(
+                    keys[pos],
+                    {"output": output, "sample": request_entries[pos].to_dict()},
+                )
 
     manager.finalize()
+    self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
     return results
 
 
-def resume_simple_evaluate(simple_evaluate_fn, *, resume_manager_factory=None, **kwargs):
+def resume_simple_evaluate(
+    simple_evaluate_fn,
+    *,
+    resume_manager_factory=None,
+    sample_manifest: SampleManifest | None = None,
+    **kwargs,
+):
     """Thin wrapper around lm-eval `simple_evaluate` that wires the ResumeManager.
 
-    Flag-off invariant (global #1): when ``resume_manager_factory`` is None (the
-    default — nothing attaches it before Stage 4) this is **exactly**
-    ``simple_evaluate_fn(**kwargs)``. The gsm8k path is byte-identical to today and
-    no ``resume/`` dir is written. The wrapper LM is constructed only when a manager
-    is active.
+    With neither a resume manager nor a sample manifest this remains an exact
+    passthrough for callers outside the evaluation driver. The driver always
+    supplies a manifest, so every lm-eval request crosses the same identity and
+    coverage boundary as custom benchmarks without writing resume state.
 
     When a factory is provided, it is called as ``factory(task_name) -> ResumeManager``
     (the manager already knows its run_dir / mode / fingerprint). We construct the LM
@@ -316,7 +427,7 @@ def resume_simple_evaluate(simple_evaluate_fn, *, resume_manager_factory=None, *
     never skips, never writes); we still pass the wrapped LM but its manager records
     nothing, so behavior matches today (the manager is inert).
     """
-    if resume_manager_factory is None:
+    if resume_manager_factory is None and sample_manifest is None:
         # No manager — verbatim passthrough. Byte-identical to today (invariant #1).
         return simple_evaluate_fn(**kwargs)
 
@@ -349,15 +460,28 @@ def resume_simple_evaluate(simple_evaluate_fn, *, resume_manager_factory=None, *
 
     # gsm8k is a single task in the lm-eval-native path; name the unit by it.
     task_name = tasks[0] if tasks else "lm_eval"
-    manager = resume_manager_factory(task_name)
+    manager = resume_manager_factory(task_name) if resume_manager_factory is not None else None
+    sample_manifest = sample_manifest or SampleManifest(task_name)
 
     # Legacy lm-eval `_rank<R>.db` for READ-only interop (decision #5).
     interop_db = None
     if use_cache is not None:
-        interop_db = use_cache + "_rank" + str(getattr(lm, "rank", 0)) + ".db"
+        cache_db = use_cache + "_rank" + str(getattr(lm, "rank", 0)) + ".db"
+        if manager is None:
+            # Keep stock lm-eval caching inside the manifest wrapper so cache
+            # hits are still observed as generated sample units.
+            lm = lm_eval.api.model.CachingLM(lm, cache_db)
+        else:
+            interop_db = cache_db
 
     ResumeCachingLM = _make_resume_caching_lm_cls()
-    wrapped = ResumeCachingLM(lm, manager, task_name, interop_db=interop_db)
+    wrapped = ResumeCachingLM(
+        lm,
+        manager,
+        task_name,
+        sample_manifest,
+        interop_db=interop_db,
+    )
     # Pass the wrapped LM as a pre-initialized model object; upstream will NOT re-wrap
     # in CachingLM because we drop `use_cache` (the manager supersedes it).
     return simple_evaluate_fn(model=wrapped, **kwargs)

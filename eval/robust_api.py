@@ -17,11 +17,10 @@ eval: the served model was healthy (a 200 payload-probe returned coherent math),
 transient async request error aborted the whole gsm8k gather.
 
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
-prevents one exhausted request from aborting the batch. It returns a stable,
-human-readable infrastructure-error marker instead of lm-eval's empty-generation
-placeholder, so artifacts distinguish a request failure from a genuine empty model
-completion. Retries themselves are unchanged (the tenacity wrapper is preserved
-verbatim inside the guard).
+prevents one exhausted request from cancelling its siblings. It collects a stable,
+human-readable infrastructure-error marker, waits for the whole batch to settle, then
+raises a typed terminal failure before lm-eval can score or cache the batch. Retries
+themselves are unchanged (the tenacity wrapper is preserved verbatim inside the guard).
 
 Only the *generative* path (``generate=True`` -> ``generate_until``) is softened; the
 loglikelihood path (``generate=False``) re-raises exactly as before, because turning a
@@ -40,6 +39,12 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from threading import Lock
+from typing import Iterator
 
 from eval.completion_response import (
     CompletionClassification,
@@ -47,7 +52,9 @@ from eval.completion_response import (
     CompletionText,
     completion_response_from_chat_choice,
 )
-from eval.limits import preflight_endpoint_generation
+from eval.contracts.failures import EndpointBatchFailure, FailureCategory
+from eval.generation_stops import bounded_request_stops
+from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
 
@@ -59,6 +66,53 @@ _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
+ENDPOINT_FAILURE_CATEGORIES = (
+    FailureCategory.MODEL_TRANSPORT,
+    FailureCategory.MALFORMED_MODEL_RESPONSE,
+)
+_active_failure_capture: ContextVar["EndpointFailureCapture | None"] = ContextVar(
+    "evalchemy_endpoint_failure_capture",
+    default=None,
+)
+
+
+@dataclass
+class EndpointFailureCapture:
+    """Task-scoped terminal endpoint failures collected across async requests."""
+
+    counts: Counter[FailureCategory] = field(default_factory=Counter)
+    _lock: Lock = field(default_factory=Lock)
+
+    def record(self, category: FailureCategory, count: int) -> None:
+        if category not in ENDPOINT_FAILURE_CATEGORIES:
+            raise ValueError(f"not an endpoint failure category: {category}")
+        with self._lock:
+            self.counts[category] += count
+
+    def primary_failure(self) -> tuple[FailureCategory, int] | None:
+        """Return the highest-priority terminal failure captured for this task."""
+        for category in ENDPOINT_FAILURE_CATEGORIES:
+            if count := self.counts[category]:
+                return category, count
+        return None
+
+
+@contextmanager
+def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
+    """Isolate terminal endpoint failures to one task invocation."""
+    capture = EndpointFailureCapture()
+    token = _active_failure_capture.set(capture)
+    try:
+        yield capture
+    finally:
+        _active_failure_capture.reset(token)
+
+
+def record_endpoint_failure(category: FailureCategory, count: int = 1) -> None:
+    """Record an endpoint failure without turning it into benchmark text."""
+    capture = _active_failure_capture.get()
+    if capture is not None:
+        capture.record(category, count)
 
 
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
@@ -83,6 +137,22 @@ def request_failure_placeholder(exc: BaseException) -> str:
     return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
 
 
+def contains_request_failure(value: object) -> bool:
+    """Return whether a generation/result tree contains a terminal request marker."""
+    return count_request_failures(value) > 0
+
+
+def count_request_failures(value: object) -> int:
+    """Count terminal endpoint markers in a nested generation/result tree."""
+    if isinstance(value, str):
+        return int(value.startswith(_REQUEST_FAILURE_PREFIX))
+    if isinstance(value, Mapping):
+        return sum(count_request_failures(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return sum(count_request_failures(item) for item in value)
+    return 0
+
+
 def openai_model_requires_fixed_generation(model: object) -> bool:
     """Return whether an official OpenAI model rejects stops and temperature zero."""
     return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
@@ -99,11 +169,10 @@ def apply() -> bool:
         import asyncio
 
         from aiohttp import ClientSession, ClientTimeout, TCPConnector
-        from tenacity import retry, stop_after_attempt, wait_exponential
-        from tqdm.asyncio import tqdm_asyncio
-
         from lm_eval.models import api_models as _api
         from lm_eval.models.utils import chunks
+        from tenacity import retry, stop_after_attempt, wait_exponential
+        from tqdm.asyncio import tqdm_asyncio
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("robust_api: could not import lm-eval async deps (%r); patch skipped.", exc)
         return False
@@ -162,18 +231,15 @@ def apply() -> bool:
                         # upstream fail-fast behavior.
                         raise
                     n = len(message) if hasattr(message, "__len__") else 1
+                    record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
                     placeholder = request_failure_placeholder(exc)
                     logger.error(
-                        "Request failed after all retries; returning an infrastructure-error "
+                        "Request failed after all retries; recording an infrastructure-error "
                         "marker for %d prompt(s) (placeholder=%r). Cause: %r",
                         n,
                         placeholder,
                         exc,
                     )
-                    # Cache the failure markers so a --use_cache resume does not re-issue them.
-                    if cache_key:
-                        for ck in cache_key:
-                            self.cache_hook.add_partial("generate_until", ck, placeholder)
                     return [placeholder] * n
 
             tasks = []
@@ -195,7 +261,9 @@ def apply() -> bool:
                             gen_kwargs=kwargs.get("gen_kwargs"),
                             context_length=self.max_length + 1 if self.max_length is not None else None,
                         )
-                    except Exception as exc:  # noqa: BLE001 - refuse deterministic overflow before transport
+                    except ContextWindowExceededError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - add request-preflight context
                         raise ValueError(f"endpoint context preflight failed: {exc}") from exc
                     if bounded is not None:
                         request_kwargs["gen_kwargs"] = bounded
@@ -207,7 +275,10 @@ def apply() -> bool:
                             self.max_length + 1,
                         )
                 tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
-            return await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            if failure_count := count_request_failures(outputs):
+                raise EndpointBatchFailure(failure_count)
+            return outputs
 
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
@@ -319,6 +390,7 @@ def apply_completion_normalization() -> bool:
                     )
             except (IndexError, KeyError, TypeError, ValueError) as exc:
                 # Preserve lm-eval's content-filter fallback for malformed choices.
+                record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
                 logger.warning("completion normalization: could not parse generation (%s)", exc)
                 parsed = [""]
             generated.extend(parsed)
@@ -345,6 +417,8 @@ def apply_completion_normalization() -> bool:
                 total,
                 dict(self.completion_response_summary),
             )
+        if completion_response_quality_invalid(classifications):
+            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
         if self.completion_response_quality_invalid:
             logger.error(
                 "completion normalization: result quality is invalid because at least half of responses lacked final content"
@@ -360,18 +434,81 @@ def apply_completion_normalization() -> bool:
 
 
 def apply_openai_payload_controls() -> bool:
-    """Restrict OpenAI-specific generation controls to anchored OpenAI model names."""
+    """Bound API stops and restrict OpenAI-specific controls to OpenAI models."""
     try:
-        from lm_eval.models.openai_completions import OpenAIChatCompletion
+        from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
         from lm_eval.models.utils import handle_stop_sequences
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("OpenAI payload controls: could not import lm-eval adapter (%r); patch skipped.", exc)
         return False
 
-    if getattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False):
+    if (
+        getattr(LocalCompletionsAPI, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+        and getattr(LocalChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+        and getattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, False)
+    ):
         return True
 
-    def _create_payload(
+    original_completions_payload = LocalCompletionsAPI._create_payload
+    original_local_chat_payload = LocalChatCompletion._create_payload
+    original_openai_chat_payload = OpenAIChatCompletion._create_payload
+
+    def _bounded_generation_kwargs(gen_kwargs, eos, default_until=None):
+        request_kwargs = dict(gen_kwargs or {})
+        until = request_kwargs.get("until", default_until)
+        stop = handle_stop_sequences(list(until) if isinstance(until, list) else until, eos)
+        request_kwargs["until"] = bounded_request_stops(stop)
+        return request_kwargs
+
+    def _create_local_payload(
+        self,
+        messages,
+        generate=False,
+        gen_kwargs=None,
+        seed=1234,
+        eos=None,
+        **kwargs,
+    ):
+        return original_local_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
+
+    def _create_completions_payload(
+        self,
+        messages,
+        generate=False,
+        gen_kwargs=None,
+        seed=1234,
+        eos=None,
+        **kwargs,
+    ):
+        if not generate:
+            return original_completions_payload(
+                self,
+                messages,
+                generate=generate,
+                gen_kwargs=gen_kwargs,
+                seed=seed,
+                eos=eos,
+                **kwargs,
+            )
+        return original_completions_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
+
+    def _create_openai_payload(
         self,
         messages,
         generate=False,
@@ -380,31 +517,33 @@ def apply_openai_payload_controls() -> bool:
         eos="<|endoftext|>",
         **kwargs,
     ):
-        assert type(messages) is not str, "chat-completions require the --apply_chat_template flag."
-        request_kwargs = dict(gen_kwargs or {})
-        request_kwargs.pop("do_sample", False)
-        max_tokens = request_kwargs.pop("max_tokens", request_kwargs.pop("max_gen_toks", self._max_gen_toks))
-        temperature = request_kwargs.pop("temperature", 0)
-        stop = handle_stop_sequences(request_kwargs.pop("until", ["<|endoftext|>"]), eos)
-        if not isinstance(stop, (list, tuple)):
-            stop = [stop]
-        payload = {
-            "messages": messages,
-            "model": self.model,
-            "max_completion_tokens": max_tokens,
-            "temperature": temperature,
-            "stop": stop[:4],
-            "seed": seed,
-            **request_kwargs,
-        }
+        request_kwargs = _bounded_generation_kwargs(gen_kwargs, eos, ["<|endoftext|>"])
+        selected_stops = list(request_kwargs["until"])
+        temperature = request_kwargs.get("temperature", 0)
+        payload = original_openai_chat_payload(
+            self,
+            messages,
+            generate=generate,
+            gen_kwargs=request_kwargs,
+            seed=seed,
+            eos=None,
+            **kwargs,
+        )
         if openai_model_requires_fixed_generation(self.model):
-            payload.pop("stop")
+            payload.pop("stop", None)
             payload["temperature"] = 1
+        else:
+            payload["stop"] = selected_stops
+            payload["temperature"] = temperature
         return payload
 
-    OpenAIChatCompletion._create_payload = _create_payload
+    LocalCompletionsAPI._create_payload = _create_completions_payload
+    LocalChatCompletion._create_payload = _create_local_payload
+    OpenAIChatCompletion._create_payload = _create_openai_payload
+    setattr(LocalCompletionsAPI, _OPENAI_PAYLOAD_PATCH_FLAG, True)
+    setattr(LocalChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, True)
     setattr(OpenAIChatCompletion, _OPENAI_PAYLOAD_PATCH_FLAG, True)
-    logger.info("OpenAI payload controls: patched GPT-5 family matching.")
+    logger.info("OpenAI payload controls: patched bounded stop selection and GPT-5 family matching.")
     return True
 
 

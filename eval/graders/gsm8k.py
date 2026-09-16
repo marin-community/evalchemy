@@ -7,8 +7,8 @@ the reference answer.
 
 The task defines two filters over the same metric, and both are reproduced:
 ``strict-match`` reads the ``#### <number>`` line the few-shot targets end
-with, and ``flexible-extract`` falls back to the last number anywhere in the
-completion.
+with, and ``flexible-extract`` falls back to the last number before a shared
+next-turn boundary.
 
 Extraction is a single regex in both the reference and here, so the cost that
 can be removed is in the metric. ``exact_match_hf_evaluate`` runs its four
@@ -21,6 +21,8 @@ trailing newline.
 """
 
 import re
+
+from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
 
 FALLBACK = "[invalid]"
 _FINAL_ANSWER_MARKER = "#### "
@@ -39,12 +41,12 @@ def extract_strict_match(solution: str) -> str:
 
 
 def extract_flexible(solution: str) -> str:
-    """Read the last number anywhere in the completion, or ``FALLBACK`` if absent.
+    """Read the last number before a next-turn boundary, or ``FALLBACK`` if absent.
 
     The reference pattern has two alternated groups, so ``findall`` yields
     tuples and the filter keeps the first non-empty group of the last match.
     """
-    matches = _FLEXIBLE_EXTRACT.findall(solution)
+    matches = _FLEXIBLE_EXTRACT.findall(truncate_at_stop(solution, GSM8K_STOP_SEQUENCES))
     if not matches:
         return FALLBACK
     groups = [group for group in matches[-1] if group]

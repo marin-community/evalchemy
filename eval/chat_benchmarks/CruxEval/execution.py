@@ -5,7 +5,7 @@ import multiprocessing
 import os
 import platform
 import signal
-import random
+import shutil
 import subprocess
 import tempfile
 import gzip
@@ -21,6 +21,46 @@ php_exec = ""
 cs_exec = ""
 
 
+def _unsafe_execute(sample, language_type, timeout, result_connection):
+    result = "timed out"
+    if "python" in language_type.lower():
+        with create_tempdir():
+            # These system calls are needed when cleaning up tempdir.
+            rmtree = shutil.rmtree
+            rmdir = os.rmdir
+            chdir = os.chdir
+
+            # Disable functionalities that can make destructive changes to the test.
+            reliability_guard()
+
+            try:
+                exec_globals = {}
+                with swallow_io():
+                    with time_limit(timeout):
+                        # WARNING
+                        # This program exists to execute untrusted model-generated code. Although
+                        # it is highly unlikely that model-generated code will do something overtly
+                        # malicious in response to this test suite, model-generated code may act
+                        # destructively due to a lack of model capability or alignment.
+                        # Users are strongly encouraged to sandbox this evaluation suite so that it
+                        # does not perform destructive actions on their host or network.
+                        exec(sample["test_code"], exec_globals)
+                    result = "passed"
+            except TimeoutException:
+                result = "timed out"
+            except AssertionError:
+                result = "failed: AssertionError"
+            except BaseException as e:
+                result = f"failed: {e}"
+            # Needed for cleaning up.
+            shutil.rmtree = rmtree
+            os.rmdir = rmdir
+            os.chdir = chdir
+
+    result_connection.send(result)
+    result_connection.close()
+
+
 def check_correctness(
     task_id: str,
     sample: dict,
@@ -34,64 +74,24 @@ def check_correctness(
     suite provided in the problem.
     """
 
-    def unsafe_execute(tmp_dir):
-        random_id = random.randint(1, 100000)
-        if "python" in language_type.lower():
-            with create_tempdir():
-                # These system calls are needed when cleaning up tempdir.
-                import os
-                import shutil
+    context = multiprocessing.get_context("spawn")
+    result_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(target=_unsafe_execute, args=(sample, language_type, timeout, child_connection))
+    process.start()
+    child_connection.close()
+    process.join(timeout=timeout + 1)
+    if process.is_alive():
+        process.kill()
+        process.join()
 
-                rmtree = shutil.rmtree
-                rmdir = os.rmdir
-                chdir = os.chdir
-
-                # Disable functionalities that can make destructive changes to the test.
-                reliability_guard()
-
-                try:
-                    exec_globals = {}
-                    with swallow_io():
-                        with time_limit(timeout):
-                            # WARNING
-                            # This program exists to execute untrusted model-generated code. Although
-                            # it is highly unlikely that model-generated code will do something overtly
-                            # malicious in response to this test suite, model-generated code may act
-                            # destructively due to a lack of model capability or alignment.
-                            # Users are strongly encouraged to sandbox this evaluation suite so that it
-                            # does not perform destructive actions on their host or network.
-                            # Once you have read this disclaimer and taken appropriate precautions,
-                            # uncomment the following line and proceed at your own risk:
-                            exec(sample["test_code"], exec_globals)
-                        result.append("passed")
-                except TimeoutException:
-                    result.append("timed out")
-                except AssertionError as e:
-                    result.append(f"failed: AssertionError")
-                except BaseException as e:
-                    result.append(f"failed: {e}")
-                # Needed for cleaning up.
-                shutil.rmtree = rmtree
-                os.rmdir = rmdir
-                os.chdir = chdir
-
-    manager = multiprocessing.Manager()
-    result = manager.list()
-
-    p = multiprocessing.Process(target=unsafe_execute, args=(tmp_dir,))
-    p.start()
-    p.join(timeout=timeout + 1)
-    if p.is_alive():
-        p.kill()
-
-    if not result:
-        result.append("timed out")
+    result = result_connection.recv() if process.exitcode == 0 and result_connection.poll() else "timed out"
+    result_connection.close()
 
     return {
         "task_id": task_id,
         "completion_id": completion_id,
-        "result": result[0],
-        "passed": result[0] == "passed",
+        "result": result,
+        "passed": result == "passed",
         "finish": -1 if "finish" not in sample else sample["finish"],
         "code": sample["test_code"],
     }

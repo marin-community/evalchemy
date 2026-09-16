@@ -275,6 +275,7 @@ class CodeEloBenchmark(BaseBenchmark):
         # Evaluate each set of completions separately
         all_metrics = []
         run_stats = []
+        correct_by_repeat = []
         num_questions = len(responses["examples"])
 
         for repeat_idx, examples in examples_by_repeat.items():
@@ -341,6 +342,9 @@ class CodeEloBenchmark(BaseBenchmark):
                     "accuracy": total_correct / total_finish,
                 }
             )
+            correct_by_repeat.append([result["correctness"] for result, _ in results])
+
+        self.record_repeated_accuracy(responses["examples"], correct_by_repeat)
 
         final_metrics = {}
 

@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.constants import AUTO_ANNOTATOR_MODEL
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 from .judge import judge_all
@@ -28,6 +30,7 @@ Provide a direct, concise answer."""
 # ``gpt-4o-mini`` is the standard cheap-and-fast judge across the evalchemy LLM-judged
 # benchmarks (HLE / MixEval / WildBench / MTBench).
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
+DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 
 
 class FinanceBenchBenchmark(BaseBenchmark):
@@ -46,13 +49,11 @@ class FinanceBenchBenchmark(BaseBenchmark):
     Grading is LLM-as-judge (SimpleQA-style correct / incorrect / not_attempted) rather
     than exact match, because financial answers frequently differ from the gold only in
     formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). See ``judge.py``.
+    The judge uses ``JUDGE_API_KEY`` and optional ``JUDGE_BASE_URL`` credentials that
+    are separate from the candidate endpoint's ``OPENAI_API_KEY``.
 
     Link: https://github.com/patronus-ai/financebench
     """
-
-    # FinanceBench's judge is an OpenAI chat model, so this benchmark is skipped at load
-    # time when ``OPENAI_API_KEY`` is unset (TaskManager gates on this attribute).
-    REQUIRES_OPENAI_ANNOTATOR = True
 
     def __init__(
         self,
@@ -63,6 +64,8 @@ class FinanceBenchBenchmark(BaseBenchmark):
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 4096,
         annotator_model: Optional[str] = None,
+        judge_api_key: Optional[str] = None,
+        judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
     ):
@@ -76,8 +79,12 @@ class FinanceBenchBenchmark(BaseBenchmark):
             seed: Random seed for reproducibility (deterministic at temperature 0).
             max_tokens: Max generation tokens. 4096 by default -- factual Q&A answers
                 are short, but the prompt's document context can be long.
-            annotator_model: Override the judge model. Falls back to ``$JUDGE_MODEL`` and
-                then ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
+            annotator_model: Override the judge model. The CLI's ``auto`` sentinel is
+                treated as unset, then falls back to ``$JUDGE_MODEL`` and finally
+                ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
+            judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
+            judge_base_url: OpenAI-compatible judge endpoint. Falls back to
+                ``$JUDGE_BASE_URL`` and then the OpenAI API.
             logger: Optional logger instance.
             system_instruction: Optional system instruction for the model.
         """
@@ -86,10 +93,13 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
+        self.judge_api_key = judge_api_key or os.environ.get("JUDGE_API_KEY")
+        if not self.judge_api_key:
+            raise ValueError("JUDGE_API_KEY is required by FinanceBench")
+        self.judge_base_url = judge_base_url or os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
         # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
-        self.judge_model = (
-            annotator_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
-        )
+        explicit_judge_model = annotator_model if annotator_model not in (None, AUTO_ANNOTATOR_MODEL) else None
+        self.judge_model = explicit_judge_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -102,7 +112,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
             Dictionary containing the examples enriched with ``model_output``, or None
             for non-primary ranks.
         """
-        examples = self.load_questions()
+        examples = self.limit_samples(self.load_questions())
 
         all_instances = []
         for idx, example in enumerate(examples):
@@ -157,7 +167,14 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.logger.info(
             f"Judging {total} FinanceBench responses with {judge_model}..."
         )
-        judgments = asyncio.run(judge_all(examples, judge_model))
+        judgments = asyncio.run(
+            judge_all(
+                examples,
+                judge_model,
+                api_key=self.judge_api_key,
+                base_url=self.judge_base_url,
+            )
+        )
 
         num_correct = 0
         num_incorrect = 0
@@ -165,6 +182,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
         for example, (label, raw) in zip(examples, judgments):
             example["judge_label"] = label
             example["judge_raw"] = raw
+            record_sample_metrics(example, accuracy=label == "correct", not_attempted=label == "not_attempted")
             if label == "correct":
                 num_correct += 1
             elif label == "not_attempted":

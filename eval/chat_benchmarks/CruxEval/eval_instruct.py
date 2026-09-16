@@ -11,6 +11,7 @@ from lm_eval.api.model import LM
 import re
 import itertools
 
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
 from .evaluation import evaluate_generations
@@ -133,6 +134,9 @@ class CruxEvalBenchmark(BaseBenchmark):
     CruxEval benchmark for evaluating code generation capabilities across different languages.
     """
 
+    DO_SAMPLE = True
+    TEMPERATURE = 0.2
+
     def __init__(
         self,
         data_dir: str = CruxEval_PATH,
@@ -201,13 +205,7 @@ class CruxEvalBenchmark(BaseBenchmark):
 
                 formatted_inputs = []
                 for example in examples:
-                    code = example["code"]
-                    inp = example["input"]
-                    output = example["output"]
-                    if task == "input":
-                        task_prompt = make_cot_input_prompt((code, output))
-                    else:
-                        task_prompt = make_cot_output_prompt((code, inp))
+                    task_prompt = self._prompt_for_task(example, task)
                     inputs = self._prepare_messages([{"role": "user", "content": task_prompt}], model)
                     formatted_inputs.append(inputs)
 
@@ -219,8 +217,8 @@ class CruxEvalBenchmark(BaseBenchmark):
                                 inputs,
                                 {
                                     "max_new_tokens": self.max_tokens,
-                                    "do_sample": True,
-                                    "temperature": 0.2,
+                                    "do_sample": self.DO_SAMPLE,
+                                    "temperature": self.TEMPERATURE,
                                 },
                             ),
                             example["id"],
@@ -229,7 +227,7 @@ class CruxEvalBenchmark(BaseBenchmark):
 
                 self.logger.info(f"Generating responses for CruxEval-{task}...")
 
-                outputs = self.compute(model, all_instances)
+                outputs = self.compute(model, all_instances, sample_namespace=task)
                 if model.rank != 0:
                     continue
 
@@ -309,6 +307,10 @@ class CruxEvalBenchmark(BaseBenchmark):
                     tmp_dir=temp_dir,
                 )
 
+                pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
+                for example in results[task]:
+                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
+
                 for metric, value in result.items():
                     evaluation_results[f"{task}_{metric}"] = value
 
@@ -321,6 +323,35 @@ class CruxEvalBenchmark(BaseBenchmark):
 
         temp_dir_obj.cleanup()
         return evaluation_results
+
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> list[Dict[str, Any]]:
+        """Serialize both CruxEval directions as auditable sample records."""
+        examples = []
+        for task in self.tasks:
+            for example in (generation_result or {}).get(task, []):
+                sample = dict(example)
+                sample["cruxeval_task"] = task
+                sample["function_output"] = example["output"]
+                sample["prompt"] = self._prompt_for_task(example, task)
+                if task == "input":
+                    sample["answer"] = example["input"]
+                else:
+                    sample["answer"] = example["output"]
+                examples.append(sample)
+
+        return super().to_samples({"examples": examples}, scored_result)
+
+    def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        kwargs = super()._sample_gen_kwargs(example)
+        kwargs.setdefault("max_new_tokens", self.max_tokens)
+        kwargs.update({"do_sample": self.DO_SAMPLE, "temperature": self.TEMPERATURE})
+        return kwargs
+
+    @staticmethod
+    def _prompt_for_task(example: Dict[str, Any], task: str) -> str:
+        if task == "input":
+            return make_cot_input_prompt((example["code"], example["output"]))
+        return make_cot_output_prompt((example["code"], example["input"]))
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

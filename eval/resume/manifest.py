@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Sequence, Tuple
 
 # A unit key is a small JSON-serializable dict, e.g. {"task": "MATH500", "problem_idx": 17}
 # or {"task": "MATH500", "batch_idx": 3} for pass@k. We canonicalize it to a hashable tuple
@@ -34,6 +34,23 @@ def canonical_unit_key(unit: Dict[str, Any]) -> UnitKey:
 
 def unit_key_to_dict(key: UnitKey) -> Dict[str, Any]:
     return {k: v for k, v in key}
+
+
+def find_restored_payload(
+    restored: Mapping[UnitKey, Dict[str, Any]],
+    candidate_units: Sequence[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]] | None:
+    """Find the first JSON-hashable current or legacy unit in restored state."""
+    for unit in candidate_units:
+        key = canonical_unit_key(unit)
+        try:
+            hash(key)
+        except TypeError:
+            continue
+        payload = restored.get(key)
+        if payload is not None:
+            return unit, payload
+    return None
 
 
 @dataclass

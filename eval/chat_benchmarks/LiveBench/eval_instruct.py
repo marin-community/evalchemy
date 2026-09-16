@@ -165,13 +165,13 @@ class LiveBenchBenchmark(BaseBenchmark):
             if answer_file not in all_choices:
                 all_choices[answer_file] = {}
             all_choices[answer_file][idx] = [{"index": i, "turns": []} for i in range(self.num_choices)]
-        all_instances = []
         max_turns = max(len(q["turns"]) for q, _ in questions)
         if model.rank == 0:
             tqdm_gen = tqdm(range(self.num_choices * max_turns * len(questions)))
         for choice_num in range(self.num_choices):
             all_convs = [get_conversation_template(model_name) for _ in questions]
             for turn_num in range(max_turns):
+                all_instances = []
                 for idx, (question, answer_file) in enumerate(questions):
                     if turn_num < len(question["turns"]):
                         qs = question["turns"][turn_num]
@@ -199,6 +199,7 @@ class LiveBenchBenchmark(BaseBenchmark):
                                 idx,
                             )
                         )
+                        all_instances[-1].repeat_idx = choice_num
                     if model.rank == 0:
                         tqdm_gen.update(1)
                         tqdm_gen.set_description(f"Generating {choice_num} {turn_num} {idx}")

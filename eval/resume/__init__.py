@@ -22,6 +22,7 @@ from .manifest import (
     ManifestWriter,
     UnitState,
     canonical_unit_key,
+    find_restored_payload,
     read_manifest,
     unit_key_to_dict,
 )
@@ -36,5 +37,6 @@ __all__ = [
     "UnitState",
     "read_manifest",
     "canonical_unit_key",
+    "find_restored_payload",
     "unit_key_to_dict",
 ]

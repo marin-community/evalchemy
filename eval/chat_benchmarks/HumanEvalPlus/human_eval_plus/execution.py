@@ -1,17 +1,17 @@
 import contextlib
 import faulthandler
+import gzip
 import io
+import json
 import multiprocessing
 import os
 import platform
-import signal
 import random
+import signal
 import subprocess
 import tempfile
-import gzip
-import json
-from typing import *
 import traceback
+from typing import *
 
 java_exec = ""
 node_exec = ""
@@ -561,10 +561,14 @@ def check_correctness(
             os.chdir(origin_path)
             shutil.rmtree(tmp_dir)
 
-    manager = multiprocessing.Manager()
+    # The evaluator invokes this function in a spawned, single-threaded worker.
+    # Use fork only for the short-lived inner sandbox so the local target remains
+    # usable without inheriting the evaluator driver's threads or file locks.
+    context = multiprocessing.get_context("fork")
+    manager = context.Manager()
     result = manager.list()
 
-    p = multiprocessing.Process(target=unsafe_execute, args=(tmp_dir,))
+    p = context.Process(target=unsafe_execute, args=(tmp_dir,))
     p.start()
     p.join(timeout=timeout + 1)
     if p.is_alive():

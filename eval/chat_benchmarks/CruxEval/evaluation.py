@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import numpy as np
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from .execution import check_correctness
 import json
 import argparse
@@ -138,4 +139,8 @@ def evaluate_generations(
     else:
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
+    # Per-task outcomes so the caller can record per-sample metrics.
+    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
+        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    }
     return pass_at_k

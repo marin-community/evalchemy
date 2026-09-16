@@ -1,16 +1,19 @@
+import gzip
+import itertools
+import json
+import multiprocessing
 import os
 import sys
-import fire
-import json
-import gzip
-import regex
-import numpy as np
-import itertools
-
-from typing import *
-from tqdm.auto import tqdm
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import *
+
+import fire
+import numpy as np
+import regex
+from tqdm.auto import tqdm
+
+from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from .data import stream_jsonl
 from .execution import check_correctness
 
@@ -206,7 +209,12 @@ def evaluate_functional_correctness(
     problems = read_dataset(problem_file, dataset_type="humaneval")
     sample_jsonl = stream_jsonl_all(input_file)
 
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+    # check_correctness starts a child process for every completion. Running it
+    # from threads makes those forks race with process-wide descriptor owners
+    # such as filelock. Spawn top-level workers so each sandbox is launched by
+    # a single-threaded process instead.
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=context) as executor:
         futures = []
         completion_id = Counter()
         n_samples = 0
@@ -280,4 +288,9 @@ def evaluate_functional_correctness(
     else:
         print("Total:", np.sum(total))
         print("Correct:", np.sum(correct))
+    pass_at_k["scored_count"] = int(np.sum(total))
+    # Per-task outcomes so the caller can record per-sample metrics.
+    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
+        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    }
     return pass_at_k
