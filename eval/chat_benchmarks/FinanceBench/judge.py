@@ -8,7 +8,6 @@ is then aggregated into accuracy. Adapted from the HLE judge
 """
 
 import asyncio
-import re
 from typing import Any, Dict, List, Tuple
 
 from openai import AsyncOpenAI
@@ -34,8 +33,7 @@ Predicted answer: {predicted}
 
 Judgment:"""
 
-# How hard to scrub the judge's free-form text down to a label.
-_LABEL_PATTERN = re.compile(r"correct|incorrect|not_attempted", re.IGNORECASE)
+_JUDGE_LABELS = frozenset({"correct", "incorrect", "not_attempted"})
 
 # Concurrency for the async judge fan-out. The OpenAI chat-completions endpoint is I/O
 # bound, so a modest semaphore keeps throughput high without tripping rate limits.
@@ -46,20 +44,10 @@ JUDGE_TOKEN_BUDGETS = (128, 512, 2048)
 
 
 def _parse_judgment(text: str) -> str:
-    """Reduce the judge's free-form text to one of the three labels (lowercased).
-
-    The judge is prompted to emit a bare label, but in practice models occasionally wrap
-    it in prose ("The answer is correct.") or capitalization; pull the first label token
-    out so a chatty judge is still scored. Responses without a label are infrastructure
-    failures and must not be recorded as model errors.
-    """
-    match = _LABEL_PATTERN.search(text)
-    if match is None:
+    """Normalize an exact supported label or reject the judge response."""
+    label = text.strip().lower()
+    if label not in _JUDGE_LABELS:
         raise ValueError(f"unrecognized FinanceBench judgment: {text!r}")
-    label = match.group(0).lower()
-    # ``not_attempted`` contains the substring "attempted" and ``incorrect`` contains
-    # ``correct``; prefer the longest label match at this position by checking the
-    # match's actual span rather than a naive substring test.
     return label
 
 
@@ -77,9 +65,7 @@ async def judge_answer(
     completion (kept for debugging / per-sample audit). Judge transport and response
     failures propagate so infrastructure errors cannot be recorded as model errors.
     """
-    prompt = JUDGE_PROMPT.format(
-        question=question, gold=gold_answer, predicted=predicted_answer
-    )
+    prompt = JUDGE_PROMPT.format(question=question, gold=gold_answer, predicted=predicted_answer)
     for max_tokens in JUDGE_TOKEN_BUDGETS:
         response = await client.chat.completions.create(
             model=judge_model,
