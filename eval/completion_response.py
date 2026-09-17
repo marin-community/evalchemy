@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping
 
+from eval.contracts.failures import FailureCategory
+
 
 class CompletionContentPolicy(StrEnum):
     """Select which completion fields are exposed to benchmark scorers."""
@@ -21,6 +23,15 @@ class CompletionClassification(StrEnum):
     REASONING_ONLY = "reasoning_only"
     REASONING_ONLY_TRUNCATED = "reasoning_only_truncated"
     EMPTY = "empty"
+
+
+MISSING_FINAL_CLASSIFICATIONS = frozenset(
+    {
+        CompletionClassification.REASONING_ONLY,
+        CompletionClassification.REASONING_ONLY_TRUNCATED,
+        CompletionClassification.EMPTY,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -63,12 +74,8 @@ class CompletionResponse:
     def artifact(self, policy: CompletionContentPolicy | str = CompletionContentPolicy.COMBINE) -> dict[str, Any]:
         """Return the auditable response fields for a sample artifact."""
         failure_category = self.failure_category
-        if failure_category is None and self.classification in {
-            CompletionClassification.REASONING_ONLY,
-            CompletionClassification.REASONING_ONLY_TRUNCATED,
-            CompletionClassification.EMPTY,
-        }:
-            failure_category = "malformed_model_response"
+        if failure_category is None and self.classification in MISSING_FINAL_CLASSIFICATIONS:
+            failure_category = FailureCategory.MALFORMED_MODEL_RESPONSE.value
         return {
             "content": self.content,
             "reasoning_content": self.reasoning_content,

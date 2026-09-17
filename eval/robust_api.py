@@ -45,6 +45,7 @@ from eval.completion_response import (
     CompletionResponse,
     CompletionText,
     FailedGeneration,
+    MISSING_FINAL_CLASSIFICATIONS,
     completion_response_from_chat_choice,
 )
 from eval.contracts.failures import FailureCategory
@@ -58,8 +59,6 @@ _ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
-_REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
-_MAX_REQUEST_FAILURE_DETAIL = 512
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 ENDPOINT_FAILURE_CATEGORIES = (
@@ -120,21 +119,9 @@ def completion_response_quality_invalid(classifications: Counter[CompletionClass
     total = sum(classifications.values())
     missing_final = sum(
         classifications[classification]
-        for classification in (
-            CompletionClassification.REASONING_ONLY,
-            CompletionClassification.REASONING_ONLY_TRUNCATED,
-            CompletionClassification.EMPTY,
-        )
+        for classification in MISSING_FINAL_CLASSIFICATIONS
     )
     return total > 0 and missing_final / total >= 0.5
-
-
-def request_failure_placeholder(exc: BaseException) -> str:
-    """Return a bounded diagnostic marker for an exhausted endpoint request."""
-    detail = " ".join(str(exc).split())
-    if detail:
-        detail = f": {detail[:_MAX_REQUEST_FAILURE_DETAIL]}"
-    return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
 
 
 def openai_model_requires_fixed_generation(model: object) -> bool:
@@ -242,12 +229,9 @@ def apply() -> bool:
                         raise
                     n = len(message) if hasattr(message, "__len__") else 1
                     record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
-                    placeholder = request_failure_placeholder(exc)
                     logger.error(
-                        "Request failed after all retries; recording an empty generation "
-                        "for %d prompt(s) (%s). Cause: %r",
+                        "Request failed after all retries; recording an empty generation for %d prompt(s). Cause: %r",
                         n,
-                        placeholder,
                         exc,
                     )
                     return [FailedGeneration(FailureCategory.MODEL_TRANSPORT.value) for _ in range(n)]
@@ -432,11 +416,7 @@ def apply_completion_normalization() -> bool:
         record_completion_responses(classifications)
         missing_final = sum(
             classifications[classification]
-            for classification in (
-                CompletionClassification.REASONING_ONLY,
-                CompletionClassification.REASONING_ONLY_TRUNCATED,
-                CompletionClassification.EMPTY,
-            )
+            for classification in MISSING_FINAL_CLASSIFICATIONS
         )
         already_classified = sum(response.failure_category is not None for response in parsed_responses)
         if missing_final > already_classified:
