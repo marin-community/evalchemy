@@ -82,7 +82,7 @@ def test_runner_argv_preserves_shipped_evaluation_behavior():
         "--model",
         LOCAL_CHAT_COMPLETIONS,
         "--model_args",
-        "model=Qwen/Qwen3-0.6B,base_url=http://endpoint/v1/chat/completions,tokenizer_backend=huggingface,tokenized_requests=False,tokenizer=Qwen/Qwen3-0.6B,num_concurrent=1,timeout=120,max_retries=3",
+        "model=Qwen/Qwen3-0.6B,base_url=http://endpoint/v1/chat/completions,tokenizer_backend=none,tokenized_requests=False,trust_remote_code=True,num_concurrent=1,timeout=120,max_retries=3",
         "--tasks",
         "gsm8k",
         "--apply_chat_template",

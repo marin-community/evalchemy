@@ -172,16 +172,19 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
         # Loglikelihood scoring slices echoed logprobs at lm-eval's local token
         # boundary. The completions endpoint must therefore receive those exact
         # token IDs; a text round trip can retokenize a leading-space target.
-        # Chat requests are message objects and stay text-based.
-        "tokenizer_backend": "huggingface",
+        # Chat requests are message objects; the server applies its own chat
+        # template, so loading a second tokenizer on the client is unnecessary.
+        "tokenizer_backend": "none" if adapter == LOCAL_CHAT_COMPLETIONS else "huggingface",
         "tokenized_requests": adapter == LOCAL_COMPLETIONS,
+        # The served checkpoint may use custom tokenizer code too.
+        "trust_remote_code": True,
     }
     if served.api_key is not None:
         args["api_key"] = served.api_key
-    if served.tokenizer is not None:
-        args["tokenizer"] = served.tokenizer
     if extra:
         args.update(extra)
+    if served.tokenizer is not None and args["tokenizer_backend"] == "huggingface" and "tokenizer" not in args:
+        args["tokenizer"] = served.tokenizer
     return ",".join(f"{k}={_model_arg(v)}" for k, v in args.items())
 
 

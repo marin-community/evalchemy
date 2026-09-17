@@ -92,7 +92,7 @@ jobs:
           uv run --python 3.12 --extra dev
           --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
           --extra ifeval --extra mrcr --extra serve-eval
-          pytest tests/contracts/ -q
+          python -m pytest tests/contracts/ -q
 
   lean-install:
     # Guard the lean (torch-free) base install: the wheel builds, the `eval` console

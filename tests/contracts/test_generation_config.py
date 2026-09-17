@@ -6,10 +6,13 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import transformers
 import yaml
 from lm_eval import evaluator
+from lm_eval.utils import simple_parse_args_string
 from lm_eval.api.instance import Instance
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
 from lm_eval.tasks import TaskManager
@@ -18,6 +21,8 @@ from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.contracts.sample_manifest import SampleManifest
 from eval.resume.lm_eval_native import resume_simple_evaluate
 from eval.robust_api import configure_generation_overrides
+from eval.serve_eval.providers import ServedModel
+from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
 
 
 class _Endpoint(BaseHTTPRequestHandler):
@@ -58,6 +63,48 @@ def _model(endpoint, model_class):
         tokenizer_backend=None,
         tokenized_requests=False,
     )
+
+
+@pytest.mark.parametrize(
+    "checkpoint",
+    ["moonshotai/Kimi-Linear-48B-A3B-Instruct", "google/gemma-4-26B-A4B-it"],
+)
+def test_served_chat_checkpoint_generates_without_client_tokenizer(endpoint, checkpoint, monkeypatch):
+    def reject_local_tokenizer(*_args, **_kwargs):
+        raise AssertionError("chat evaluation must use the server's tokenizer")
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", reject_local_tokenizer)
+    served = ServedModel(
+        base_url=f"http://127.0.0.1:{endpoint.server_port}/v1",
+        model=checkpoint,
+        tokenizer=checkpoint,
+    )
+    model = LocalChatCompletion(**simple_parse_args_string(build_model_args(served, LOCAL_CHAT_COMPLETIONS)))
+    request = Instance("generate_until", {"question": "Question"}, ([{"role": "user", "content": "Question"}], {}), 0)
+
+    assert model.generate_until([request]) == ["\\boxed{42}"]
+    assert endpoint.requests[0]["model"] == checkpoint
+    assert endpoint.requests[0]["messages"] == [{"role": "user", "content": "Question"}]
+
+
+def test_served_completions_loads_custom_tokenizer_with_remote_code(monkeypatch):
+    def load_custom_tokenizer(_checkpoint, *, trust_remote_code, **_kwargs):
+        if not trust_remote_code:
+            raise ValueError("custom tokenizer requires trust_remote_code=True")
+
+        class Tokenizer:
+            pad_token_id = 0
+
+            def __call__(self, _text, **_kwargs):
+                return SimpleNamespace(input_ids=[1, 2])
+
+        return Tokenizer()
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", load_custom_tokenizer)
+    served = ServedModel(base_url="http://127.0.0.1:8000/v1", model="custom/checkpoint", tokenizer="custom/checkpoint")
+    model = LocalCompletionsAPI(**simple_parse_args_string(build_model_args(served, LOCAL_COMPLETIONS)))
+
+    assert model.tok_encode("Hello") == [1, 2]
 
 
 def _assert_temperature_and_seed(payload, expected):
