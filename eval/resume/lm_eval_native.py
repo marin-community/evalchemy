@@ -33,6 +33,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+from eval.robust_api import configure_generation_overrides, parse_generation_overrides
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
@@ -457,6 +458,11 @@ def resume_simple_evaluate(
             )
     else:
         lm = model
+
+    overrides = parse_generation_overrides(kwargs.get("gen_kwargs"))
+    if overrides:
+        kwargs["gen_kwargs"] = overrides
+    configure_generation_overrides(lm, overrides)
 
     # gsm8k is a single task in the lm-eval-native path; name the unit by it.
     task_name = tasks[0] if tasks else "lm_eval"
