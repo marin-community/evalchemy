@@ -21,9 +21,10 @@ from datasets import Dataset, load_dataset
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .grader import evaluate_accuracy
+from .grader import PER_PROMPT_OUTCOMES, evaluate_accuracy
 
 
 class IFBenchBenchmark(BaseBenchmark):
@@ -140,6 +141,7 @@ class IFBenchBenchmark(BaseBenchmark):
         return {
             "temp_dir_obj": temp_dir_obj,
             "output_path": output_path,
+            "examples": generated,
             "num_examples": len(generated),
             "total_examples": len(questions),
         }
@@ -160,6 +162,24 @@ class IFBenchBenchmark(BaseBenchmark):
         temp_dir_obj = results["temp_dir_obj"]
         try:
             result = evaluate_accuracy(results["output_path"])
+            per_prompt = result.pop(PER_PROMPT_OUTCOMES)
+            examples = results["examples"]
+            if len(per_prompt) != len(examples):
+                raise ValueError("IFBench grader returned incomplete per-prompt outcomes")
+            for example, graded in zip(examples, per_prompt):
+                if graded["prompt"] != example["prompt"]:
+                    raise ValueError("IFBench grader changed prompt order")
+                strict_flags = graded["strict_instruction_pass"]
+                loose_flags = graded["loose_instruction_pass"]
+                example["strict_instruction_pass"] = strict_flags
+                example["loose_instruction_pass"] = loose_flags
+                record_sample_metrics(
+                    example,
+                    strict_prompt_accuracy=all(strict_flags),
+                    loose_prompt_accuracy=all(loose_flags),
+                    strict_instruction_accuracy=sum(strict_flags) / len(strict_flags),
+                    loose_instruction_accuracy=sum(loose_flags) / len(loose_flags),
+                )
             result.update(
                 {
                     "num_examples": results["num_examples"],
@@ -170,6 +190,19 @@ class IFBenchBenchmark(BaseBenchmark):
             return result
         finally:
             temp_dir_obj.cleanup()
+
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        samples = super().to_samples(generation_result, scored_result)
+        for sample, example in zip(samples, generation_result["examples"]):
+            sample["strict_instruction_pass"] = example["strict_instruction_pass"]
+            sample["loose_instruction_pass"] = example["loose_instruction_pass"]
+        return samples
+
+    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        doc = super()._sample_doc(example)
+        doc.pop("strict_instruction_pass", None)
+        doc.pop("loose_instruction_pass", None)
+        return doc
 
     def run_benchmark(self, model: LM) -> Dict[str, Any]:
         """Run the complete IFBench evaluation pipeline.

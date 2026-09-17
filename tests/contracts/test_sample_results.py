@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import json
 import tempfile
+from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from eval.contracts.grading import GenerationArtifactManifest
+from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
 from eval.contracts.sample_results import (
     SAMPLE_METRICS_FIELD,
     SampleMetricsError,
@@ -34,12 +37,10 @@ CUSTOM_BENCHMARK_ROOT = Path("eval/chat_benchmarks")
 
 NO_SAMPLE_RECORDS = frozenset(
     {
-        # These benchmarks return no ``examples`` from ``generate_responses``, so
-        # ``to_samples`` yields nothing and ``--log_samples`` already fails the task
-        # before any per-sample metric could be persisted.
+        # These benchmarks return no examples for the sample writer. The driver
+        # retains their aggregate score and logs the missing sample records.
         "BigCodeBench",
         "HumanEval",
-        "IFBench",
         "LiveBench",
         "MTBench",
         "MixEval",
@@ -207,6 +208,25 @@ def _ifeval_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCas
     }
 
 
+def _ifbench_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
+    del tmp_path
+    benchmark = _load_benchmark("IFBench")
+    passing = {
+        "key": 0,
+        "prompt": "Reply without whitespace.",
+        "instruction_id_list": ["format:no_whitespace"],
+        "kwargs": [{}],
+    }
+    failing = {
+        "key": 1,
+        "prompt": "Reply with one word and no whitespace.",
+        "instruction_id_list": ["format:no_whitespace"],
+        "kwargs": [{}],
+    }
+    monkeypatch.setattr(benchmark, "load_questions", lambda: [passing, failing])
+    return benchmark, benchmark.generate_responses(_IFBenchModel())
+
+
 class _AnsweringModel:
     """Minimal ``LM`` stand-in that answers every request with the gold value."""
 
@@ -220,6 +240,20 @@ class _AnsweringModel:
     @staticmethod
     def generate_until(instances):
         return ["[ANSWER] 2 [/ANSWER]" for _ in instances]
+
+
+class _IFBenchModel:
+    rank = 0
+    world_size = 1
+
+    @staticmethod
+    def apply_chat_template(messages):
+        return messages
+
+    @staticmethod
+    def generate_until(instances):
+        assert len(instances) == 2
+        return ["NoWhitespace", "two words"]
 
 
 GRADING_CASES: dict[str, GradingCase] = {
@@ -298,6 +332,15 @@ GRADING_CASES: dict[str, GradingCase] = {
     ),
     "HumanEvalPlus": GradingCase(_humanevalplus_case, ("pass_rate",)),
     "IFEval": GradingCase(_ifeval_case, ("prompt_level_strict", "prompt_level_loose")),
+    "IFBench": GradingCase(
+        _ifbench_case,
+        (
+            "strict_prompt_accuracy",
+            "loose_prompt_accuracy",
+            "strict_instruction_accuracy",
+            "loose_instruction_accuracy",
+        ),
+    ),
     "JEEBench": GradingCase(
         _examples_case(
             "JEEBench",
@@ -390,6 +433,41 @@ def test_graded_benchmark_samples_persist_their_per_sample_metrics(task_name, mo
     for record in records:
         assert set(record[SAMPLE_METRICS_FIELD]) == set(case.metrics)
         assert all(isinstance(record[name], float) for name in case.metrics)
+
+
+def test_ifbench_sample_contains_per_instruction_results(monkeypatch, tmp_path):
+    benchmark, generation_result = _ifbench_case(monkeypatch, tmp_path)
+
+    scored_result = benchmark.evaluate_responses(generation_result)
+    records = canonicalize_samples("IFBench", benchmark.to_samples(generation_result, scored_result))
+
+    assert scored_result["strict_prompt_accuracy"] == 0.5
+    assert scored_result["loose_prompt_accuracy"] == 0.5
+    assert [record["strict_instruction_pass"] for record in records] == [[True], [False]]
+    assert [record["loose_instruction_pass"] for record in records] == [[True], [False]]
+    assert [record["strict_instruction_accuracy"] for record in records] == [1.0, 0.0]
+    assert [record["resps"] for record in records] == [[["NoWhitespace"]], [["two words"]]]
+    assert all("strict_instruction_pass" not in record["doc"] for record in records)
+
+
+def test_ifbench_scores_and_logs_samples_through_evaluation_driver(monkeypatch, tmp_path):
+    benchmark, generation_result = _ifbench_case(monkeypatch, tmp_path)
+    monkeypatch.setattr(benchmark, "generate_responses", lambda _model: generation_result)
+    custom_tasks = SimpleNamespace(tasks={"IFBench": benchmark}, get_benchmark=lambda _task: benchmark)
+
+    result = evaluate(
+        lm=SimpleNamespace(rank=0, world_size=1),
+        task_manager=custom_tasks,
+        pretrain_task_manager=SimpleNamespace(all_tasks={}),
+        task_list=["IFBench"],
+        task_routes={"IFBench": CHAT_BENCHMARK_ROUTE},
+        batch_sizes_list=[1],
+        args=Namespace(model="local-chat-completions", log_samples=True),
+    )
+
+    assert result["results"]["IFBench"]["loose_prompt_accuracy"] == 0.5
+    assert len(result["samples"]["IFBench"]) == 2
+    assert result["task_outcomes"]["IFBench"]["status"] == "succeeded"
 
 
 def test_a_sample_set_missing_its_metrics_is_rejected_at_the_serialization_boundary():

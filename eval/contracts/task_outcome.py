@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from numbers import Real
 from typing import Any, Literal
@@ -55,6 +55,8 @@ class TaskOutcome:
     generated_count: int | None
     scored_count: int | None
     failure: TaskFailure | None = None
+    failure_counts: Mapping[FailureCategory, int] = field(default_factory=dict)
+    completion_response_summary: Mapping[str, int] = field(default_factory=dict)
     schema_version: Literal[1] = TASK_OUTCOME_SCHEMA_VERSION
 
     @classmethod
@@ -94,11 +96,13 @@ class TaskOutcome:
             "generated_count": self.generated_count,
             "scored_count": self.scored_count,
             "failure": asdict(self.failure) if self.failure is not None else None,
+            "failure_counts": dict(self.failure_counts),
+            "completion_response_summary": dict(self.completion_response_summary),
         }
 
 
 class EvaluationRunError(RuntimeError):
-    """Raised when any requested task lacks a successful terminal outcome."""
+    """Raised when a result package has missing or invalid outcome evidence."""
 
     def __init__(self, outcomes: Sequence[TaskOutcome]):
         self.outcomes = tuple(outcomes)
@@ -223,7 +227,7 @@ def exported_task_outcome(task_name: str, route: TaskRoute, generation_result: A
 
 
 def validate_requested_outcomes(requested_tasks: Sequence[str], outcomes: Sequence[TaskOutcome]) -> None:
-    """Require exactly one non-failed outcome for every requested task."""
+    """Require one outcome for each task while allowing reported task failures."""
     by_task: dict[str, list[TaskOutcome]] = {}
     for outcome in outcomes:
         by_task.setdefault(outcome.task_name, []).append(outcome)
@@ -250,7 +254,7 @@ def validate_requested_outcomes(requested_tasks: Sequence[str], outcomes: Sequen
                 )
             )
 
-    if any(outcome.status is TaskStatus.FAILED for outcome in completed):
+    if len(completed) != len(outcomes):
         raise EvaluationRunError(completed)
 
 
@@ -316,10 +320,41 @@ def _task_outcome_from_mapping(task_name: str, value: Any) -> TaskOutcome:
     metrics = value.get("metrics")
     if not isinstance(metrics, Mapping):
         raise TypeError("task outcome metrics must be a mapping")
+    failure_value = value.get("failure")
     if status is TaskStatus.FAILED:
-        raise ValueError("failed task outcome cannot be persisted")
-    if value.get("failure") is not None:
+        if not isinstance(failure_value, Mapping):
+            raise ValueError("failed task outcome has no failure detail")
+        try:
+            failure = TaskFailure(
+                category=FailureCategory(failure_value["category"]),
+                message=failure_value["message"],
+                exception_type=failure_value.get("exception_type"),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("failed task outcome has invalid failure detail") from exc
+        if not isinstance(failure.message, str) or not failure.message:
+            raise ValueError("failed task outcome has no failure message")
+        if failure.exception_type is not None and not isinstance(failure.exception_type, str):
+            raise ValueError("failed task outcome has invalid exception type")
+    elif failure_value is not None:
         raise ValueError("completed task outcome contains a failure")
+    else:
+        failure = None
+    raw_failure_counts = value.get("failure_counts", {})
+    if not isinstance(raw_failure_counts, Mapping):
+        raise TypeError("task outcome failure_counts must be a mapping")
+    try:
+        failure_counts = {FailureCategory(category): count for category, count in raw_failure_counts.items()}
+    except ValueError as exc:
+        raise ValueError("task outcome has an unknown failure category") from exc
+    if any(not isinstance(count, int) or isinstance(count, bool) or count <= 0 for count in failure_counts.values()):
+        raise ValueError("task outcome failure counts must be positive integers")
+    response_summary = value.get("completion_response_summary", {})
+    if not isinstance(response_summary, Mapping) or any(
+        not isinstance(name, str) or not isinstance(count, int) or isinstance(count, bool) or count <= 0
+        for name, count in response_summary.items()
+    ):
+        raise ValueError("task outcome completion_response_summary must contain positive counts")
     outcome = TaskOutcome(
         task_name=task_name,
         route=route,
@@ -328,7 +363,9 @@ def _task_outcome_from_mapping(task_name: str, value: Any) -> TaskOutcome:
         expected_count=_serialized_count(value, "expected_count"),
         generated_count=_serialized_count(value, "generated_count"),
         scored_count=_serialized_count(value, "scored_count"),
-        failure=None,
+        failure=failure,
+        failure_counts=failure_counts,
+        completion_response_summary=dict(response_summary),
     )
     if violation := _outcome_contract_violation(outcome):
         raise ValueError(violation.message)
@@ -392,7 +429,11 @@ def _adapt_completed_outcome(
 
 def _outcome_contract_violation(outcome: TaskOutcome) -> TaskFailure | None:
     if outcome.status is TaskStatus.FAILED:
-        return outcome.failure or TaskFailure(FailureCategory.INVALID_RESULT, "failed outcome has no failure detail")
+        if outcome.failure is None:
+            return TaskFailure(FailureCategory.INVALID_RESULT, "failed outcome has no failure detail")
+        if outcome.metrics:
+            return TaskFailure(FailureCategory.INVALID_RESULT, "failed outcome contains metrics")
+        return None
     if outcome.failure is not None:
         return TaskFailure(FailureCategory.INVALID_RESULT, "completed task outcome contains a failure")
     if outcome.status is TaskStatus.EXPORTED:

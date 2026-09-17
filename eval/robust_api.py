@@ -12,19 +12,11 @@ entire eval batch** -- a single bad/slow/5xx request nukes the whole run. (In lm
 ``except`` logging path; v0.4.12 fixed the masking via ``locals().get('outputs', ...)``
 but the batch-abort itself remains.)
 
-This is exactly the failure that blocked the Grug 67B-A2B ``local-completions`` math
-eval: the served model was healthy (a 200 payload-probe returned coherent math), yet one
-transient async request error aborted the whole gsm8k gather.
-
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
-prevents one exhausted request from cancelling its siblings. It collects a stable,
-human-readable infrastructure-error marker, waits for the whole batch to settle, then
-raises a typed terminal failure before lm-eval can score or cache the batch. Retries
-themselves are unchanged (the tenacity wrapper is preserved verbatim inside the guard).
-
-Only the *generative* path (``generate=True`` -> ``generate_until``) is softened; the
-loglikelihood path (``generate=False``) re-raises exactly as before, because turning a
-failed logprob request into a placeholder would silently corrupt scoring.
+prevents one exhausted generation request from cancelling its siblings. It supplies
+an empty response with a classified failure, then lets scoring finish. Retries
+remain unchanged. Loglikelihood requests still propagate errors because an empty
+logprob cannot be scored.
 
 Import for side effect (idempotent):
 
@@ -39,20 +31,23 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator
 
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES
+
 from eval.completion_response import (
     CompletionClassification,
     CompletionContentPolicy,
+    CompletionResponse,
     CompletionText,
+    FailedGeneration,
     completion_response_from_chat_choice,
 )
-from eval.contracts.failures import EndpointBatchFailure, FailureCategory
+from eval.contracts.failures import FailureCategory
 from eval.generation_stops import bounded_request_stops
 from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
@@ -79,9 +74,10 @@ _active_failure_capture: ContextVar["EndpointFailureCapture | None"] = ContextVa
 
 @dataclass
 class EndpointFailureCapture:
-    """Task-scoped terminal endpoint failures collected across async requests."""
+    """Task-scoped endpoint failures and response classes for result reporting."""
 
     counts: Counter[FailureCategory] = field(default_factory=Counter)
+    response_summary: Counter[CompletionClassification] = field(default_factory=Counter)
     _lock: Lock = field(default_factory=Lock)
 
     def record(self, category: FailureCategory, count: int) -> None:
@@ -90,17 +86,14 @@ class EndpointFailureCapture:
         with self._lock:
             self.counts[category] += count
 
-    def primary_failure(self) -> tuple[FailureCategory, int] | None:
-        """Return the highest-priority terminal failure captured for this task."""
-        for category in ENDPOINT_FAILURE_CATEGORIES:
-            if count := self.counts[category]:
-                return category, count
-        return None
+    def record_responses(self, classifications: Counter[CompletionClassification]) -> None:
+        with self._lock:
+            self.response_summary.update(classifications)
 
 
 @contextmanager
 def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
-    """Isolate terminal endpoint failures to one task invocation."""
+    """Isolate endpoint diagnostics to one task invocation."""
     capture = EndpointFailureCapture()
     token = _active_failure_capture.set(capture)
     try:
@@ -110,10 +103,16 @@ def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
 
 
 def record_endpoint_failure(category: FailureCategory, count: int = 1) -> None:
-    """Record an endpoint failure without turning it into benchmark text."""
+    """Record an endpoint failure for the task outcome."""
     capture = _active_failure_capture.get()
     if capture is not None:
         capture.record(category, count)
+
+
+def record_completion_responses(classifications: Counter[CompletionClassification]) -> None:
+    capture = _active_failure_capture.get()
+    if capture is not None:
+        capture.record_responses(classifications)
 
 
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
@@ -131,27 +130,11 @@ def completion_response_quality_invalid(classifications: Counter[CompletionClass
 
 
 def request_failure_placeholder(exc: BaseException) -> str:
-    """Return the artifact marker for an endpoint request that exhausted retries."""
+    """Return a bounded diagnostic marker for an exhausted endpoint request."""
     detail = " ".join(str(exc).split())
     if detail:
         detail = f": {detail[:_MAX_REQUEST_FAILURE_DETAIL]}"
     return f"{_REQUEST_FAILURE_PREFIX} {type(exc).__name__}{detail}"
-
-
-def contains_request_failure(value: object) -> bool:
-    """Return whether a generation/result tree contains a terminal request marker."""
-    return count_request_failures(value) > 0
-
-
-def count_request_failures(value: object) -> int:
-    """Count terminal endpoint markers in a nested generation/result tree."""
-    if isinstance(value, str):
-        return int(value.startswith(_REQUEST_FAILURE_PREFIX))
-    if isinstance(value, Mapping):
-        return sum(count_request_failures(item) for item in value.values())
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return sum(count_request_failures(item) for item in value)
-    return 0
 
 
 def openai_model_requires_fixed_generation(model: object) -> bool:
@@ -227,7 +210,7 @@ def apply() -> bool:
         """Resilient mirror of lm-eval v0.4.12 ``TemplateAPI.get_batched_requests``.
 
         Identical to upstream except each per-request task is wrapped in a guard: a
-        request that exhausts its retries returns an infrastructure-error marker
+        request that exhausts its retries returns an empty classified generation
         rather than propagating out of ``gather`` and aborting the batch.
         """
         ctxlens = ctxlens if ctxlens else [None] * len(requests)
@@ -261,15 +244,16 @@ def apply() -> bool:
                     record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
                     placeholder = request_failure_placeholder(exc)
                     logger.error(
-                        "Request failed after all retries; recording an infrastructure-error "
-                        "marker for %d prompt(s) (placeholder=%r). Cause: %r",
+                        "Request failed after all retries; recording an empty generation "
+                        "for %d prompt(s) (%s). Cause: %r",
                         n,
                         placeholder,
                         exc,
                     )
-                    return [placeholder] * n
+                    return [FailedGeneration(FailureCategory.MODEL_TRANSPORT.value) for _ in range(n)]
 
             tasks = []
+            skipped_preflight_logged = False
             for message, cache_key, ctxlen in zip(
                 chunks(requests, n=self._batch_size),
                 chunks(cache_keys, n=self._batch_size),
@@ -294,6 +278,18 @@ def apply() -> bool:
                         raise ValueError(f"endpoint context preflight failed: {exc}") from exc
                     if bounded is not None:
                         request_kwargs["gen_kwargs"] = bounded
+                    if (
+                        self.tokenizer is None
+                        and self.max_length is not None
+                        and prompt_tokens is None
+                        and bounded is not None
+                        and any(alias in bounded for alias in MAX_OUTPUT_ALIASES)
+                        and not skipped_preflight_logged
+                    ):
+                        logger.warning(
+                            "endpoint context preflight skipped prompt-length check: no client tokenizer"
+                        )
+                        skipped_preflight_logged = True
                     if prompt_tokens is not None and effective_cap is not None:
                         logger.info(
                             "endpoint context preflight: largest_prompt=%d, max_output=%d, context=%d",
@@ -303,13 +299,11 @@ def apply() -> bool:
                         )
                 tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
             outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
-            if failure_count := count_request_failures(outputs):
-                raise EndpointBatchFailure(failure_count)
             return outputs
 
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
-    logger.info("robust_api: patched TemplateAPI.get_batched_requests (single-request errors leave markers).")
+    logger.info("robust_api: patched TemplateAPI.get_batched_requests (failed requests yield classified empty text).")
     return True
 
 
@@ -402,25 +396,53 @@ def apply_completion_normalization() -> bool:
     def parse_generations(self, outputs, **kwargs):
         if not isinstance(outputs, list):
             outputs = [outputs]
+        response_start = len(self.completion_responses)
         generated = []
         for output in outputs:
             try:
                 choices = output["choices"]
                 parsed = [None] * len(choices)
+                parsed_responses = []
                 for choice in choices:
                     completion = completion_response_from_chat_choice(output, choice)
-                    self.completion_responses.append(completion)
                     parsed[choice["index"]] = CompletionText(
                         completion.normalized_content(self.completion_content_policy),
                         completion,
                         self.completion_content_policy,
                     )
+                    parsed_responses.append(completion)
+                self.completion_responses.extend(parsed_responses)
             except (IndexError, KeyError, TypeError, ValueError) as exc:
-                # Preserve lm-eval's content-filter fallback for malformed choices.
                 record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
                 logger.warning("completion normalization: could not parse generation (%s)", exc)
-                parsed = [""]
+                completion = CompletionResponse(
+                    content=None,
+                    reasoning_content=None,
+                    finish_reason=None,
+                    usage=None,
+                    provider_metadata={},
+                    raw_choice={},
+                    failure_category=FailureCategory.MALFORMED_MODEL_RESPONSE.value,
+                )
+                self.completion_responses.append(completion)
+                parsed = [CompletionText("", completion, self.completion_content_policy)]
             generated.extend(parsed)
+        parsed_responses = self.completion_responses[response_start:]
+        classifications = Counter(response.classification for response in parsed_responses)
+        record_completion_responses(classifications)
+        missing_final = sum(
+            classifications[classification]
+            for classification in (
+                CompletionClassification.REASONING_ONLY,
+                CompletionClassification.REASONING_ONLY_TRUNCATED,
+                CompletionClassification.EMPTY,
+            )
+        )
+        already_classified = sum(response.failure_category is not None for response in parsed_responses)
+        if missing_final > already_classified:
+            missing_count = missing_final - already_classified
+            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE, missing_count)
+            logger.warning("completion normalization: %d responses lacked final content", missing_count)
         return generated
 
     def generate_until(self, requests, *args, **kwargs):
@@ -444,11 +466,9 @@ def apply_completion_normalization() -> bool:
                 total,
                 dict(self.completion_response_summary),
             )
-        if completion_response_quality_invalid(classifications):
-            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
         if self.completion_response_quality_invalid:
-            logger.error(
-                "completion normalization: result quality is invalid because at least half of responses lacked final content"
+            logger.warning(
+                "completion normalization: at least half of responses lacked final content"
             )
         return generated
 

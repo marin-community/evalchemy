@@ -9,6 +9,14 @@ as-is.
 This is the runner; it prints scores. Gating a run against a checked-in threshold spec
 is the regression gate's job — see `eval/regression/`.
 
+The saved `results_*.json` includes one `task_outcomes` entry per requested task.
+Each entry records its status, coverage, classified task failure (if any),
+`failure_counts` for endpoint failures, and `completion_response_summary` for chat
+responses. A failed task is retained in the package without a score; a malformed
+response within a scored task remains an empty sample with `failure_category` in
+its sample record. Evalchemy completes the other tasks and leaves the acceptance
+decision to the caller or regression gate.
+
 ## Install
 
 ```bash
@@ -53,6 +61,9 @@ flags and `E2E_*` env vars override it). Two providers:
 Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
 `tokenizer_backend=none,tokenized_requests=False`. The endpoint applies its chat
 template, so chat evaluation does not load the checkpoint's tokenizer in the client.
+With no client tokenizer, Evalchemy logs that prompt-length preflight was skipped
+and sends the requested generation cap unchanged. The endpoint remains responsible
+for enforcing its context window on those requests.
 Plain completions use a local tokenizer and token-ID prompts so lm-eval's continuation
 boundary stays aligned with the endpoint's echoed logprobs. The runner allows custom
 tokenizer code on that path (`trust_remote_code=True`); set
