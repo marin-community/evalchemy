@@ -46,7 +46,12 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator
 
-from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
+from lm_eval.models.openai_completions import (
+    LocalChatCompletion,
+    LocalCompletionsAPI,
+    OpenAIChatCompletion,
+    OpenAICompletionsAPI,
+)
 from lm_eval.utils import simple_parse_args_string
 
 from eval.completion_response import (
@@ -65,6 +70,7 @@ _PATCH_FLAG = "_marin_resilient_batch_patched"
 _ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
+_GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
@@ -163,8 +169,10 @@ def openai_model_requires_fixed_generation(model: object) -> bool:
 
 def configure_generation_overrides(model: object, overrides: dict) -> None:
     """Give endpoint adapters the caller's generation settings, including an empty set."""
-    if type(model) in (LocalCompletionsAPI, LocalChatCompletion):
-        model._evalchemy_generation_overrides = dict(overrides)
+    if isinstance(model, LocalCompletionsAPI) and not isinstance(
+        model, (OpenAICompletionsAPI, OpenAIChatCompletion)
+    ):
+        setattr(model, _GENERATION_OVERRIDES_ATTR, dict(overrides))
 
 
 def parse_generation_overrides(value: str | dict | None) -> dict:
@@ -478,7 +486,7 @@ def apply_openai_payload_controls() -> bool:
         return request_kwargs
 
     def _caller_generation_payload(self, payload):
-        overrides = getattr(self, "_evalchemy_generation_overrides", None)
+        overrides = getattr(self, _GENERATION_OVERRIDES_ATTR, None)
         if overrides is None:
             return payload
         # The task YAML and lm-eval adapter both supply implicit sampling defaults.

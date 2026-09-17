@@ -56,6 +56,7 @@ from eval.contracts.sample_results import (
     sample_metric_fields,
 )
 from eval.contracts.task_outcome import TaskRoute
+from eval.robust_api import parse_generation_overrides
 from eval.passk import estimate_pass_at_k
 
 
@@ -204,8 +205,8 @@ class BaseBenchmark(ABC):
                 config.max_new_token = max_tokens
 
     def set_evaluation_generation_kwargs(self, gen_kwargs: Dict[str, Any]) -> None:
-        """Apply caller generation settings after benchmark request defaults."""
-        self._evaluation_gen_kwargs = dict(gen_kwargs)
+        """Store caller settings for request-time normalization."""
+        self._evaluation_gen_kwargs = parse_generation_overrides(gen_kwargs)
 
     @property
     def evaluation_limit(self) -> Optional[int]:
@@ -536,8 +537,6 @@ class BaseBenchmark(ABC):
                     instance.args[1]["max_gen_toks"] = max_new_tokens
                 else:  # Huggingface
                     instance.args[1]["max_new_tokens"] = max_new_tokens
-            if "temperature" in self._evaluation_gen_kwargs and "do_sample" not in self._evaluation_gen_kwargs:
-                instance.args[1].pop("do_sample", None)
             if self._evaluation_gen_kwargs.get("do_sample") is True and "temperature" not in self._evaluation_gen_kwargs:
                 instance.args[1].pop("temperature", None)
             instance.args[1].update(self._evaluation_gen_kwargs)

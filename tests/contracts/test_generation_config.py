@@ -60,6 +60,14 @@ def _model(endpoint, model_class):
     )
 
 
+def _assert_temperature_and_seed(payload, expected):
+    for key in ("temperature", "seed"):
+        if key in expected:
+            assert payload[key] == expected[key]
+        else:
+            assert key not in payload
+
+
 @pytest.mark.parametrize("model_class", [LocalChatCompletion, LocalCompletionsAPI])
 @pytest.mark.parametrize(
     "overrides, expected",
@@ -94,11 +102,7 @@ def test_native_generation_respects_caller_overrides_at_endpoint(endpoint, model
         sample_manifest=SampleManifest("example"),
     ) == ["\\boxed{42}"]
     payload = endpoint.requests[0]
-    for key in ("temperature", "seed"):
-        if key in expected:
-            assert payload[key] == expected[key]
-        else:
-            assert key not in payload
+    _assert_temperature_and_seed(payload, expected)
     if "top_p" in expected:
         assert payload["top_p"] == expected["top_p"]
 
@@ -116,11 +120,7 @@ def test_math500_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_
 
     assert result["examples"][0]["model_output"] == "\\boxed{42}"
     payload = endpoint.requests[0]
-    for key in ("temperature", "seed"):
-        if key in overrides:
-            assert payload[key] == overrides[key]
-        else:
-            assert key not in payload
+    _assert_temperature_and_seed(payload, overrides)
     if "top_p" in overrides:
         assert payload["top_p"] == overrides["top_p"]
     else:
@@ -157,11 +157,7 @@ def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint,
 
     assert "generation_config_probe" in results["results"]
     payload = endpoint.requests[0]
-    for key in ("temperature", "seed"):
-        if key in overrides:
-            assert payload[key] == overrides[key]
-        else:
-            assert key not in payload
+    _assert_temperature_and_seed(payload, overrides)
     assert payload["top_p"] == overrides.get("top_p", 0.4)
 
 
