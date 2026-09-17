@@ -40,6 +40,10 @@ def _write_evaluation_fixture(tmp_path, is_mbpp):
     return problem_file, input_file, sample
 
 
+_EVALUATION_MODULES = [
+    ("eval.chat_benchmarks.HumanEvalPlus.human_eval_plus.evaluation", False),
+    ("eval.chat_benchmarks.MBPPPlus.mbpp_plus.evaluation", True),
+]
 _PLAIN_TEST_CODE = "def answer():\n    return 42\nassert answer() == 42"
 # The evalplus test harness (HumanEvalPlus and MBPPPlus data) starts every test with this
 # import; numpy's first import writes os.environ, which the sandbox's reliability_guard disables.
@@ -62,13 +66,7 @@ def _run_check_in_spawned_worker(check_correctness, tmp_path, is_mbpp, test_code
         ).result()
 
 
-@pytest.mark.parametrize(
-    ("module_path", "is_mbpp"),
-    [
-        ("eval.chat_benchmarks.HumanEvalPlus.human_eval_plus.evaluation", False),
-        ("eval.chat_benchmarks.MBPPPlus.mbpp_plus.evaluation", True),
-    ],
-)
+@pytest.mark.parametrize(("module_path", "is_mbpp"), _EVALUATION_MODULES)
 def test_functional_correctness_checks_run_outside_evaluator_process(
     monkeypatch,
     tmp_path,
@@ -96,30 +94,11 @@ def test_functional_correctness_checks_run_outside_evaluator_process(
     assert int(pid_file.read_text()) != os.getpid()
 
 
-@pytest.mark.parametrize(
-    ("module_path", "is_mbpp"),
-    [
-        ("eval.chat_benchmarks.HumanEvalPlus.human_eval_plus.evaluation", False),
-        ("eval.chat_benchmarks.MBPPPlus.mbpp_plus.evaluation", True),
-    ],
-)
-def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, module_path, is_mbpp):
+@pytest.mark.parametrize(("module_path", "is_mbpp"), _EVALUATION_MODULES)
+@pytest.mark.parametrize("test_code", [_PLAIN_TEST_CODE, _NUMPY_TEST_CODE], ids=["plain", "imports_numpy"])
+def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, module_path, is_mbpp, test_code):
     module = __import__(module_path, fromlist=["evaluation"])
-    result = _run_check_in_spawned_worker(module.check_correctness, tmp_path, is_mbpp, _PLAIN_TEST_CODE)
-
-    assert result["passed"], result["result"]
-
-
-@pytest.mark.parametrize(
-    ("module_path", "is_mbpp"),
-    [
-        ("eval.chat_benchmarks.HumanEvalPlus.human_eval_plus.evaluation", False),
-        ("eval.chat_benchmarks.MBPPPlus.mbpp_plus.evaluation", True),
-    ],
-)
-def test_sandbox_runs_tests_that_import_numpy(tmp_path, module_path, is_mbpp):
-    module = __import__(module_path, fromlist=["evaluation"])
-    result = _run_check_in_spawned_worker(module.check_correctness, tmp_path, is_mbpp, _NUMPY_TEST_CODE)
+    result = _run_check_in_spawned_worker(module.check_correctness, tmp_path, is_mbpp, test_code)
 
     assert result["passed"], result["result"]
 
