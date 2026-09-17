@@ -51,9 +51,13 @@ flags and `E2E_*` env vars override it). Two providers:
   scoped token in the path, so no auth header or SSH tunnel is needed.
 
 Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
-`tokenizer_backend=huggingface,tokenized_requests=False`. Plain completions use token-ID
-prompts so lm-eval's local continuation boundary stays aligned with the endpoint's echoed
-logprobs.
+`tokenizer_backend=none,tokenized_requests=False`. The endpoint applies its chat
+template, so chat evaluation does not load the checkpoint's tokenizer in the client.
+Plain completions use a local tokenizer and token-ID prompts so lm-eval's continuation
+boundary stays aligned with the endpoint's echoed logprobs. The runner allows custom
+tokenizer code on that path (`trust_remote_code=True`); set
+`extra_model_args.trust_remote_code: false` to disable it. Use
+`extra_model_args.tokenizer_backend: huggingface` to load a local tokenizer for chat.
 
 For local chat and completions endpoints, omit `temperature` and `seed` from
 `gen_kwargs` to use the server's generation defaults. Evalchemy leaves those fields

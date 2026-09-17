@@ -51,6 +51,8 @@ _SECONDS_PER_TRIAL = telemetry.gauge("seconds_per_trial", unit="s/trial")
 LOCAL_COMPLETIONS = "local-completions"
 LOCAL_CHAT_COMPLETIONS = "local-chat-completions"
 _ADAPTER_PATH = {LOCAL_COMPLETIONS: "completions", LOCAL_CHAT_COMPLETIONS: "chat/completions"}
+_HUGGINGFACE_TOKENIZER_BACKEND = "huggingface"
+_SERVER_TOKENIZER_BACKEND = "none"
 
 ModelArgValue = Union[str, int, float, bool]
 
@@ -172,16 +174,19 @@ def build_model_args(served: ServedModel, adapter: str, extra: Optional[Dict[str
         # Loglikelihood scoring slices echoed logprobs at lm-eval's local token
         # boundary. The completions endpoint must therefore receive those exact
         # token IDs; a text round trip can retokenize a leading-space target.
-        # Chat requests are message objects and stay text-based.
-        "tokenizer_backend": "huggingface",
+        # Chat requests are message objects; the server applies its own chat
+        # template, so loading a second tokenizer on the client is unnecessary.
+        "tokenizer_backend": _SERVER_TOKENIZER_BACKEND if adapter == LOCAL_CHAT_COMPLETIONS else _HUGGINGFACE_TOKENIZER_BACKEND,
         "tokenized_requests": adapter == LOCAL_COMPLETIONS,
+        # The served checkpoint may use custom tokenizer code too.
+        "trust_remote_code": True,
     }
     if served.api_key is not None:
         args["api_key"] = served.api_key
-    if served.tokenizer is not None:
-        args["tokenizer"] = served.tokenizer
     if extra:
         args.update(extra)
+    if served.tokenizer is not None and args["tokenizer_backend"] == _HUGGINGFACE_TOKENIZER_BACKEND and "tokenizer" not in args:
+        args["tokenizer"] = served.tokenizer
     return ",".join(f"{k}={_model_arg(v)}" for k, v in args.items())
 
 
@@ -252,7 +257,11 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
 @click.option("--provider", type=click.Choice(["marin-serve", "endpoint"]), default="marin-serve")
 @click.option("--config", "config_path", default=_DEFAULT_CONFIG, help="Path to the run config yaml.")
 @click.option("--model", default=None, help="HF model id (or gs:// path) to serve/evaluate.")
-@click.option("--tokenizer", default=None, help="Tokenizer id for lm-eval (defaults to --model).")
+@click.option(
+    "--tokenizer",
+    default=None,
+    help="Tokenizer id for completions; chat uses it only with extra_model_args.tokenizer_backend=huggingface.",
+)
 @click.option("--tasks", default=None, help="Comma-separated task list (overrides config).")
 @click.option(
     "--limit",

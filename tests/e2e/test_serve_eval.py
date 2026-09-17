@@ -88,9 +88,11 @@ def test_model_args_keep_chat_requests_as_text():
     served = ServedModel(base_url="http://127.0.0.1:8000/v1", model="served-model", api_key="k", tokenizer="tok")
     parsed = _parse_model_args(build_model_args(served, LOCAL_CHAT_COMPLETIONS, extra={"num_concurrent": 2}))
     assert parsed["base_url"] == "http://127.0.0.1:8000/v1/chat/completions"
+    assert parsed["tokenizer_backend"] == "none"
+    assert parsed["trust_remote_code"] == "True"
+    assert "tokenizer" not in parsed
     assert parsed["tokenized_requests"] == "False"
     assert parsed["api_key"] == "k"
-    assert parsed["tokenizer"] == "tok"
     assert parsed["num_concurrent"] == "2"
 
 
@@ -108,6 +110,20 @@ def test_model_args_reject_comma_in_value():
     served = ServedModel(base_url="http://h/v1", model="m")
     with pytest.raises(ValueError):
         build_model_args(served, LOCAL_COMPLETIONS, extra={"bad": "a,b"})
+
+
+def test_model_args_allow_explicit_tokenizer_and_remote_code_policy():
+    served = ServedModel(base_url="http://h/v1", model="served", tokenizer="custom-tokenizer")
+    parsed = _parse_model_args(
+        build_model_args(
+            served,
+            LOCAL_CHAT_COMPLETIONS,
+            extra={"tokenizer_backend": "huggingface", "trust_remote_code": False},
+        )
+    )
+    assert parsed["tokenizer_backend"] == "huggingface"
+    assert parsed["tokenizer"] == "custom-tokenizer"
+    assert parsed["trust_remote_code"] == "False"
 
 
 def test_apply_chat_template_flag_is_bare_never_a_value():
