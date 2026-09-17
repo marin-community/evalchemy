@@ -42,7 +42,13 @@ from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
-from eval.robust_api import EndpointFailureCapture, capture_endpoint_failures, contains_request_failure
+from eval.robust_api import (
+    EndpointFailureCapture,
+    capture_endpoint_failures,
+    configure_generation_overrides,
+    contains_request_failure,
+    parse_generation_overrides,
+)
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
@@ -796,6 +802,9 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         num_samples=getattr(args, "num_samples", 1),
         pass_at_k=getattr(args, "pass_at_k", None),
     )
+    generation_overrides = parse_generation_overrides(args.gen_kwargs)
+    for benchmark in task_manager.benchmark_instances.values():
+        benchmark.set_evaluation_generation_kwargs(generation_overrides)
     # Always scan the evalchemy-owned overrides first; a user --include_path is appended
     # last so it still wins (later include paths take precedence).
     _include_paths = [DEFAULT_LM_EVAL_INCLUDE_DIR]
@@ -843,6 +852,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     except Exception as e:
         utils.eval_logger.error(f"Failed to initialize model: {str(e)}")
         sys.exit(1)
+    configure_generation_overrides(lm, generation_overrides)
 
     # Log experiment configuration
     if evaluation_tracker is not None:

@@ -55,6 +55,14 @@ Chat models use `local-chat-completions` + a bare `--apply_chat_template` flag +
 prompts so lm-eval's local continuation boundary stays aligned with the endpoint's echoed
 logprobs.
 
+For local chat and completions endpoints, omit `temperature` and `seed` from
+`gen_kwargs` to use the server's generation defaults. Evalchemy leaves those fields
+out of requests even when a benchmark or lm-eval supplies its own defaults. Values
+passed through `--gen_kwargs` take precedence for both custom and lm-eval tasks;
+for example, `temperature=0.85,top_p=0.95,seed=27`. An explicit
+`do_sample=false` requests greedy decoding. The evaluation `--seed` controls
+local task randomness and does not set the endpoint's request seed.
+
 ## Telemetry
 
 Telemetry is disabled unless a Finelog ingestion URL is provided:

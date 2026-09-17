@@ -62,6 +62,7 @@ _PATCH_FLAG = "_marin_resilient_batch_patched"
 _ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
+_GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _REQUEST_FAILURE_PREFIX = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
 _MAX_REQUEST_FAILURE_DETAIL = 512
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
@@ -156,6 +157,32 @@ def count_request_failures(value: object) -> int:
 def openai_model_requires_fixed_generation(model: object) -> bool:
     """Return whether an official OpenAI model rejects stops and temperature zero."""
     return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
+
+
+def configure_generation_overrides(model: object, overrides: dict) -> None:
+    """Give endpoint adapters the caller's generation settings, including an empty set."""
+    # The runner imports this module without lm-eval installed. Import adapters
+    # only when a model is being configured by the evaluation driver.
+    from lm_eval.models.openai_completions import (
+        LocalCompletionsAPI,
+        OpenAIChatCompletion,
+        OpenAICompletionsAPI,
+    )
+
+    if isinstance(model, LocalCompletionsAPI) and not isinstance(
+        model, (OpenAICompletionsAPI, OpenAIChatCompletion)
+    ):
+        setattr(model, _GENERATION_OVERRIDES_ATTR, dict(overrides))
+
+
+def parse_generation_overrides(value: str | dict | None) -> dict:
+    """Parse caller settings and make temperature decisive for local decoders."""
+    from lm_eval.utils import simple_parse_args_string
+
+    overrides = simple_parse_args_string(value) if isinstance(value, str) else dict(value or {})
+    if "temperature" in overrides and "do_sample" not in overrides:
+        overrides["do_sample"] = float(overrides["temperature"]) > 0
+    return overrides
 
 
 def apply() -> bool:
@@ -460,6 +487,24 @@ def apply_openai_payload_controls() -> bool:
         request_kwargs["until"] = bounded_request_stops(stop)
         return request_kwargs
 
+    def _caller_generation_payload(self, payload):
+        overrides = getattr(self, _GENERATION_OVERRIDES_ATTR, None)
+        if overrides is None:
+            return payload
+        # The task YAML and lm-eval adapter both supply implicit sampling defaults.
+        # Only caller settings should override the serving model's defaults.
+        for key in ("temperature", "seed"):
+            payload.pop(key, None)
+        for key, value in overrides.items():
+            if key == "max_gen_toks":
+                token_key = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+                payload[token_key] = value
+            elif key not in ("do_sample", "until"):
+                payload[key] = value
+        if overrides.get("do_sample") is False and "temperature" not in overrides:
+            payload["temperature"] = 0
+        return payload
+
     def _create_local_payload(
         self,
         messages,
@@ -469,7 +514,7 @@ def apply_openai_payload_controls() -> bool:
         eos=None,
         **kwargs,
     ):
-        return original_local_chat_payload(
+        payload = original_local_chat_payload(
             self,
             messages,
             generate=generate,
@@ -478,6 +523,7 @@ def apply_openai_payload_controls() -> bool:
             eos=None,
             **kwargs,
         )
+        return _caller_generation_payload(self, payload)
 
     def _create_completions_payload(
         self,
@@ -489,7 +535,7 @@ def apply_openai_payload_controls() -> bool:
         **kwargs,
     ):
         if not generate:
-            return original_completions_payload(
+            payload = original_completions_payload(
                 self,
                 messages,
                 generate=generate,
@@ -498,7 +544,8 @@ def apply_openai_payload_controls() -> bool:
                 eos=eos,
                 **kwargs,
             )
-        return original_completions_payload(
+            return _caller_generation_payload(self, payload)
+        payload = original_completions_payload(
             self,
             messages,
             generate=generate,
@@ -507,6 +554,7 @@ def apply_openai_payload_controls() -> bool:
             eos=None,
             **kwargs,
         )
+        return _caller_generation_payload(self, payload)
 
     def _create_openai_payload(
         self,
@@ -535,7 +583,7 @@ def apply_openai_payload_controls() -> bool:
         else:
             payload["stop"] = selected_stops
             payload["temperature"] = temperature
-        return payload
+        return _caller_generation_payload(self, payload)
 
     LocalCompletionsAPI._create_payload = _create_completions_payload
     LocalChatCompletion._create_payload = _create_local_payload
