@@ -13,6 +13,12 @@ import tempfile
 import traceback
 from typing import *
 
+# The evalplus test harness imports numpy inside the sandbox. numpy's first import assigns
+# os.environ entries, which calls os.putenv; reliability_guard() sets os.putenv to None before
+# the test runs. check_correctness executes in a spawned worker that imports only this module,
+# so numpy has to enter sys.modules here, before the sandbox forks.
+import numpy  # noqa: F401
+
 java_exec = ""
 node_exec = ""
 tsc_exec = ""
