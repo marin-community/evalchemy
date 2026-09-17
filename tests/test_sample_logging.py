@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from eval.contracts.sample_results import record_sample_metrics
-from eval.contracts.task_outcome import EvaluationRunError
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
 from eval.task import BaseBenchmark
@@ -192,18 +191,19 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     assert json.loads(artifacts[0].read_text())["task_name"] == "gsm8k"
 
 
-def test_log_samples_unscored_task_fails_evaluation():
+def test_log_samples_unscored_task_reports_failure():
     benchmark = _RecordingBenchmark(
         {"examples": [{"prompt": "x", "response": "y"}]},
         {"error": "grader failed"},
     )
-    with pytest.raises(EvaluationRunError):
-        evaluate(
-            lm=_FakeLM(),
-            task_manager=_CustomTaskManager("IFEval", benchmark),
-            pretrain_task_manager=_EmptyPretrainTaskManager(),
-            task_list=["IFEval"],
-            task_routes={"IFEval": "Evalchemy chat benchmark"},
-            batch_sizes_list=[1],
-            args=_args(),
-        )
+    result = evaluate(
+        lm=_FakeLM(),
+        task_manager=_CustomTaskManager("IFEval", benchmark),
+        pretrain_task_manager=_EmptyPretrainTaskManager(),
+        task_list=["IFEval"],
+        task_routes={"IFEval": "Evalchemy chat benchmark"},
+        batch_sizes_list=[1],
+        args=_args(),
+    )
+    assert result["results"] == {}
+    assert result["task_outcomes"]["IFEval"]["status"] == "failed"

@@ -245,6 +245,14 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
     for task in tasks:
         n = results.sample_count(task)
         lines.append(f"{task}  (samples: {n if n is not None else '?'})")
+        outcome = results.task_outcomes.get(task)
+        if outcome is not None and outcome.failure is not None:
+            lines.append(f"    failure: {outcome.failure.category}: {outcome.failure.message}")
+        if outcome is not None and outcome.failure_counts:
+            failures = ", ".join(
+                f"{category.value}={count}" for category, count in sorted(outcome.failure_counts.items())
+            )
+            lines.append(f"    endpoint failures: {failures}")
         metrics = results.numeric_metrics(task)
         for name in sorted(metrics):
             if "stderr" in name:

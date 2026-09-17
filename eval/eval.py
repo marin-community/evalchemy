@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -46,7 +46,6 @@ from eval.robust_api import (
     EndpointFailureCapture,
     capture_endpoint_failures,
     configure_generation_overrides,
-    contains_request_failure,
     parse_generation_overrides,
 )
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
@@ -131,30 +130,6 @@ def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
     )
 
 
-def _endpoint_failure_outcome(
-    task_name: str,
-    route: TaskRoute,
-    failures: EndpointFailureCapture,
-    result: Any,
-) -> TaskOutcome | None:
-    if primary_failure := failures.primary_failure():
-        category, count = primary_failure
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            category,
-            f"endpoint reported {count} {category.value} failure(s)",
-        )
-    if contains_request_failure(result):
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.MODEL_TRANSPORT,
-            "generation result contains a terminal endpoint request failure",
-        )
-    return None
-
-
 def _cleanup_generation_result(generation_result: Any) -> None:
     artifacts = generation_artifacts(generation_result)
     if artifacts is not None:
@@ -233,7 +208,11 @@ def _grade_custom_tasks(
             try:
                 task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
                 if not task_samples:
-                    raise ValueError("scored task produced no sample records")
+                    utils.eval_logger.warning(
+                        "Scored task %s produced no sample records; keeping aggregate score", work.task_name
+                    )
+                    outcomes.append(outcome)
+                    continue
                 results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
                     work.task_name,
                     task_samples,
@@ -492,6 +471,7 @@ def evaluate(
         "task_preparations": getattr(args, "task_preparations", {}),
     }
     outcomes: list[TaskOutcome] = []
+    endpoint_captures: dict[str, EndpointFailureCapture] = {}
 
     # Run benchmark evaluations - sequential generation, parallel evaluation
     if benchmark_tasks:
@@ -515,6 +495,7 @@ def evaluate(
                 lm.batch_size = batch_size
             try:
                 with capture_endpoint_failures() as endpoint_failures:
+                    endpoint_captures[task] = endpoint_failures
                     generation_result = benchmark.generate_responses(lm)
             except Exception as exc:
                 outcomes.append(
@@ -526,15 +507,6 @@ def evaluate(
                         exception=exc,
                     )
                 )
-                continue
-            if failure_outcome := _endpoint_failure_outcome(
-                task,
-                CHAT_BENCHMARK_ROUTE,
-                endpoint_failures,
-                generation_result,
-            ):
-                outcomes.append(failure_outcome)
-                _cleanup_generation_result(generation_result)
                 continue
             if generation_result is None:
                 if getattr(lm, "rank", 0) == 0:
@@ -579,6 +551,7 @@ def evaluate(
             sample_manifest = SampleManifest(pretrain_task)
             try:
                 with capture_endpoint_failures() as endpoint_failures:
+                    endpoint_captures[pretrain_task] = endpoint_failures
                     pretrain_results = lm_eval_native.resume_simple_evaluate(
                         pretrain_evaluator.simple_evaluate,
                         resume_manager_factory=resume_factory,
@@ -621,15 +594,6 @@ def evaluate(
                 )
                 continue
 
-            if failure_outcome := _endpoint_failure_outcome(
-                pretrain_task,
-                LM_EVAL_ROUTE,
-                endpoint_failures,
-                pretrain_results,
-            ):
-                outcomes.append(failure_outcome)
-                continue
-
             outcome = lm_eval_task_outcome(
                 pretrain_task,
                 LM_EVAL_ROUTE,
@@ -657,6 +621,16 @@ def evaluate(
                         sample_manifest,
                     )
 
+    outcomes = [
+        replace(
+            outcome,
+            failure_counts=dict(endpoint_captures[outcome.task_name].counts),
+            completion_response_summary=dict(endpoint_captures[outcome.task_name].response_summary),
+        )
+        if outcome.task_name in endpoint_captures
+        else outcome
+        for outcome in outcomes
+    ]
     results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
     _attach_benchmark_metadata(results, args, outcomes)
     if getattr(lm, "rank", 0) == 0:

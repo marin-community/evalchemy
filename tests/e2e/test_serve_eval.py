@@ -28,7 +28,6 @@ from pydantic import ValidationError
 
 from eval.contracts.failures import FailureCategory
 from eval.contracts.task_outcome import EvaluationRunError
-from eval.robust_api import request_failure_placeholder
 from eval.serve_eval.config import RunConfig
 from eval.serve_eval.providers import (
     CleanupOutcome,
@@ -67,14 +66,6 @@ _HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 )
 def test_endpoint_url_appends_adapter_path_exactly_once(base_url, adapter, expected):
     assert endpoint_url(base_url, adapter) == expected
-
-
-def test_request_failure_placeholder_identifies_infrastructure_error():
-    marker = request_failure_placeholder(TimeoutError("endpoint timed out"))
-
-    assert marker.startswith("[EVALCHEMY_INFRASTRUCTURE_ERROR]")
-    assert "TimeoutError" in marker
-    assert "endpoint timed out" in marker
 
 
 # --- model_args semantics (lm-eval parses to a dict; the test compares parsed keys) --

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping
 
+from eval.contracts.failures import FailureCategory
+
 
 class CompletionContentPolicy(StrEnum):
     """Select which completion fields are exposed to benchmark scorers."""
@@ -23,6 +25,15 @@ class CompletionClassification(StrEnum):
     EMPTY = "empty"
 
 
+MISSING_FINAL_CLASSIFICATIONS = frozenset(
+    {
+        CompletionClassification.REASONING_ONLY,
+        CompletionClassification.REASONING_ONLY_TRUNCATED,
+        CompletionClassification.EMPTY,
+    }
+)
+
+
 @dataclass(frozen=True)
 class CompletionResponse:
     """A provider-independent view of an OpenAI-compatible completion choice."""
@@ -33,6 +44,7 @@ class CompletionResponse:
     usage: Mapping[str, Any] | None
     provider_metadata: Mapping[str, Any]
     raw_choice: Mapping[str, Any]
+    failure_category: str | None = None
 
     @property
     def classification(self) -> CompletionClassification:
@@ -61,6 +73,9 @@ class CompletionResponse:
 
     def artifact(self, policy: CompletionContentPolicy | str = CompletionContentPolicy.COMBINE) -> dict[str, Any]:
         """Return the auditable response fields for a sample artifact."""
+        failure_category = self.failure_category
+        if failure_category is None and self.classification in MISSING_FINAL_CLASSIFICATIONS:
+            failure_category = FailureCategory.MALFORMED_MODEL_RESPONSE.value
         return {
             "content": self.content,
             "reasoning_content": self.reasoning_content,
@@ -71,6 +86,7 @@ class CompletionResponse:
             "classification": self.classification,
             "normalized_content": self.normalized_content(policy),
             "content_policy": CompletionContentPolicy(policy),
+            "failure_category": failure_category,
         }
 
 
@@ -94,6 +110,22 @@ class CompletionText(str):
     def artifact(self) -> dict[str, Any]:
         """Return the raw response fields that produced this scorer text."""
         return self.response.artifact(self.content_policy)
+
+
+class FailedGeneration(str):
+    """Empty scorer text carrying a classified endpoint failure."""
+
+    def __new__(cls, category: str) -> "FailedGeneration":
+        text = super().__new__(cls, "")
+        text.failure_category = category
+        return text
+
+    def artifact(self) -> dict[str, Any]:
+        return {
+            "classification": CompletionClassification.EMPTY,
+            "normalized_content": "",
+            "failure_category": self.failure_category,
+        }
 
 
 def completion_response_from_chat_choice(response: Mapping[str, Any], choice: Mapping[str, Any]) -> CompletionResponse:

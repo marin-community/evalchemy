@@ -246,6 +246,32 @@ def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context
     assert cap is None
 
 
+def test_endpoint_preflight_skips_chat_count_without_a_client_tokenizer():
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=None,
+        payloads=[[{"role": "user", "content": "question"}]],
+        gen_kwargs={"max_gen_toks": 128, "temperature": 0},
+        context_length=4096,
+    )
+
+    assert kwargs == {"max_gen_toks": 128, "temperature": 0}
+    assert prompt_tokens is None
+    assert cap is None
+
+
+def test_endpoint_preflight_still_bounds_token_ids_without_a_client_tokenizer():
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=None,
+        payloads=[[1] * 100],
+        gen_kwargs={"max_gen_toks": 100},
+        context_length=200,
+    )
+
+    assert prompt_tokens == 100
+    assert cap == 36
+    assert kwargs == {"max_gen_toks": 36}
+
+
 def test_endpoint_preflight_preserves_typed_context_overflow():
     with pytest.raises(ContextWindowExceededError) as error:
         preflight_endpoint_generation(

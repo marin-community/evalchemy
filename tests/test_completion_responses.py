@@ -1,5 +1,6 @@
 """Regression coverage for OpenAI-compatible reasoning responses."""
 
+import asyncio
 from collections import Counter
 import json
 
@@ -10,9 +11,12 @@ from eval.completion_response import (
     CompletionClassification,
     CompletionContentPolicy,
     CompletionText,
+    FailedGeneration,
     completion_response_from_chat_choice,
 )
 from eval.contracts.sample_results import record_sample_metrics
+from eval.contracts.failures import FailureCategory
+from eval.robust_api import capture_endpoint_failures
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
@@ -126,6 +130,75 @@ def test_local_chat_completion_preserves_reasoning_when_final_content_is_null():
 
     assert generated == ["2 + 2 = 4"]
     assert isinstance(generated[0], CompletionText)
+
+
+def test_failed_completion_is_empty_and_classified_in_sample_artifact():
+    response = FailedGeneration("model_transport")
+    record = canonicalize_samples(
+        "task",
+        [{"resps": [[response]], "metrics": ["accuracy"], "accuracy": 0.0}],
+    )[0]
+
+    assert response == ""
+    assert record["failure_category"] == "model_transport"
+    assert record["completion_responses"][0][0]["normalized_content"] == ""
+
+
+def test_one_failed_async_request_returns_an_empty_classified_response():
+    adapter = object.__new__(LocalChatCompletion)
+    adapter._concurrent = 2
+    adapter.verify_certificate = True
+    adapter.timeout = 1
+    adapter.max_retries = 1
+    adapter._batch_size = 1
+    adapter.tokenizer = None
+    adapter.max_length = None
+
+    async def fake_model_call(*, messages, **_kwargs):
+        if messages[0] == "bad":
+            raise TimeoutError("endpoint timed out")
+        return ["ok"]
+
+    adapter.amodel_call = fake_model_call
+
+    async def fetch():
+        with capture_endpoint_failures() as failures:
+            outputs = await adapter.get_batched_requests(["bad", "good"], ["a", "b"], gen_kwargs={})
+        return outputs, failures
+
+    outputs, failures = asyncio.run(fetch())
+
+    assert isinstance(outputs[0][0], FailedGeneration)
+    assert outputs[0][0] == ""
+    assert outputs[1] == ["ok"]
+    assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
+
+
+def test_chat_request_without_client_tokenizer_skips_preflight_and_sends_cap():
+    adapter = object.__new__(LocalChatCompletion)
+    adapter._concurrent = 2
+    adapter.verify_certificate = True
+    adapter.timeout = 1
+    adapter.max_retries = 1
+    adapter._batch_size = 1
+    adapter.tokenizer = None
+    adapter.max_length = 4095
+    sent_kwargs = []
+
+    async def fake_model_call(*, gen_kwargs, **_kwargs):
+        sent_kwargs.append(gen_kwargs)
+        return ["ok"]
+
+    adapter.amodel_call = fake_model_call
+    messages = [{"role": "user", "content": "question"}]
+
+    async def fetch():
+        return await adapter.get_batched_requests([messages], ["cache"], gen_kwargs={"max_gen_toks": 128})
+
+    outputs = asyncio.run(fetch())
+
+    assert outputs == [["ok"]]
+    assert sent_kwargs == [{"max_gen_toks": 128}]
 
 
 def test_successful_empty_chat_responses_invalidate_result_quality():

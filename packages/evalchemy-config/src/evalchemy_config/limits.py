@@ -170,7 +170,9 @@ def preflight_endpoint_generation(
     Returns ``(new_gen_kwargs, largest_prompt, effective_max_tokens)``. Calls
     without an explicit context or generation cap are a strict no-op. A batch
     shares one endpoint generation kwargs dictionary, so it uses the largest
-    rendered prompt in that batch.
+    rendered prompt in that batch. Without a client tokenizer, text and chat
+    prompts cannot be counted accurately; their requested cap is left intact.
+    Token-ID payloads remain countable without a tokenizer.
     """
     if context_length is None or gen_kwargs is None:
         return (dict(gen_kwargs) if gen_kwargs is not None else None, None, None)
@@ -179,6 +181,11 @@ def preflight_endpoint_generation(
         return (dict(gen_kwargs), None, None)
     requested = resolve_limit("max_tokens", present)
     assert requested is not None
+    if tokenizer is None and any(
+        not (isinstance(payload, (list, tuple)) and all(isinstance(token, int) for token in payload))
+        for payload in payloads
+    ):
+        return dict(gen_kwargs), None, None
     largest_prompt = max(endpoint_prompt_token_count(tokenizer, payload) for payload in payloads)
     cap = safe_generation_cap(
         context_length=context_length,

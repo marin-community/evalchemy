@@ -30,6 +30,7 @@ from typing import Dict, List, Optional, Union
 from .instructions_registry import INSTRUCTION_DICT
 
 logger = logging.getLogger(__name__)
+PER_PROMPT_OUTCOMES = "per_prompt_outcomes"
 
 
 @dataclasses.dataclass
@@ -234,4 +235,12 @@ def evaluate_accuracy(response_filename):
         "loose_prompt_accuracy": loose["prompt-level"],
         "loose_instruction_accuracy": loose["instruction-level"],
         "loose_per_type": loose["per_type"],
+        PER_PROMPT_OUTCOMES: [
+            {
+                "prompt": strict_output.prompt,
+                "strict_instruction_pass": strict_output.follow_instruction_list,
+                "loose_instruction_pass": loose_output.follow_instruction_list,
+            }
+            for strict_output, loose_output in zip(strict_outputs, loose_outputs)
+        ],
     }
