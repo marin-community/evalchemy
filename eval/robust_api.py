@@ -46,14 +46,6 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Iterator
 
-from lm_eval.models.openai_completions import (
-    LocalChatCompletion,
-    LocalCompletionsAPI,
-    OpenAIChatCompletion,
-    OpenAICompletionsAPI,
-)
-from lm_eval.utils import simple_parse_args_string
-
 from eval.completion_response import (
     CompletionClassification,
     CompletionContentPolicy,
@@ -169,6 +161,14 @@ def openai_model_requires_fixed_generation(model: object) -> bool:
 
 def configure_generation_overrides(model: object, overrides: dict) -> None:
     """Give endpoint adapters the caller's generation settings, including an empty set."""
+    # The runner imports this module without lm-eval installed. Import adapters
+    # only when a model is being configured by the evaluation driver.
+    from lm_eval.models.openai_completions import (
+        LocalCompletionsAPI,
+        OpenAIChatCompletion,
+        OpenAICompletionsAPI,
+    )
+
     if isinstance(model, LocalCompletionsAPI) and not isinstance(
         model, (OpenAICompletionsAPI, OpenAIChatCompletion)
     ):
@@ -177,6 +177,8 @@ def configure_generation_overrides(model: object, overrides: dict) -> None:
 
 def parse_generation_overrides(value: str | dict | None) -> dict:
     """Parse caller settings and make temperature decisive for local decoders."""
+    from lm_eval.utils import simple_parse_args_string
+
     overrides = simple_parse_args_string(value) if isinstance(value, str) else dict(value or {})
     if "temperature" in overrides and "do_sample" not in overrides:
         overrides["do_sample"] = float(overrides["temperature"]) > 0
