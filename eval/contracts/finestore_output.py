@@ -51,13 +51,14 @@ def write_finestore_output(
             if not task_samples:
                 continue
             safe_task_name = safe_artifact_name(task_name)
+            normalized_task = source_prefix if len(samples_by_task) == 1 else f"{source_prefix}/{task_name}"
             store.add_source_artifact(
                 prefix_join(source_root, f"samples_{safe_task_name}_native.jsonl"),
                 samples_jsonl(task_samples).encode(),
                 content_type=_SAMPLE_CONTENT_TYPE,
             )
             for record in task_samples:
-                for sample in samples_from_lm_eval(task_name, dict(record)):
+                for sample in samples_from_lm_eval(normalized_task, dict(record)):
                     store.add_sample(sample)
         store.seal()
     finally:
