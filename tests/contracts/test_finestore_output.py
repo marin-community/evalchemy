@@ -121,6 +121,28 @@ def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
     assert aggregate.decode() == results_json(results)
 
 
+def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    record = {
+        "doc_id": 7,
+        "doc": {"query": "Complete the sentence"},
+        "target": "answer",
+        "arguments": [["Complete the sentence"]],
+        "resps": [["answer"]],
+        "filtered_resps": ["answer"],
+        "filter": "none",
+        "acc,none": 1.0,
+    }
+    results = {"results": {"hellaswag": {"acc,none": 1.0}}}
+
+    write_finestore_output(root, "hellaswag_0shot", results, {"hellaswag": [record]})
+    write_finestore_output(root, "hellaswag_10shot", results, {"hellaswag": [record]})
+
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    assert set(table.column("task").to_pylist()) == {"hellaswag_0shot", "hellaswag_10shot"}
+
+
 def test_finestore_mode_does_not_write_a_second_sample_jsonl(tmp_path: Path):
     local_root = tmp_path / "local"
     archive_root = tmp_path / "archive"
