@@ -61,7 +61,7 @@ _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
-ENDPOINT_FAILURE_CATEGORIES = (
+ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
     FailureCategory.MODEL_TRANSPORT,
     FailureCategory.MALFORMED_MODEL_RESPONSE,
     FailureCategory.GRADER_INFRASTRUCTURE,
@@ -81,8 +81,8 @@ class EndpointFailureCapture:
     _lock: Lock = field(default_factory=Lock)
 
     def record(self, category: FailureCategory, count: int) -> None:
-        if category not in ENDPOINT_FAILURE_CATEGORIES:
-            raise ValueError(f"not an endpoint failure category: {category}")
+        if category not in ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES:
+            raise ValueError(f"not a captured endpoint or judge failure category: {category}")
         with self._lock:
             self.counts[category] += count
 

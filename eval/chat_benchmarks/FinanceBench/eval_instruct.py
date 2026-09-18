@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional  # noqa: F401
 
 from lm_eval.api.instance import Instance
@@ -10,6 +11,7 @@ from lm_eval.api.model import LM
 from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
+from eval.contracts.task_outcome import TaskFailure
 from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
@@ -194,10 +196,13 @@ class FinanceBenchBenchmark(BaseBenchmark):
                 example["judge_label"] = None
                 example["judge_raw"] = None
                 example["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
-                example["judge_error"] = {
-                    "exception_type": type(judgment).__name__,
-                    "message": str(judgment)[:512],
-                }
+                example["judge_error"] = asdict(
+                    TaskFailure(
+                        category=FailureCategory.GRADER_INFRASTRUCTURE,
+                        message=str(judgment)[:512] or type(judgment).__name__,
+                        exception_type=type(judgment).__name__,
+                    )
+                )
                 record_sample_metrics(example, judge_failed=True)
                 self.logger.warning("FinanceBench judge failed for trial %d: %s", index, judgment)
                 continue

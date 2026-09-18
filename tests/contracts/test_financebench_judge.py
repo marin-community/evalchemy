@@ -9,9 +9,9 @@ import pytest
 
 from eval.chat_benchmarks.FinanceBench import judge as finance_judge
 from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
-from eval.contracts.prompt_length import resolve_task_max_tokens
 from eval.contracts.task_outcome import validate_result_document
 from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
+from eval.limits import DEFAULT_CONTEXT_SAFETY_TOKENS
 from eval.task import TaskManager
 
 
@@ -213,27 +213,7 @@ def test_financebench_judge_allows_reasoning_before_label(monkeypatch):
     assert judgments == [("correct", "correct")]
 
 
-def test_financebench_malformed_judge_response_is_returned_for_its_trial(monkeypatch):
-    class MalformedAsyncOpenAI(_FakeAsyncOpenAI):
-        async def create(self, **kwargs):
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="maybe"))])
-
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", MalformedAsyncOpenAI)
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
-        )
-    )
-
-    assert len(judgments) == 1
-    assert isinstance(judgments[0], ValueError)
-
-
-@pytest.mark.parametrize("response", ["The answer is correct.", "incorrect because it conflicts", ""])
+@pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", ""])
 def test_financebench_rejects_non_label_responses(monkeypatch, response):
     class NonLabelAsyncOpenAI(_FakeAsyncOpenAI):
         async def create(self, **kwargs):
@@ -285,6 +265,7 @@ def test_financebench_judge_failure_is_saved_per_trial_without_losing_other_scor
     assert samples[0]["accuracy"] == 1.0
     assert "accuracy" not in samples[1]
     assert samples[1]["failure_category"] == "grader_infrastructure"
+    assert samples[1]["judge_error"]["category"] == "grader_infrastructure"
     assert samples[1]["judge_error"]["exception_type"] == "TimeoutError"
     assert "judge_error" not in samples[1]["doc"]
     assert result["task_outcomes"]["FinanceBench"]["failure_counts"] == {"grader_infrastructure": 1}
@@ -355,12 +336,9 @@ def test_financebench_request_obeys_configured_context_output_and_sample_limits(
 
     generated = benchmark.generate_responses(model)
 
-    expected_cap = resolve_task_max_tokens(
-        "FinanceBench",
-        context_length=32768,
-        requested_max_tokens=requested_max_tokens,
-        prompt_lengths=manager.prompt_lengths,
-    )
+    expected_cap = requested_max_tokens
+    if expected_cap is None:
+        expected_cap = 32768 - manager.prompt_lengths.max_prompt_tokens("FinanceBench") - DEFAULT_CONTEXT_SAFETY_TOKENS
     assert model.generated_ids == [0]
     assert len(generated["examples"]) == 1
     assert model.request_kwargs[0]["max_new_tokens"] == expected_cap

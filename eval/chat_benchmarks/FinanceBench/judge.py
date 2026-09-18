@@ -62,8 +62,8 @@ async def judge_answer(
 
     Returns a ``(label, raw)`` tuple where ``label`` is one of
     ``correct``/``incorrect``/``not_attempted`` and ``raw`` is the judge's verbatim
-    completion (kept for debugging / per-sample audit). Judge transport and response
-    failures remain exceptions for the caller to record on their individual trials.
+    completion (kept for debugging / per-sample audit). Transport and malformed
+    response errors raise exceptions.
     """
     prompt = JUDGE_PROMPT.format(question=question, gold=gold_answer, predicted=predicted_answer)
     for max_tokens in JUDGE_TOKEN_BUDGETS:
