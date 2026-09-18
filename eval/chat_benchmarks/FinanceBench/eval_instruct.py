@@ -2,13 +2,17 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional  # noqa: F401
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
 from eval.constants import AUTO_ANNOTATOR_MODEL
+from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
+from eval.contracts.task_outcome import TaskFailure
+from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
 from .judge import judge_all
@@ -54,6 +58,9 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
     Link: https://github.com/patronus-ai/financebench
     """
+
+    METRICS = ("accuracy",)
+    PRIMARY_METRIC = "accuracy"
 
     def __init__(
         self,
@@ -179,10 +186,36 @@ class FinanceBenchBenchmark(BaseBenchmark):
         num_correct = 0
         num_incorrect = 0
         num_not_attempted = 0
-        for example, (label, raw) in zip(examples, judgments):
+        num_judge_failed = 0
+        for index, (example, judgment) in enumerate(zip(examples, judgments, strict=True)):
+            if isinstance(judgment, BaseException):
+                if not isinstance(judgment, Exception):
+                    raise judgment
+                num_judge_failed += 1
+                record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
+                example["judge_label"] = None
+                example["judge_raw"] = None
+                example["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
+                example["judge_error"] = asdict(
+                    TaskFailure(
+                        category=FailureCategory.GRADER_INFRASTRUCTURE,
+                        message=str(judgment)[:512] or type(judgment).__name__,
+                        exception_type=type(judgment).__name__,
+                    )
+                )
+                record_sample_metrics(example, judge_failed=True)
+                self.logger.warning("FinanceBench judge failed for trial %d: %s", index, judgment)
+                continue
+
+            label, raw = judgment
             example["judge_label"] = label
             example["judge_raw"] = raw
-            record_sample_metrics(example, accuracy=label == "correct", not_attempted=label == "not_attempted")
+            record_sample_metrics(
+                example,
+                accuracy=label == "correct",
+                not_attempted=label == "not_attempted",
+                judge_failed=False,
+            )
             if label == "correct":
                 num_correct += 1
             elif label == "not_attempted":
@@ -190,18 +223,38 @@ class FinanceBenchBenchmark(BaseBenchmark):
             else:
                 num_incorrect += 1
 
+        num_judged = total - num_judge_failed
         results.update(
             {
                 "num_total": total,
+                "num_judged": num_judged,
+                "num_judge_failed": num_judge_failed,
                 "num_correct": num_correct,
                 "num_incorrect": num_incorrect,
                 "num_not_attempted": num_not_attempted,
-                "accuracy": num_correct / total if total else 0.0,
+                "accuracy": num_correct / num_judged if num_judged else None,
+                "judge_coverage": num_judged / total if total else 0.0,
                 "judge_model": judge_model,
             }
         )
 
         return results
+
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        samples = super().to_samples(generation_result, scored_result)
+        for sample, example in zip(samples, generation_result["examples"], strict=True):
+            sample["judge_label"] = example["judge_label"]
+            sample["judge_raw"] = example["judge_raw"]
+            if "failure_category" in example:
+                sample["failure_category"] = example["failure_category"]
+                sample["judge_error"] = example["judge_error"]
+        return samples
+
+    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        doc = super()._sample_doc(example)
+        for key in ("judge_label", "judge_raw", "failure_category", "judge_error"):
+            doc.pop(key, None)
+        return doc
 
     def load_questions(self) -> List[Dict[str, Any]]:
         """Load FinanceBench questions from the local data file.
