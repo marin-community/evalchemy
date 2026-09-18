@@ -43,6 +43,10 @@ from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
+from eval.lm_eval_tasks.tokenizer_compat import install_tokenizer_compat
+
+install_tokenizer_compat()
+
 from eval.robust_api import (
     EndpointFailureCapture,
     capture_endpoint_failures,
