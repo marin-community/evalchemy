@@ -7,22 +7,10 @@ from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
 
 
 @pytest.mark.parametrize(
-    "completion",
-    [
-        "```python\n    def add(a, b):\n        return a + b\n```",
-        "    def add(a, b):\n        return a + b\n",
-    ],
-)
-def test_mbppplus_indented_python_block_executes(completion):
-    namespace = {}
-    exec(MBPPPlusBenchmark().extract_code(completion), namespace)
-
-    assert namespace["add"](2, 3) == 5
-
-
-@pytest.mark.parametrize(
     "completion,function,args,expected",
     [
+        ("```python\n    def add(a, b):\n        return a + b\n```", "add", (2, 3), 5),
+        ("    def add(a, b):\n        return a + b\n", "add", (2, 3), 5),
         (
             "```python\n    def similar_elements(list1, list2):\n        return set(list1) & set(list2)\n    ```",
             "similar_elements",
@@ -39,7 +27,7 @@ def test_mbppplus_indented_python_block_executes(completion):
         ),
     ],
 )
-def test_mbppplus_reported_indented_answers_execute(completion, function, args, expected):
+def test_mbppplus_indented_answers_execute(completion, function, args, expected):
     namespace = {}
     exec(MBPPPlusBenchmark().extract_code(completion), namespace)
 
