@@ -49,7 +49,7 @@ from eval.completion_response import (
     completion_response_from_chat_choice,
 )
 from eval.contracts.failures import FailureCategory
-from eval.generation_stops import bounded_request_stops
+from eval.generation_stops import bounded_request_stops, chat_request_stops
 from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
@@ -481,11 +481,22 @@ def apply_openai_payload_controls() -> bool:
     original_local_chat_payload = LocalChatCompletion._create_payload
     original_openai_chat_payload = OpenAIChatCompletion._create_payload
 
-    def _bounded_generation_kwargs(gen_kwargs, eos, default_until=None):
+    def _merged_stop_kwargs(gen_kwargs, eos, default_until=None):
         request_kwargs = dict(gen_kwargs or {})
         until = request_kwargs.get("until", default_until)
         stop = handle_stop_sequences(list(until) if isinstance(until, list) else until, eos)
+        return request_kwargs, stop
+
+    def _bounded_generation_kwargs(gen_kwargs, eos, default_until=None):
+        request_kwargs, stop = _merged_stop_kwargs(gen_kwargs, eos, default_until)
         request_kwargs["until"] = bounded_request_stops(stop)
+        return request_kwargs
+
+    def _chat_generation_kwargs(gen_kwargs, eos):
+        # Chat servers apply stop strings to reasoning content, and the turn
+        # ends at EOS anyway, so only tokenizer sentinels may cross the wire.
+        request_kwargs, stop = _merged_stop_kwargs(gen_kwargs, eos)
+        request_kwargs["until"] = chat_request_stops(stop)
         return request_kwargs
 
     def _caller_generation_payload(self, payload):
@@ -519,11 +530,14 @@ def apply_openai_payload_controls() -> bool:
             self,
             messages,
             generate=generate,
-            gen_kwargs=_bounded_generation_kwargs(gen_kwargs, eos),
+            gen_kwargs=_chat_generation_kwargs(gen_kwargs, eos),
             seed=seed,
             eos=None,
             **kwargs,
         )
+        if not payload.get("stop"):
+            # No sentinels to send: the endpoint ends the turn at EOS.
+            payload.pop("stop", None)
         return _caller_generation_payload(self, payload)
 
     def _create_completions_payload(

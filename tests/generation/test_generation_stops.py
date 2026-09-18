@@ -12,6 +12,7 @@ from eval.generation_stops import (
     OPENAI_COMPLETIONS_MAX_STOP_SEQUENCES,
     HUMANEVAL_REQUEST_STOP_SEQUENCES,
     bounded_request_stops,
+    chat_request_stops,
     truncate_at_stop,
 )
 from eval.lm_eval_tasks.humaneval.scoring import build_predictions
@@ -55,6 +56,19 @@ def test_bounded_request_stops_prefer_semantic_boundaries_to_token_sentinels():
         "\nQ:",
         "\n[Question]",
     ]
+
+
+def test_chat_request_stops_drop_textual_boundaries_that_truncate_reasoning():
+    assert chat_request_stops(GSM8K_STOP_SEQUENCES) == [
+        "<|im_end|>",
+        "<|eot_id|>",
+        "<|end_of_text|>",
+        "<|endoftext|>",
+    ]
+
+
+def test_chat_request_stops_without_sentinels_request_no_stops():
+    assert chat_request_stops(["Question:", "\nQ:", "\nUser:"]) == []
 
 
 def test_generation_task_overrides_use_shared_stop_sequences():

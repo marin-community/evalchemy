@@ -84,7 +84,7 @@ def test_non_openai_alias_with_five_retains_configured_generation_controls(model
     assert payload["temperature"] == 0
 
 
-def test_local_chat_payload_prioritizes_semantic_stops_within_openai_limit():
+def test_local_chat_payload_sends_only_token_sentinels():
     payload = _local_chat_payload(
         [
             "<|im_end|>",
@@ -98,7 +98,13 @@ def test_local_chat_payload_prioritizes_semantic_stops_within_openai_limit():
         ]
     )
 
-    assert payload["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
+    assert payload["stop"] == ["<|im_end|>", "<|eot_id|>", "<|end_of_text|>", "<|endoftext|>"]
+
+
+def test_local_chat_payload_without_sentinels_ends_the_turn_at_eos():
+    payload = _local_chat_payload(["Question:", "\nQ:", "\nUser:", "\nAssistant:"])
+
+    assert "stop" not in payload
 
 
 def test_local_completions_payload_uses_the_same_bounded_stop_policy():
