@@ -63,7 +63,7 @@ async def judge_answer(
     Returns a ``(label, raw)`` tuple where ``label`` is one of
     ``correct``/``incorrect``/``not_attempted`` and ``raw`` is the judge's verbatim
     completion (kept for debugging / per-sample audit). Judge transport and response
-    failures propagate so infrastructure errors cannot be recorded as model errors.
+    failures remain exceptions for the caller to record on their individual trials.
     """
     prompt = JUDGE_PROMPT.format(question=question, gold=gold_answer, predicted=predicted_answer)
     for max_tokens in JUDGE_TOKEN_BUDGETS:
@@ -86,15 +86,16 @@ async def judge_all(
     api_key: str,
     base_url: str,
     num_workers: int = DEFAULT_NUM_WORKERS,
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str] | BaseException]:
     """Judge every item in ``items`` concurrently.
 
     Each item must carry ``question``, ``answer`` (the gold), and ``model_output`` (the
-    prediction) keys. Returns the ``(label, raw)`` list in input order so the caller can
-    zip it back onto the examples.
+    prediction) keys. Returns judgments or their exceptions in input order so the
+    caller can record failed trials without discarding successful judgments.
     """
     semaphore = asyncio.Semaphore(num_workers)
-    async with AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=2) as client:
+    # The SDK applies exponential backoff (and honors Retry-After) between retries.
+    async with AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=300.0, max_retries=5) as client:
 
         async def bound(item: Dict[str, Any]) -> Tuple[str, str]:
             async with semaphore:
@@ -106,4 +107,4 @@ async def judge_all(
                     client,
                 )
 
-        return await asyncio.gather(*[bound(item) for item in items])
+        return await asyncio.gather(*[bound(item) for item in items], return_exceptions=True)

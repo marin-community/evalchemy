@@ -299,7 +299,7 @@ GRADING_CASES: dict[str, GradingCase] = {
         ("accuracy",),
     ),
     "CruxEval": GradingCase(_cruxeval_case, ("pass_rate",)),
-    "FinanceBench": GradingCase(_financebench_case, ("accuracy", "not_attempted")),
+    "FinanceBench": GradingCase(_financebench_case, ("accuracy", "not_attempted", "judge_failed")),
     "GPQADiamond": GradingCase(
         _examples_case(
             "GPQADiamond",

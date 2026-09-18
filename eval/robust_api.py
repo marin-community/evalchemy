@@ -64,6 +64,7 @@ _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.I
 ENDPOINT_FAILURE_CATEGORIES = (
     FailureCategory.MODEL_TRANSPORT,
     FailureCategory.MALFORMED_MODEL_RESPONSE,
+    FailureCategory.GRADER_INFRASTRUCTURE,
 )
 _active_failure_capture: ContextVar["EndpointFailureCapture | None"] = ContextVar(
     "evalchemy_endpoint_failure_capture",

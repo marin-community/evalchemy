@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Union
@@ -105,7 +106,8 @@ def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
         artifacts = generation_artifacts(work.generation_result)
         if artifacts is not None:
             artifacts.validate_required()
-        scored_result = work.benchmark.evaluate_responses(work.generation_result)
+        with capture_endpoint_failures() as grader_failures:
+            scored_result = work.benchmark.evaluate_responses(work.generation_result)
     except Exception as exc:
         return (
             TaskOutcome.failed(
@@ -118,16 +120,14 @@ def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
             {},
         )
     metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
-    return (
-        custom_task_outcome(
-            work.task_name,
-            CHAT_BENCHMARK_ROUTE,
-            work.generation_result,
-            metrics,
-            work.benchmark.sample_manifest,
-        ),
-        scored_result,
+    outcome = custom_task_outcome(
+        work.task_name,
+        CHAT_BENCHMARK_ROUTE,
+        work.generation_result,
+        metrics,
+        work.benchmark.sample_manifest,
     )
+    return replace(outcome, failure_counts=dict(grader_failures.counts)), scored_result
 
 
 def _cleanup_generation_result(generation_result: Any) -> None:
@@ -624,7 +624,7 @@ def evaluate(
     outcomes = [
         replace(
             outcome,
-            failure_counts=dict(endpoint_captures[outcome.task_name].counts),
+            failure_counts=dict(Counter(outcome.failure_counts) + endpoint_captures[outcome.task_name].counts),
             completion_response_summary=dict(endpoint_captures[outcome.task_name].response_summary),
         )
         if outcome.task_name in endpoint_captures
