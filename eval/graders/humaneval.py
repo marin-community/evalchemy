@@ -40,9 +40,10 @@ TIMEOUT = 3.0
 # child, so a wedged candidate is reported as a timeout rather than a hang.
 _JOIN_GRACE = 1.0
 
-# A candidate that outruns this is killed deterministically (issue #147). 1 GiB fits a
-# real HumanEval solution while bounding the runaway-allocator class; applied best-effort
-# -- the sandbox applies rlimits where the platform allows and degrades elsewhere.
+# A candidate that outruns this is failed deterministically rather than left running.
+# 1 GiB fits a real HumanEval solution while bounding a runaway allocator; applied
+# best-effort -- the sandbox applies rlimits where the platform allows and degrades
+# elsewhere, matching the bounded grader's cap in eval/graders/livecodebench.py.
 DEFAULT_MEMORY_BYTES = 1 * 1024 * 1024 * 1024
 
 PASSED = "passed"
@@ -58,7 +59,7 @@ _MAX_OUTCOME_CHARS = 8192
 
 
 class TimeoutException(Exception):
-    pass
+    """Raised by :func:`time_limit` when the candidate outlives its SIGALRM window."""
 
 
 class WriteOnlyStringIO(io.StringIO):
@@ -238,9 +239,9 @@ def check_correctness(
 ) -> str:
     """Run one candidate program in an isolated process and return its outcome.
 
-    ``maximum_memory_bytes`` is wired by default (#147): a candidate that outruns it is
-    failed deterministically rather than left running unbounded, the way the pre-#147
-    ``check_correctness`` left every candidate.
+    ``maximum_memory_bytes`` is wired by default so a candidate that outruns it is
+    failed deterministically rather than left running unbounded; a caller who never passes
+    one still gets the cap.
     """
     receiver, sender = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(

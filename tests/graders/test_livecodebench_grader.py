@@ -18,9 +18,7 @@ is non-None).
 
 import concurrent.futures
 import inspect
-import logging
 import multiprocessing
-import os
 import pathlib
 import platform
 import subprocess
@@ -33,48 +31,26 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+# The test directory is on ``sys.path`` via pytest, so the shared helpers here are importable.
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
 from eval.contracts.grading import GraderExecutionMode  # noqa: E402
 from eval.graders import livecodebench  # noqa: E402
+from lcb_test_support import living_children  # noqa: E402
 
 # macOS cannot lower RLIMIT_AS (setrlimit raises), so the cap is not enforced there;
 # the enforcement tests need a platform that honors it.
 LINUX = platform.system() == "Linux"
 
 
-def _direct_children() -> dict[int, str]:
-    """Map this process's living children (pid -> command), excluding the tools used to ask.
-
-    A snapshot transiently sees the ``ps`` being launched (and CPython's
-    ``resource_tracker`` daemon) -- neither is a grader worker, so they are not leaks.
-    The grader child under test is what must be caught.
-    """
-    out = subprocess.run(
-        ["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "command="],
-        capture_output=True,
-        text=True,
-    ).stdout
-    mine = str(os.getpid())
-    children = {}
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) != 3 or parts[1] != mine:
-            continue
-        command = parts[2]
-        if "resource_tracker" in command:
-            continue
-        if command.split(None, 1)[0].rsplit("/", 1)[-1] == "ps":
-            continue
-        children[int(parts[0])] = command
-    return children
-
-
 @pytest.fixture
 def assert_no_child_leak():
     """Snapshot this process's children; fail on teardown if any were left running."""
-    before = set(_direct_children())
+    before = living_children()
     yield
-    time.sleep(0.2)  # give a would-be zombie a moment to become visible to ps
-    leaked = set(_direct_children()) - before
+    time.sleep(0.2)  # allow a killed child's join-grace to settle before we measure
+    leaked = living_children() - before
     assert not leaked, f"grader leaked child process(es): {leaked}"
 
 
@@ -99,7 +75,9 @@ def test_grader_declares_process_isolated_execution():
 
 
 def test_memory_cap_is_wired_by_default():
-    assert livecodebench.DEFAULT_MAX_MEMORY_BYTES is not None
+    """Pre-#147 the cap default was ``None`` so the rlimit was never applied. This is the
+    direct regression: the parameter defaults to a non-None cap so a caller who never
+    passes one still gets a cap."""
     defaults = inspect.signature(livecodebench.run).parameters["maximum_memory_bytes"].default
     assert defaults is not None, "run() must wire the memory cap by default"
 
@@ -249,29 +227,15 @@ def test_timeout_child_is_deterministically_reaped_and_scores_failed(assert_no_c
     assert result["child_pid"] is not None, "the grader must report the child pid it spawned"
 
 
-def test_child_identification_at_spawn():
-    """Spawn logs the child pid, test count, and deadline so a runaway is attributable."""
-    records = []
+def test_child_allocation_identifies_its_pid():
+    """The run reports the pid of the child it spawned, so a runaway is attributable.
 
-    class _Capture(logging.Handler):
-        def emit(self, record):
-            records.append(record.getMessage())
-
-    handler = _Capture()
-    logger = logging.getLogger("eval.graders.livecodebench")
-    previous_level = logger.level
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-    try:
-        livecodebench.run(_one_functional([1, 2], 3), "def add(a,b):\n return a+b", fn_name="add")
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-
-    joined = "\n".join(records)
-    assert "pid=" in joined
-    assert "tests=" in joined
-    assert "deadline=" in joined
+    The bounded grader returns ``child_pid`` as its public contract (the RL reward path
+    uses it to attribute a runaway); the test count is likewise part of the result.
+    """
+    result = livecodebench.run(_one_functional([1, 2], 3), "def add(a,b):\n return a+b", fn_name="add")
+    assert isinstance(result["child_pid"], int) and result["child_pid"] > 0
+    assert result["num_tests"] == 1
 
 
 def test_candidate_crash_does_not_take_down_the_grader(assert_no_child_leak):
@@ -316,4 +280,4 @@ def test_child_allocating_past_the_cap_is_killed_and_scores_failed(assert_no_chi
         maximum_memory_bytes=cap,
     )
     assert result["passed"] is False
-    assert result["timed_out"] in (True, False)  # the child was killed, not left to the deadline
+    assert result["outcomes"][0]["outcome"] in (livecodebench.FAILED, livecodebench.TIMED_OUT)

@@ -20,41 +20,19 @@ from livebench.lcb_runner.evaluation.pass_k_utils import compute_metrics_from_re
 
 _logger = logging.getLogger(__name__)
 
-# Wall-clock bound per generation, independent of the test count. Was
-# (test_timeout + 1) * N + 5 -- the issue #147 unbounded join.
-DEFAULT_DEADLINE = 30.0
+# Wall-clock bound per generation, shared with the bounded grader and independent of the
+# test count (the earlier wrapper scaled it with the test count instead).
+DEFAULT_DEADLINE = _lcb_grader.DEFAULT_DEADLINE
 
 
 def _worker_run(sample, generation, debug, connection, timeout):
-    """Child side: apply the memory cap (best-effort) then run ``run_test`` once and send the result over the pipe."""
-    cap = _lcb_grader.DEFAULT_MAX_MEMORY_BYTES
-    try:
-        import resource
-
-        try:
-            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
-            resource.setrlimit(resource.RLIMIT_DATA, (cap, cap))
-            resource.setrlimit(resource.RLIMIT_STACK, (cap, cap))
-        except (ValueError, OSError):
-            pass
-    except ImportError:
-        pass
+    """Child side: apply the shared grader's memory cap (best-effort) then run ``run_test`` once and send the result over the pipe."""
+    _lcb_grader.apply_memory_cap(_lcb_grader.DEFAULT_MAX_MEMORY_BYTES)
     res, metadata = run_test(sample, test=generation, debug=debug, timeout=timeout)
     try:
         connection.send((res, metadata))
     finally:
         connection.close()
-
-
-def _terminate(pid):
-    if pid is None:
-        return
-    import signal
-
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except (ProcessLookupError, OSError):
-        pass
 
 
 def check_correctness(sample, generation, timeout, debug=True, deadline=DEFAULT_DEADLINE):
@@ -75,14 +53,14 @@ def check_correctness(sample, generation, timeout, debug=True, deadline=DEFAULT_
     if _logger.isEnabledFor(logging.DEBUG):
         _logger.debug("lcb_runner check pid=%s deadline=%.2f", pid, deadline)
 
-    watchdog = threading.Timer(deadline, _terminate, args=(pid,))
+    watchdog = threading.Timer(deadline, _lcb_grader.terminate, args=(pid,))
     watchdog.daemon = True
     watchdog.start()
 
     process.join(timeout=deadline + 1.0)
     watchdog.cancel()
     if process.is_alive():
-        _terminate(pid)
+        _lcb_grader.terminate(pid)
         process.join(timeout=1.0)
 
     if receiver.poll():

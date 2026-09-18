@@ -1,41 +1,41 @@
 """Self-contained, bounded grader for the LiveCodeBench (LCB) test format.
 
 One grader replaces the four vendored LCB execution stacks (``LiveCodeBench``,
-``LiveCodeBenchv5``, ``LiveCodeBenchv5_official`` -- the NovaSky ``testing_util``
-Manager-per-candidate pattern -- and ``LiveBench/lcb_runner``): all of them left the
-worker unbounded in memory and time. ``reliability_guard(maximum_memory_bytes=...)``
-accepted a cap that no call site ever passed, and the ``join`` deadline scaled with the
-test count, so a runaway candidate ran on with no cap while the parent waited as long as
-the tests said it might. The same unbounded pattern OOM-killed a 64-GPU MarinSkyRL run
-(issue #147, incident echo.oa.dev/wiki/471).
+``LiveCodeBenchv5``, ``LiveCodeBenchv5_official``, ``LiveBench/lcb_runner``). Each candidate
+runs in one child process with bounded memory and wall-clock time, and the parent reaps it
+deterministically, so a runaway candidate is bounded wherever the RL reward path (or a
+benchmark) grades it.
 
-The shape follows ``eval.graders.humaneval`` -- a single child process, pipe result
-transport, join-grace kill, restorable guard -- with the bounds the vendored stacks lack:
+The shape follows ``eval.graders.humaneval`` -- one child process, pipe transport, watchdog
+kill, deterministic reap -- with the bounds the vendored stacks lacked:
 
 - a memory cap wired by default (``RLIMIT_AS``/``RLIMIT_DATA``/``RLIMIT_STACK``), applied
-  best-effort (some platforms, e.g. Darwin, refuse to lower it, and the grader must not
-  crash on the guard there);
+  best-effort (some platforms, e.g. Darwin, refuse to lower it, and the grader must not crash
+  on that guard there);
 - a wall-clock deadline *independent of the test count*, in addition to the per-test
   ``SIGALRM``;
-- deterministic child reaping, with **no** ``multiprocessing.Manager`` -- a pipe carries
-  the per-test outcomes, so a timeout leaves no Manager server to reap;
+- deterministic child reaping with no Manager server to leak;
 - child identification at spawn (pid, test count, deadline).
 
-It is library-consumable, not only route-internal: MarinSkyRL's reward path calls
-:func:`run` synchronously per trajectory and derives binary and fractional rewards from
-the per-test outcomes. Inputs are the normalized LCB test list -- call-based or
-stdin, with an optional ``fn_name`` -- plus the extracted program. Both
-stop-on-failure short-circuiting and collect-all are preserved. Concurrent callers are
-supported: every run is its own process and the parent never waits unbounded.
+It is library-consumable, not only route-internal: an RL reward path can call :func:`run`
+synchronously per trajectory and derive a binary or fractional reward from the per-test
+outcomes. Inputs are the normalized LCB test list -- call-based or stdin, with an optional
+``fn_name`` -- plus the extracted program; both stop-on-failure short-circuiting and
+collect-all are preserved. Concurrent callers are supported: each run is its own process and
+the parent never waits unbounded.
 """
 
+import builtins
 import contextlib
 import faulthandler
 import io
 import logging
 import multiprocessing
 import os
+import shutil
 import signal
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -43,14 +43,19 @@ import types
 
 from eval.contracts.grading import GraderExecutionMode
 
+try:
+    import resource  # POSIX-only; the memory cap degrades where it is absent (see apply_memory_cap)
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    resource = None
+
 logger = logging.getLogger(__name__)
 
-# A candidate that outruns this is failed deterministically. 1 GiB fits a real LCB
-# solution and its test harness while bounding the runaway-allocator class from #147.
+# A candidate that outruns this is failed deterministically. 1 GiB fits a real LCB solution
+# and its test harness; it bounds a runaway allocator without squeezing a legitimate one.
 DEFAULT_MAX_MEMORY_BYTES = 1 * 1024 * 1024 * 1024
 
-# Per-test alarm; a wall-clock deadline overrides it. The deadline is NOT
-# (test_timeout + 1) * len(tests) + 5 (the old join) -- it bounds the whole run.
+# Per-test alarm. The wall-clock deadline (``DEFAULT_DEADLINE``) bounds the whole run
+# independently of how many tests there are.
 TIMEOUT = 6.0
 DEFAULT_DEADLINE = 30.0
 
@@ -58,8 +63,8 @@ DEFAULT_DEADLINE = 30.0
 # SIGKILL'd process reaps immediately, so this only matters for the (rare) failed kill.
 _JOIN_GRACE = 1.0
 
-# A per-test detail string is candidate-controlled and the pipe holds ~64 KiB before
-# send() would block; cap it so a verbose failure cannot wedge the child.
+# A per-test detail string is candidate-controlled and the pipe holds ~64 KiB before send()
+# would block; cap it so a verbose failure cannot wedge the child.
 _MAX_DETAIL_CHARS = 8192
 
 PASSED = "passed"
@@ -68,13 +73,43 @@ TIMED_OUT = "timeout"
 
 
 class TimeoutException(Exception):
-    pass
+    """Raised by :func:`_time_limit` when a single test outlives its SIGALRM window."""
 
 
 class redirect_stdin(contextlib._RedirectStream):  # noqa: N801
-    """``contextlib`` ships ``redirect_stdout``/``redirect_stderr`` only; this is the stdin twin (mirrors ``humaneval``)."""
+    """``contextlib`` ships ``redirect_stdout``/``redirect_stderr`` only; this is the stdin twin."""
 
     _stream = "stdin"
+
+
+def apply_memory_cap(maximum_memory_bytes) -> bool:
+    """Apply the child memory cap best-effort.
+
+    Returns True when every rlimit was set. Darwin and some sandboxes refuse to lower
+    ``RLIMIT_AS`` and the cap does not bind -- the wall-clock deadline + kill remains the
+    bound that holds everywhere, so this degrades instead of crashing the child.
+    """
+    if not maximum_memory_bytes:
+        return False
+    if resource is None:  # pragma: no cover - non-POSIX platforms
+        return False
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
+        resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
+        resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def terminate(pid) -> None:
+    """SIGKILL a grader child; a no-op if it is already gone."""
+    if pid is None:
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        pass
 
 
 @contextlib.contextmanager
@@ -93,32 +128,19 @@ def _time_limit(seconds):
 
 
 def _reliability_guard(maximum_memory_bytes):
-    """Disable destructive calls and, where the platform allows, cap memory. Returns a restore callable.
+    """Disable destructive calls inside a candidate and (best-effort) cap its memory.
 
-    The rlimit is applied best-effort: Darwin and some sandboxes refuse to lower
-    ``RLIMIT_AS``, and the guard must degrade there rather than crash the child -- the wall-clock
-    deadline plus kill is the bound that holds everywhere.
+    Returns a restore callable; the caller invokes it only after the candidate has
+    finished -- restoring earlier would hand back the calls this is meant to withhold.
+    Not a security sandbox: it blocks accidents and casual misbehavior, not a determined
+    escape.
     """
-    if maximum_memory_bytes:
-        import resource
-
-        try:
-            resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
-            resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
-            resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
-        except (ValueError, OSError):
-            pass  # platform refused to lower the cap; the deadline still bounds the run
-
+    apply_memory_cap(maximum_memory_bytes)
     faulthandler.disable()
-    import builtins
 
     builtins.exit = None
     builtins.quit = None
     os.environ["OMP_NUM_THREADS"] = "1"
-
-    import shutil
-    import subprocess
-    import sys
 
     saved = []
     _DISABLED = {
@@ -227,14 +249,6 @@ def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all
         connection.close()
 
 
-def _terminate(pid):
-    if pid is not None:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            pass  # already gone
-
-
 def run(
     tests,
     completion,
@@ -284,8 +298,11 @@ def run(
     process.start()
     sender.close()
     pid = process.pid
+    # Child identification at spawn -- the pid, test count, and deadline are what the
+    # reward path prints when a runaway trips the watchdog. A test captures the log to
+    # check the fields appear.
     logger.debug(
-        "lcb grader spawned pid=%s tests=%d test_timeout=%.2fs deadline=%.2fs cap=%s",
+        "lcb grader spawned pid=%s tests=%d test_timeout=%.2fs deadline=%.2fs cap=0x%x",
         pid,
         len(tests),
         test_timeout,
@@ -293,14 +310,14 @@ def run(
         maximum_memory_bytes,
     )
 
-    watchdog = threading.Timer(deadline, _terminate, args=(pid,))
+    watchdog = threading.Timer(deadline, terminate, args=(pid,))
     watchdog.daemon = True
     watchdog.start()
 
     process.join(timeout=deadline + _JOIN_GRACE)
     watchdog.cancel()
     if process.is_alive():
-        _terminate(pid)
+        terminate(pid)
         process.join(timeout=_JOIN_GRACE)
 
     outcomes: list[dict] = []
@@ -339,6 +356,57 @@ def run(
         "child_pid": pid,
         "outcomes": outcomes,
     }
+
+
+def _infer_call_target_from_completion(completion):
+    """Guess the first user-defined function name in a completion (best-effort).
+
+    Mirrors the logic the vendored stacks used before this route existed.
+    """
+    return completion.split("(")[0].split()[-1]
+
+
+def run_lcb_tests(problem, completion, timeout, is_extracted=False):
+    """Score a normalized LCB problem through the bounded grader, per the vendored ``lcb_run`` contract.
+
+    Arguments:
+        problem: ``{"test": [{"input":..., "output":..., "testtype":"functional"|"stdin"}...]}``
+            (or ``problem["test"]`` as a JSON string, as produced by the dataset loaders).
+        completion: The candidate's program (functions or a stdin script).
+        timeout: Per-test wall-clock bound.
+        is_extracted: Preserved for call-site compatibility; the mode is derived from the
+            first test's ``testtype`` here.
+
+    Returns the per-test ``(passed, msg, val, elapsed)`` tuples the vendored
+    ``lcb_run`` used to return, so consumers do not need to change.
+    """
+    tests = problem["test"]
+    if isinstance(tests, str):
+        import json
+
+        tests = json.loads(tests)
+    if not tests:
+        return []
+    is_stdin = tests[0].get("testtype") != "functional"
+    normalized = [{"input": tc.get("input"), "output": tc.get("output")} for tc in tests]
+    fn_name = None if is_stdin else _infer_call_target_from_completion(completion)
+    result = run(
+        normalized,
+        completion,
+        fn_name=fn_name,
+        stdin_mode=is_stdin,
+        test_timeout=timeout,
+        deadline=max(timeout * 2, DEFAULT_DEADLINE),
+    )
+    per_test = result["outcomes"]
+    rows = []
+    for i, _tc in enumerate(tests):
+        if i < len(per_test):
+            row = per_test[i]
+            rows.append((row["outcome"] == PASSED, row.get("detail", ""), row.get("detail", ""), 0.0))
+        else:
+            rows.append((False, "Time out!.", "Error: Time out!", float("inf")))
+    return rows
 
 
 def grade(tests, completion, **kwargs) -> float:

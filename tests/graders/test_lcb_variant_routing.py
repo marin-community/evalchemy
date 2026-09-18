@@ -3,23 +3,27 @@
 """Regression coverage that the vendored LiveCodeBench stacks route through the bounded grader.
 
 Issue #147: the three NovaSky ``testing_util`` copies (``LiveCodeBench``,
-``LiveCodeBenchv5``, ``LiveCodeBenchv5_official``) and ``LiveBench/lcb_runner`` all left their
-worker unbounded -- ``lcb_run`` joined on ``(timeout + 1) * len(test_cases) + 5`` seconds and
-applied no memory cap. These tests exec-load each variant's ``lcb_run`` the way ``eval/task.py``
-loads the benchmark and assert a runaway candidate is now bounded: it finishes far below the old
-test-count join and leaves no worker running.
+``LiveCodeBenchv5``, ``LiveCodeBenchv5_official``) left their worker unbounded --
+``lcb_run`` joined on ``(timeout + 1) * len(test_cases) + 5`` seconds with no memory cap.
+These tests exec-load each variant's ``lcb_run`` the way ``eval/task.py`` loads the benchmark
+and assert a runaway candidate is now bounded: it finishes far below the old test-count join
+and leaves no worker running.
 """
 
 import importlib.util
-import os
 import pathlib
-import subprocess
 import sys
 import time
+import types
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+
+from eval.contracts.grading import GraderExecutionMode  # noqa: E402
+from lcb_test_support import living_children  # noqa: E402
 
 VARIANTS = [
     ("LiveCodeBench", "eval/chat_benchmarks/LiveCodeBench/livecodebench_utils.py"),
@@ -36,24 +40,14 @@ def _load_variant(path: str):
     return module
 
 
-def _running_children() -> set[int]:
-    out = subprocess.run(["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "command="], capture_output=True, text=True).stdout
-    me = str(os.getpid())
-    running = set()
-    for line in out.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) == 3 and parts[1] == me and "resource_tracker" not in parts[2] and parts[2].split()[0].rsplit("/", 1)[-1] != "ps":
-            running.add(int(parts[0]))
-    return running
-
-
 def test_all_variants_share_the_same_bounded_lcb_run():
-    """A single bounded implementation: the three variants reference one grader module."""
+    """One implementation: all three variants delegate to the same shared grader helper."""
     import eval.graders.livecodebench as grader
 
     for _name, path in VARIANTS:
         module = _load_variant(path)
         assert module._lcb_grader is grader, f"{path} must route through eval.graders.livecodebench"
+        assert module.lcb_run.__name__ == "lcb_run"
 
 
 def test_lcb_run_is_bounded_not_unbounded_join():
@@ -66,7 +60,7 @@ def test_lcb_run_is_bounded_not_unbounded_join():
     old_formula = (timeout + 1) * 1 + 5  # what lcb_run joined on before the fix
 
     start = time.perf_counter()
-    before = _running_children()
+    before = living_children()
     result = module.lcb_run(problem, runaway, timeout, True)
     elapsed = time.perf_counter() - start
 
@@ -74,7 +68,7 @@ def test_lcb_run_is_bounded_not_unbounded_join():
     assert elapsed < 3.0, f"a single hung test should be cut near its {timeout}s alarm, not {elapsed:.1f}s"
     assert not all(row[0] for row in result), "a runaway must not score its test passed"
     time.sleep(0.2)
-    assert (_running_children() - before) == set(), "no lcb_run worker may survive a timeout"
+    assert (living_children() - before) == set(), "no lcb_run worker may survive a timeout"
 
 
 def test_lcb_run_still_scores_a_correct_candidate():
@@ -94,12 +88,9 @@ def test_lcb_run_scores_a_wrong_candidate_failed():
 
 
 def test_route_declares_sandboxed_execution_mode():
-    """LCB self-manages its per-example process fan-out (like MBPPPlus/HumanEvalPlus), so it
-    declares SANDBOXED and must not run inside the driver's thread pool."""
-    import types
-
+    """LCB self-manages its per-example process fan-out (like MBPPPlus / HumanEvalPlus), so
+    it declares SANDBOXED and must not run inside the driver's thread pool."""
     sys.modules.setdefault("fire", types.ModuleType("fire"))
-    from eval.contracts.grading import GraderExecutionMode
     from eval.task import TaskManager
 
     for name, _path in VARIANTS:
