@@ -3,6 +3,7 @@
 from transformers import AutoTokenizer
 from transformers.models.auto.tokenization_auto import get_tokenizer_config
 
+GEMMA4_VIDEO_TOKEN = "<|video|>"
 _original_from_pretrained = AutoTokenizer.from_pretrained
 
 
@@ -19,19 +20,19 @@ def _from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
             if key in kwargs
         }
         config = get_tokenizer_config(pretrained_model_name_or_path, **config_kwargs)
-        if config.get("extra_special_tokens") != ["<|video|>"]:
+        if config.get("extra_special_tokens") != [GEMMA4_VIDEO_TOKEN]:
             raise
 
         return _original_from_pretrained(
             pretrained_model_name_or_path,
             *args,
             **kwargs,
-            extra_special_tokens={"video_token": "<|video|>"},
+            extra_special_tokens={"video_token": GEMMA4_VIDEO_TOKEN},
         )
 
 
 def install_tokenizer_compat():
-    """Normalize Gemma 4's Transformers 5 config at lm-eval's tokenizer boundary."""
+    """Patch tokenizer loads process-wide for Gemma 4's Transformers 5 config."""
     if getattr(AutoTokenizer.from_pretrained, "__func__", None) is _from_pretrained:
         return
     AutoTokenizer.from_pretrained = classmethod(_from_pretrained)
