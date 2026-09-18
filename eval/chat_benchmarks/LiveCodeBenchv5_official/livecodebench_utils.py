@@ -18,6 +18,8 @@ from typing import Callable, Dict, Optional
 
 import scipy.stats as stats
 
+from eval.graders import livecodebench as _lcb_grader
+
 
 def reliability_guard(maximum_memory_bytes: Optional[int] = None):
     """
@@ -263,17 +265,43 @@ def run_tests_for_one_example(test_cases, completion, result_list, is_extracted)
             return
 
 
-def lcb_run(problem, completion, timeout, is_extracted):
-    test_cases = problem["test"]
-    manager = multiprocessing.Manager()
-    result = manager.list()
-    p = multiprocessing.Process(target=run_tests_for_one_example, args=(test_cases, completion, result, is_extracted))
-    p.start()
-    p.join(timeout=(timeout + 1) * len(test_cases) + 5)
-    if p.is_alive():
-        p.kill()
+def _infer_fn_name(completion: str) -> str:
+    """Best-effort guess of the function to call, mirroring the vendored stack's logic."""
+    return completion.split("(")[0].split()[-1]
 
-    # if len(result) < len(test_cases): failed due to timeout
-    for i in range(len(test_cases) - len(result)):
-        result.append((False, f"Time out!.", "Error: Time out!", float("inf")))
-    return result
+
+def lcb_run(problem, completion, timeout, is_extracted):
+    """Route the candidate through the bounded grader shared with every other LCB variant.
+
+    The old implementation left the worker unbounded in memory and time: it joined on
+    ``(timeout + 1) * len(test_cases) + 5`` seconds and applied no memory cap. The shared
+    grader applies a wall-clock deadline independent of test count, a per-test SIGALRM,
+    and (where the platform allows) an ``RLIMIT_AS``/``RLIMIT_DATA`` cap, then reaps the
+    child deterministically.
+    """
+    test_cases = problem["test"]
+    if isinstance(test_cases, str):
+        test_cases = json.loads(test_cases)
+    if not test_cases:
+        return []
+    test_type = test_cases[0].get("testtype")
+    normalized = [{"input": tc.get("input"), "output": tc.get("output")} for tc in test_cases]
+    is_stdin = test_type != "functional"
+    result = _lcb_grader.run(
+        normalized,
+        completion,
+        fn_name=None if is_stdin else _infer_fn_name(completion),
+        stdin_mode=is_stdin,
+        test_timeout=timeout,
+        deadline=max(timeout * 2, 30.0),
+    )
+    per_test = result["outcomes"]
+    out = []
+    for i, tc in enumerate(test_cases):
+        if i < len(per_test):
+            row = per_test[i]
+            passed = row["outcome"] == _lcb_grader.PASSED
+            out.append((passed, row.get("detail", ""), row.get("detail", ""), 0.0))
+        else:
+            out.append((False, "Time out!.", "Error: Time out!", float("inf")))
+    return out

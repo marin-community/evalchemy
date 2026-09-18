@@ -40,6 +40,11 @@ TIMEOUT = 3.0
 # child, so a wedged candidate is reported as a timeout rather than a hang.
 _JOIN_GRACE = 1.0
 
+# A candidate that outruns this is killed deterministically (issue #147). 1 GiB fits a
+# real HumanEval solution while bounding the runaway-allocator class; applied best-effort
+# -- the sandbox applies rlimits where the platform allows and degrades elsewhere.
+DEFAULT_MEMORY_BYTES = 1 * 1024 * 1024 * 1024
+
 PASSED = "passed"
 TIMED_OUT = "timed out"
 
@@ -159,10 +164,16 @@ def reliability_guard(maximum_memory_bytes=None):
     if maximum_memory_bytes is not None:
         import resource
 
-        resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
-        resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
-        if platform.uname().system != "Darwin":
-            resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+        # Applied best-effort: Darwin (and some sandboxes) refuse to lower RLIMIT_AS, and
+        # the guard must degrade there rather than crash the child -- the SIGALRM and
+        # join-grace kill are the bounds that hold everywhere.
+        try:
+            resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
+            resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
+            if platform.uname().system != "Darwin":
+                resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+        except (ValueError, OSError):
+            pass
 
     faulthandler.disable()
 
@@ -197,10 +208,10 @@ def reliability_guard(maximum_memory_bytes=None):
     return restore
 
 
-def _run_candidate(check_program, connection, timeout):
+def _run_candidate(check_program, connection, timeout, maximum_memory_bytes):
     """Execute one candidate in this (throwaway) process and report the outcome."""
     with create_tempdir():
-        restore = reliability_guard()
+        restore = reliability_guard(maximum_memory_bytes)
 
         try:
             exec_globals = {}
@@ -220,10 +231,22 @@ def _run_candidate(check_program, connection, timeout):
         connection.close()
 
 
-def check_correctness(check_program: str, timeout: float = TIMEOUT) -> str:
-    """Run one candidate program in an isolated process and return its outcome."""
+def check_correctness(
+    check_program: str,
+    timeout: float = TIMEOUT,
+    maximum_memory_bytes: int = DEFAULT_MEMORY_BYTES,
+) -> str:
+    """Run one candidate program in an isolated process and return its outcome.
+
+    ``maximum_memory_bytes`` is wired by default (#147): a candidate that outruns it is
+    failed deterministically rather than left running unbounded, the way the pre-#147
+    ``check_correctness`` left every candidate.
+    """
     receiver, sender = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(target=_run_candidate, args=(check_program, sender, timeout))
+    process = multiprocessing.Process(
+        target=_run_candidate,
+        args=(check_program, sender, timeout, maximum_memory_bytes),
+    )
     process.start()
     sender.close()
     process.join(timeout=timeout + _JOIN_GRACE)
