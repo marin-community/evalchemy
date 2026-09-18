@@ -1,4 +1,5 @@
 import re
+import textwrap
 
 language_settings = {
     "python": {
@@ -47,6 +48,15 @@ def get_function_name(question: str, lang: str):
     return func_name, func_prefix
 
 
+def _python_generation(question: str, code_block: str) -> str:
+    func_name, func_prefix = get_function_name(question, "python")
+    code = textwrap.dedent(code_block).strip("\n")
+    # A response may contain a whole function or only its indented body.
+    if re.search(rf"(?m)^[ \t]*{re.escape(func_name)}[ \t]*\(", code):
+        return func_prefix + "\n" + code + "\n"
+    return question + "\n" + code_block.strip("\n") + "\n"
+
+
 def extract_generation_code(example: str, lang_code: str, verbose: bool = False):
     task_id = example["task_id"]
     output = example.get("output", example.get("gpt_completion"))
@@ -64,6 +74,10 @@ def extract_generation_code(example: str, lang_code: str, verbose: bool = False)
         if setting.get("main", None) and setting["main"] in code_block:
             main_start = code_block.index(setting["main"])
             code_block = code_block[:main_start]
+
+        if lang_code.lower() == "python":
+            example["generation"] = _python_generation(question, code_block)
+            return example
 
         func_name, func_prefix = get_function_name(question, lang)
 
@@ -96,7 +110,10 @@ def extract_generation_code(example: str, lang_code: str, verbose: bool = False)
         print(
             "Failed to extract code block with error `{}`:\n>>> Task: {}\n>>> Output:\n{}".format(ex, task_id, output)
         )
-        example["generation"] = example["prompt"] + "\n" + output
+        if lang_code.lower() == "python":
+            example["generation"] = _python_generation(question, output)
+        else:
+            example["generation"] = example["prompt"] + "\n" + output
 
     return example
 

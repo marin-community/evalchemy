@@ -200,7 +200,10 @@ def test_math500_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_
         assert "top_p" not in payload
 
 
-@pytest.mark.parametrize("overrides", [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}])
+@pytest.mark.parametrize(
+    "overrides",
+    [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}, {"max_gen_toks": 16000}],
+)
 def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_path, overrides):
     dataset = tmp_path / "questions.jsonl"
     dataset.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
@@ -232,9 +235,13 @@ def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint,
     payload = endpoint.requests[0]
     _assert_temperature_and_seed(payload, overrides)
     assert payload["top_p"] == overrides.get("top_p", 0.4)
+    if "max_gen_toks" in overrides:
+        assert payload["max_tokens"] == overrides["max_gen_toks"]
+        assert "max_gen_toks" not in payload
 
 
-def test_cli_generation_config_wins_over_math500_defaults(endpoint, tmp_path):
+@pytest.mark.parametrize("task", ["AIME24", "MATH500"])
+def test_cli_output_cap_wins_over_math_benchmark_defaults(endpoint, tmp_path, task):
     root = Path(__file__).parents[2]
     result = subprocess.run(
         [
@@ -246,8 +253,14 @@ def test_cli_generation_config_wins_over_math500_defaults(endpoint, tmp_path):
             "--model_args",
             f"model=served,base_url=http://127.0.0.1:{endpoint.server_port}/v1/chat/completions,tokenizer_backend=None,tokenized_requests=False",
             "--tasks",
-            "MATH500",
+            task,
             "--debug",
+            "--limit",
+            "1",
+            "--max_length",
+            "65536",
+            "--max_tokens",
+            "16000",
             "--gen_kwargs",
             "temperature=0.85,top_p=0.91,seed=27",
             "--output_path",
@@ -261,7 +274,48 @@ def test_cli_generation_config_wins_over_math500_defaults(endpoint, tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert endpoint.requests
-    payload = endpoint.requests[0]
-    assert payload["temperature"] == 0.85
-    assert payload["seed"] == 27
-    assert payload["top_p"] == 0.91
+    for payload in endpoint.requests:
+        assert payload["max_tokens"] == 16000
+        assert "max_gen_toks" not in payload
+        assert payload["temperature"] == 0.85
+        assert payload["seed"] == 27
+        assert payload["top_p"] == 0.91
+
+
+def test_cli_generation_limits_win_over_config_defaults(endpoint, tmp_path):
+    root = Path(__file__).parents[2]
+    config = tmp_path / "tasks.yaml"
+    config.write_text(yaml.safe_dump({
+        "tasks": [{"task_name": "AIME24", "batch_size": "auto"}],
+        "max_length": 32768,
+        "max_tokens": 8192,
+    }))
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "eval.eval",
+            "--model",
+            "local-chat-completions",
+            "--model_args",
+            f"model=served,base_url=http://127.0.0.1:{endpoint.server_port}/v1/chat/completions,tokenizer_backend=None,tokenized_requests=False,max_length=65536",
+            "--config",
+            str(config),
+            "--debug",
+            "--limit",
+            "1",
+            "--gen_kwargs",
+            "max_gen_toks=16000",
+            "--output_path",
+            str(tmp_path),
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert endpoint.requests
+    assert all(payload["max_tokens"] == 16000 for payload in endpoint.requests)
+    assert all("max_gen_toks" not in payload for payload in endpoint.requests)

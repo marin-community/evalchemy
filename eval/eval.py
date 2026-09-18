@@ -40,6 +40,7 @@ from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_comm
 from lm_eval.tasks import TaskManager as PretrainTaskManager
 from lm_eval.utils import handle_non_serializable as _orig_handle
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
@@ -81,7 +82,7 @@ from eval.contracts.task_outcome import (
     validate_result_document,
 )
 from eval.eval_tracker import DCEvaluationTracker
-from eval.limits import resolve_evaluation_limits
+from eval.limits import parse_key_value_args, resolve_evaluation_limits
 from eval.resume import lm_eval_native
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
@@ -374,7 +375,7 @@ def setup_custom_parser():
     parser.add_argument(
         "--config",
         type=str,
-        help="Path to config yaml. Overwrites --batch_size, --tasks, --annotator_model, --max_length, and --max_tokens",
+        help="Path to config yaml. Sets tasks, batch sizes, and annotator; explicit CLI generation limits take precedence.",
     )
     parser.add_argument(
         "--debug",
@@ -692,6 +693,20 @@ def update_model_args_with_name(model_args: str, model_name: str) -> str:
     return model_args
 
 
+def _apply_config_limit_defaults(args: argparse.Namespace, tasks_yaml: dict) -> None:
+    """Use YAML limits only when the caller supplied no limit in any CLI spelling."""
+    model_limit_keys = parse_key_value_args(args.model_args)
+    generation_limit_keys = parse_key_value_args(args.gen_kwargs)
+    if "max_length" in tasks_yaml and args.max_length is None and not any(
+        key in model_limit_keys for key in MODEL_LENGTH_ALIASES
+    ):
+        args.max_length = tasks_yaml["max_length"]
+    if "max_tokens" in tasks_yaml and args.max_tokens is None and not any(
+        key in generation_limit_keys for key in MAX_OUTPUT_ALIASES
+    ):
+        args.max_tokens = tasks_yaml["max_tokens"]
+
+
 def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     """
     Command-line interface for evaluating language models.
@@ -716,10 +731,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         args.tasks = ",".join([t["task_name"] for t in tasks_yaml["tasks"]])
         batch_sizes_list = [int(t["batch_size"]) if t["batch_size"] != "auto" else "auto" for t in tasks_yaml["tasks"]]
         args.annotator_model = tasks_yaml.get("annotator_model", args.annotator_model)
-        if "max_length" in tasks_yaml:
-            args.max_length = tasks_yaml["max_length"]
-        if "max_tokens" in tasks_yaml:
-            args.max_tokens = tasks_yaml["max_tokens"]
+        _apply_config_limit_defaults(args, tasks_yaml)
     else:
         batch_sizes_list = [
             int(args.batch_size) if args.batch_size != "auto" else args.batch_size
