@@ -28,6 +28,7 @@ from eval.chat_benchmarks.LiveBench.livebench.common import (
 )
 from eval.chat_benchmarks.LiveBench.livebench.gen_ground_truth_judgment import gen_judgments
 from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import get_conversation_template
+from eval.contracts.grading import GraderExecutionMode
 from eval.task import BaseBenchmark
 
 
@@ -35,6 +36,8 @@ class LiveBenchBenchmark(BaseBenchmark):
     """
     LiveBench benchmark for evaluating language model responses.
     """
+
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
 
     def __init__(
         self,

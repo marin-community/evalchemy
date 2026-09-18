@@ -2,9 +2,11 @@
 # https://github.com/Naman-ntc/codescratch/blob/main/evaluation/bigcode-evaluation-harness/lm_eval/tasks/custom_metrics/apps_custom_metrics/utils.py
 
 import os
+import threading
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import json
+import logging
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -12,39 +14,72 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 from tqdm import tqdm
 
+from eval.graders import livecodebench as _lcb_grader
 from livebench.lcb_runner.evaluation.testing_util import run_test
 from livebench.lcb_runner.evaluation.pass_k_utils import compute_metrics_from_results
 
+_logger = logging.getLogger(__name__)
 
-def _temp_run(sample, generation, debug, result, metadata_list, timeout):
+# Wall-clock bound per generation, shared with the bounded grader and independent of the
+# test count (the earlier wrapper scaled it with the test count instead).
+DEFAULT_DEADLINE = _lcb_grader.DEFAULT_DEADLINE
+
+
+def _worker_run(sample, generation, debug, connection, timeout):
+    """Child side: apply the shared grader's memory cap (best-effort) then run ``run_test`` once and send the result over the pipe."""
+    _lcb_grader.apply_memory_cap(_lcb_grader.DEFAULT_MAX_MEMORY_BYTES)
     res, metadata = run_test(sample, test=generation, debug=debug, timeout=timeout)
-    result.append(res)
-    metadata_list.append(metadata)
+    try:
+        connection.send((res, metadata))
+    finally:
+        connection.close()
 
 
-def check_correctness(sample, generation, timeout, debug=True):
-    """Check correctness of code generation with a global timeout.
-    The global timeout is to catch some extreme/rare cases not handled by the timeouts
-    inside `run_test`"""
+def check_correctness(sample, generation, timeout, debug=True, deadline=DEFAULT_DEADLINE):
+    """Check correctness of code generation with a wall-clock deadline independent of the test count.
 
-    manager = multiprocessing.Manager()
-    result = manager.list()
-    metadata_list = manager.list()
-    p = multiprocessing.Process(
-        target=_temp_run,
-        args=(sample, generation, debug, result, metadata_list, timeout),
+    Replaces the issue #147 unbounded Manager+Process pattern: a pipe carries the
+    (res, metadata) result, the child's rlimit is applied best-effort, and the parent
+    watchdogs the child to a fixed deadline (not ``(timeout + 1) * N + 5``).
+    """
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    process = multiprocessing.Process(
+        target=_worker_run,
+        args=(sample, generation, debug, sender, timeout),
     )
-    p.start()
-    p.join(timeout=(timeout + 1) * len(json.loads(sample["input_output"])["inputs"]) + 5)
-    if p.is_alive():
-        p.kill()
-    if not result:
+    process.start()
+    sender.close()
+    pid = process.pid
+    if _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug("lcb_runner check pid=%s deadline=%.2f", pid, deadline)
+
+    watchdog = threading.Timer(deadline, _lcb_grader.terminate, args=(pid,))
+    watchdog.daemon = True
+    watchdog.start()
+
+    process.join(timeout=deadline + 1.0)
+    watchdog.cancel()
+    if process.is_alive():
+        _lcb_grader.terminate(pid)
+        process.join(timeout=1.0)
+
+    if receiver.poll():
+        try:
+            res, metadata = receiver.recv()
+        except (EOFError, OSError):
+            res, metadata = None, {}
+    else:
+        res, metadata = None, {}
+    receiver.close()
+
+    if not res:
         in_outs = json.loads(sample["input_output"])
         # consider that all tests failed
-        result = [[-1 for i in range(len(in_outs["inputs"]))]]
+        res = [-1 for _ in in_outs["inputs"]]
+        metadata = metadata or {}
         if debug:
-            print(f"global timeout")
-    return result[0], metadata_list[0]
+            print("global timeout")
+    return res, metadata
 
 
 def evaluate_generations_by_problem(args):

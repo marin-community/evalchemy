@@ -11,6 +11,7 @@ from datasets import Dataset, concatenate_datasets, load_dataset
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.grading import GraderExecutionMode
 from eval.task import BaseBenchmark
 from huggingface_hub import hf_hub_download
 
@@ -49,6 +50,8 @@ class LiveCodeBenchV5OfficialBenchmark(BaseBenchmark):
 
     Follows the evaluation logic of hendrycks_math answer extraction.
     """
+
+    GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
 
     def __init__(
         self,
