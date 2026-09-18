@@ -32,6 +32,7 @@ except Exception:
 import lm_eval.models.openai_completions  # noqa: F401,E402
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES, resolve_limit
 
 from eval.contracts.benchmark_metadata import (
     BenchmarkMetadata,
@@ -490,14 +491,20 @@ class BaseBenchmark(ABC):
             record_sample_metrics(example, **{name: values[index] for name, values in estimates.items()})
 
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
+        overrides = dict(self._evaluation_gen_kwargs)
+        override_cap = resolve_limit(
+            "max_tokens",
+            [(f"gen_kwargs.{alias}", overrides.pop(alias)) for alias in MAX_OUTPUT_ALIASES if alias in overrides],
+        )
+        output_cap = override_cap if override_cap is not None else self._evaluation_max_tokens
         for instance in instances:
-            if self._evaluation_max_tokens is not None:
+            if output_cap is not None:
                 # The request is the last common point all custom benchmarks
                 # traverse.  Discard every backend spelling before assigning the
                 # canonical output cap so a task-local default cannot win.
-                for alias in ("max_tokens", "max_new_tokens", "max_gen_toks"):
+                for alias in MAX_OUTPUT_ALIASES:
                     instance.args[1].pop(alias, None)
-                instance.args[1]["max_new_tokens"] = self._evaluation_max_tokens
+                instance.args[1]["max_new_tokens"] = output_cap
             seeds = None
             if "seed" in instance.args[1]:
                 seeds = instance.args[1]["seed"]
@@ -537,9 +544,9 @@ class BaseBenchmark(ABC):
                     instance.args[1]["max_gen_toks"] = max_new_tokens
                 else:  # Huggingface
                     instance.args[1]["max_new_tokens"] = max_new_tokens
-            if self._evaluation_gen_kwargs.get("do_sample") is True and "temperature" not in self._evaluation_gen_kwargs:
+            if overrides.get("do_sample") is True and "temperature" not in overrides:
                 instance.args[1].pop("temperature", None)
-            instance.args[1].update(self._evaluation_gen_kwargs)
+            instance.args[1].update(overrides)
         return instances
 
     def _prepare_messages(

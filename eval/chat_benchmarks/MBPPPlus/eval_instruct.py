@@ -2,6 +2,7 @@ from typing import Dict, List, Any, Optional, Generator
 import json
 import os
 import re
+import textwrap
 from pathlib import Path
 from tqdm import tqdm
 import logging
@@ -121,10 +122,10 @@ Here is my problem:
         """Extract code block from model completion."""
         try:
             code_block = re.findall(r"```python\n(.*?)```", completion, re.DOTALL | re.IGNORECASE)[0]
-            return code_block
+            return textwrap.dedent(code_block).strip("\n")
         except Exception as e:
             self.logger.warning(f"Failed to extract code block, using full completion.\nError: {str(e)}")
-            return completion
+            return textwrap.dedent(completion).strip("\n")
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """

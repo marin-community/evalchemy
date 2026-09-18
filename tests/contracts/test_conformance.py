@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Registry-wide coverage for the shared benchmark lifecycle schema."""
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,30 @@ def test_every_registered_custom_and_lm_eval_name_has_a_complete_contract():
         contract.task_name for contract in contracts if contract.route is TaskRoute.CUSTOM
     }
     assert any(contract.route is TaskRoute.LM_EVAL for contract in contracts)
+
+
+def test_every_custom_benchmark_uses_the_shared_generation_boundary():
+    root = Path("eval/chat_benchmarks")
+    for path in root.glob("*/eval_instruct.py"):
+        tree = ast.parse(path.read_text())
+        # Some variants inherit generation unchanged from another benchmark.
+        if not any(isinstance(node, ast.FunctionDef) and node.name == "generate_responses" for node in ast.walk(tree)):
+            continue
+        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        assert any(
+            isinstance(call, ast.Attribute)
+            and call.attr == "compute"
+            and isinstance(call.value, ast.Name)
+            and call.value.id == "self"
+            for call in calls
+        ), path
+        assert not any(
+            isinstance(call, ast.Attribute)
+            and call.attr in {"generate_until", "loglikelihood", "loglikelihood_rolling"}
+            and isinstance(call.value, ast.Name)
+            and call.value.id == "model"
+            for call in calls
+        ), path
 
 
 def test_custom_class_audit_rejects_untyped_resources_and_execution_modes():
