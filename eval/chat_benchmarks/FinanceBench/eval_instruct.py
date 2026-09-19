@@ -8,14 +8,18 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
-from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.task_outcome import TaskFailure
+from eval.graders.answer_equivalence import (
+    EquivalenceJudgment,
+    EquivalenceRequest,
+    JudgeConfig,
+    JudgeLabel,
+    judge_equivalence,
+)
 from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
-
-from .judge import judge_all
 
 # Document-grounded prompt: the question is unanswerable without the supporting
 # passage, so the full-page evidence from the source filing is rendered ahead of
@@ -29,13 +33,6 @@ Document:
 Question: {question}
 
 Provide a direct, concise answer."""
-
-# Default judge model when neither ``annotator_model`` nor ``$JUDGE_MODEL`` is supplied.
-# ``gpt-4o-mini`` is the standard cheap-and-fast judge across the evalchemy LLM-judged
-# benchmarks (HLE / MixEval / WildBench / MTBench).
-DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
-DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
-
 
 class FinanceBenchBenchmark(BaseBenchmark):
     """
@@ -52,15 +49,16 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
     Grading is LLM-as-judge (SimpleQA-style correct / incorrect / not_attempted) rather
     than exact match, because financial answers frequently differ from the gold only in
-    formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). See ``judge.py``.
-    The judge uses ``JUDGE_API_KEY`` and optional ``JUDGE_BASE_URL`` credentials that
-    are separate from the candidate endpoint's ``OPENAI_API_KEY``.
+    formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). The shared
+    answer-equivalence judge uses ``JUDGE_API_KEY`` and optional ``JUDGE_BASE_URL``
+    credentials that are separate from the candidate endpoint's ``OPENAI_API_KEY``.
 
     Link: https://github.com/patronus-ai/financebench
     """
 
     METRICS = ("accuracy",)
     PRIMARY_METRIC = "accuracy"
+    REQUIRES_JUDGE = True
 
     def __init__(
         self,
@@ -100,13 +98,12 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
-        self.judge_api_key = judge_api_key or os.environ.get("JUDGE_API_KEY")
-        if not self.judge_api_key:
-            raise ValueError("JUDGE_API_KEY is required by FinanceBench")
-        self.judge_base_url = judge_base_url or os.environ.get("JUDGE_BASE_URL") or DEFAULT_JUDGE_BASE_URL
-        # Resolution order matches the rest of evalchemy: explicit kwarg > env > default.
-        explicit_judge_model = annotator_model if annotator_model not in (None, AUTO_ANNOTATOR_MODEL) else None
-        self.judge_model = explicit_judge_model or os.environ.get("JUDGE_MODEL") or DEFAULT_JUDGE_MODEL
+        self.judge_config = JudgeConfig.resolve(
+            judge_model=annotator_model,
+            api_key=judge_api_key,
+            base_url=judge_base_url,
+        )
+        self.judge_model = self.judge_config.model
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -170,16 +167,26 @@ class FinanceBenchBenchmark(BaseBenchmark):
         examples = results["examples"]
         total = len(examples)
         judge_model = results.get("judge_model", self.judge_model)
+        judge_config = JudgeConfig(
+            model=judge_model,
+            base_url=self.judge_config.base_url,
+            api_key=self.judge_config.api_key,
+        )
 
         self.logger.info(
             f"Judging {total} FinanceBench responses with {judge_model}..."
         )
         judgments = asyncio.run(
-            judge_all(
-                examples,
-                judge_model,
-                api_key=self.judge_api_key,
-                base_url=self.judge_base_url,
+            judge_equivalence(
+                [
+                    EquivalenceRequest(
+                        question=example["question"],
+                        reference_answers=(str(example["answer"]),),
+                        candidate_answer=example.get("model_output", "") or "",
+                    )
+                    for example in examples
+                ],
+                judge_config,
             )
         )
 
@@ -207,18 +214,19 @@ class FinanceBenchBenchmark(BaseBenchmark):
                 self.logger.warning("FinanceBench judge failed for trial %d: %s", index, judgment)
                 continue
 
-            label, raw = judgment
-            example["judge_label"] = label
-            example["judge_raw"] = raw
+            assert isinstance(judgment, EquivalenceJudgment)
+            label = judgment.label
+            example["judge_label"] = label.value
+            example["judge_raw"] = judgment.raw
             record_sample_metrics(
                 example,
-                accuracy=label == "correct",
-                not_attempted=label == "not_attempted",
+                accuracy=label == JudgeLabel.CORRECT,
+                not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
                 judge_failed=False,
             )
-            if label == "correct":
+            if label == JudgeLabel.CORRECT:
                 num_correct += 1
-            elif label == "not_attempted":
+            elif label == JudgeLabel.NOT_ATTEMPTED:
                 num_not_attempted += 1
             else:
                 num_incorrect += 1

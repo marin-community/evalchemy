@@ -30,6 +30,7 @@ from eval.contracts.sample_results import (
     sample_metric_fields,
     validate_sample_metrics,
 )
+from eval.graders.answer_equivalence import EquivalenceJudgment, JudgeLabel
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark, TaskManager
 
@@ -122,10 +123,10 @@ def _patch_code_sandbox(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmar
 def _patch_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> None:
     """Stand in for the FinanceBench judge's HTTP calls."""
 
-    async def judge_all(examples, *_args, **_kwargs):
-        return [("correct", "graded") for _ in examples]
+    async def judge_equivalence(requests, *_args, **_kwargs):
+        return [EquivalenceJudgment(JudgeLabel.CORRECT, "graded") for _ in requests]
 
-    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_all", judge_all)
+    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_equivalence", judge_equivalence)
 
 
 def _financebench_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
@@ -423,6 +424,7 @@ def test_every_registered_benchmark_is_covered_by_the_per_sample_metrics_contrac
 @pytest.mark.parametrize("task_name", sorted(GRADING_CASES))
 def test_graded_benchmark_samples_persist_their_per_sample_metrics(task_name, monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "conformance-test")
+    monkeypatch.setenv("JUDGE_API_KEY", "conformance-test")
     case = GRADING_CASES[task_name]
     benchmark, generation_result = case.prepare(monkeypatch, tmp_path)
 

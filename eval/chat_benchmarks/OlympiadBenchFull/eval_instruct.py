@@ -29,6 +29,9 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
         system_instruction: Optional[str] = None,
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
+        annotator_model: Optional[str] = None,
+        judge_api_key: Optional[str] = None,
+        judge_base_url: Optional[str] = None,
     ):
         super().__init__(
             data_file=None,
@@ -43,6 +46,9 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
             num_samples=num_samples,
             pass_at_k=pass_at_k,
             n_repeat=1,
+            annotator_model=annotator_model,
+            judge_api_key=judge_api_key,
+            judge_base_url=judge_base_url,
         )
 
     def load_questions(self) -> List[Dict[str, Any]]:

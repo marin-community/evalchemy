@@ -206,9 +206,9 @@ livecodebenchv5 = []
 livecodebenchv5-official = []
 math500 = []
 mmlupro = []
-# OlympiadBench grades via lm-eval's hendrycks_math boxed-answer utils (in the lean base
-# via lm-eval[math]). The legacy subset is local; the pinned full text-only task loads
-# through datasets, also in the lean base, so neither needs an extra dependency.
+# OlympiadBench grades with the shared Minerva/SymPy and OpenAI-compatible judge stack,
+# whose dependencies are in the lean base. The legacy subset is local; the pinned full
+# text-only task loads through datasets, also in the lean base.
 olympiadbench = []
 olympiadbenchfull = []
 

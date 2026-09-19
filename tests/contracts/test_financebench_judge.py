@@ -1,26 +1,19 @@
-import asyncio
 import json
 from argparse import Namespace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
 from types import SimpleNamespace
 
 import pytest
 
-from eval.chat_benchmarks.FinanceBench import judge as finance_judge
 from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
 from eval.contracts.task_outcome import validate_result_document
 from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
+from eval.graders import answer_equivalence
 from eval.limits import DEFAULT_CONTEXT_SAFETY_TOKENS
 from eval.task import TaskManager
 
 
 class _FakeAsyncOpenAI:
-    constructor_kwargs = None
-    request_kwargs = None
-
     def __init__(self, **kwargs):
-        type(self).constructor_kwargs = kwargs
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
     async def __aenter__(self):
@@ -30,7 +23,6 @@ class _FakeAsyncOpenAI:
         return False
 
     async def create(self, **kwargs):
-        type(self).request_kwargs = kwargs
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="correct"))])
 
 
@@ -39,25 +31,9 @@ class _FailingAsyncOpenAI(_FakeAsyncOpenAI):
         raise RuntimeError("judge unavailable")
 
 
-class _ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.requests = 0
-
-    async def create(self, **kwargs):
-        self.requests += 1
-        if self.requests == 1:
-            choice = SimpleNamespace(message=SimpleNamespace(content=""))
-        elif self.requests == 2:
-            choice = SimpleNamespace(message=SimpleNamespace(content=""))
-        else:
-            choice = SimpleNamespace(message=SimpleNamespace(content="correct"))
-        return SimpleNamespace(choices=[choice])
-
-
 class _MixedJudgeAsyncOpenAI(_FakeAsyncOpenAI):
     async def create(self, **kwargs):
-        if "Question: Unavailable?" in kwargs["messages"][0]["content"]:
+        if "Question:\nUnavailable?" in kwargs["messages"][0]["content"]:
             raise TimeoutError("judge unavailable")
         return await super().create(**kwargs)
 
@@ -79,163 +55,8 @@ class _CandidateModel:
         return ["candidate answer" for _ in instances]
 
 
-@pytest.fixture
-def judge_server():
-    requests = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            requests.append((self.path, dict(self.headers), body))
-            if body["model"] == "retry-model" and len(requests) <= 3:
-                payload = b'{"error":{"message":"judge temporarily unavailable","type":"server_error"}}'
-                self.send_response(503)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-            payload = json.dumps(
-                {
-                    "id": "chatcmpl_test",
-                    "object": "chat.completion",
-                    "created": 1,
-                    "model": body["model"],
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": "correct"},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, format, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}/v1", requests
-    finally:
-        server.shutdown()
-        thread.join()
-
-
-def test_financebench_judge_sends_credentials_only_to_judge_endpoint(judge_server):
-    base_url, requests = judge_server
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="finance-judge-key",
-            base_url=base_url,
-        )
-    )
-
-    assert judgments == [("correct", "correct")]
-    path, headers, body = requests[0]
-    assert path == "/v1/chat/completions"
-    assert headers["Authorization"] == "Bearer finance-judge-key"
-    assert body["model"] == "judge-model"
-
-
-def test_financebench_judge_recovers_from_three_transient_server_failures(judge_server):
-    base_url, requests = judge_server
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "retry-model",
-            api_key="finance-judge-key",
-            base_url=base_url,
-        )
-    )
-
-    assert judgments == [("correct", "correct")]
-    assert len(requests) == 4
-
-
-def test_financebench_judge_uses_dedicated_endpoint_and_key(monkeypatch):
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FakeAsyncOpenAI)
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
-        )
-    )
-
-    assert judgments == [("correct", "correct")]
-    assert _FakeAsyncOpenAI.constructor_kwargs["api_key"] == "judge-key"
-    assert _FakeAsyncOpenAI.constructor_kwargs["base_url"] == "https://judge.example/v1"
-    assert _FakeAsyncOpenAI.request_kwargs["model"] == "judge-model"
-
-
-def test_financebench_judge_api_failure_is_returned_for_its_trial(monkeypatch):
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FailingAsyncOpenAI)
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
-        )
-    )
-
-    assert len(judgments) == 1
-    assert isinstance(judgments[0], RuntimeError)
-
-
-def test_financebench_judge_allows_reasoning_before_label(monkeypatch):
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _ReasoningJudgeAsyncOpenAI)
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "reasoning-judge",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
-        )
-    )
-
-    assert judgments == [("correct", "correct")]
-
-
-@pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", ""])
-def test_financebench_rejects_non_label_responses(monkeypatch, response):
-    class NonLabelAsyncOpenAI(_FakeAsyncOpenAI):
-        async def create(self, **kwargs):
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=response))])
-
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", NonLabelAsyncOpenAI)
-
-    judgments = asyncio.run(
-        finance_judge.judge_all(
-            [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
-            "judge-model",
-            api_key="judge-key",
-            base_url="https://judge.example/v1",
-        )
-    )
-
-    assert len(judgments) == 1
-    assert isinstance(judgments[0], ValueError)
-
-
 def test_financebench_judge_failure_is_saved_per_trial_without_losing_other_scores(monkeypatch, tmp_path):
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _MixedJudgeAsyncOpenAI)
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", _MixedJudgeAsyncOpenAI)
     rows = [
         {"question": "Available?", "answer": "yes", "evidence_text": "Evidence"},
         {"question": "Unavailable?", "answer": "no", "evidence_text": "Evidence"},
@@ -273,7 +94,7 @@ def test_financebench_judge_failure_is_saved_per_trial_without_losing_other_scor
 
 
 def test_financebench_all_judge_failures_return_no_accuracy(monkeypatch):
-    monkeypatch.setattr(finance_judge, "AsyncOpenAI", _FailingAsyncOpenAI)
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", _FailingAsyncOpenAI)
     benchmark = FinanceBenchBenchmark(judge_api_key="judge-key")
     generated = {
         "examples": [{"question": "Revenue?", "answer": "$10", "model_output": "$10"}],
