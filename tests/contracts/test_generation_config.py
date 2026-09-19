@@ -89,6 +89,22 @@ def test_served_chat_checkpoint_generates_without_client_tokenizer(endpoint, che
     assert endpoint.requests[0]["messages"] == [{"role": "user", "content": "Question"}]
 
 
+def test_served_chat_forwards_template_kwargs_and_extra_body(endpoint):
+    model_args = simple_parse_args_string(
+        "model=served,"
+        f"base_url=http://127.0.0.1:{endpoint.server_port}/v1/chat/completions,"
+        "tokenizer_backend=None,tokenized_requests=False,"
+        'chat_template_kwargs={"enable_thinking":false},extra_body={"priority":7}'
+    )
+    model = LocalChatCompletion(**model_args)
+    request = Instance("generate_until", {"question": "Question"}, ([{"role": "user", "content": "Question"}], {}), 0)
+
+    assert model.generate_until([request]) == ["\\boxed{42}"]
+    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert endpoint.requests[0]["priority"] == 7
+    assert "extra_body" not in endpoint.requests[0]
+
+
 def test_served_completions_loads_custom_tokenizer_with_remote_code(monkeypatch):
     def load_custom_tokenizer(_checkpoint, *, trust_remote_code, **_kwargs):
         if not trust_remote_code:

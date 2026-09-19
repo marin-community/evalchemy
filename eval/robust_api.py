@@ -28,9 +28,11 @@ Import for side effect (idempotent):
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections import Counter
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -59,6 +61,8 @@ _ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
+_CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
+_EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
@@ -154,6 +158,15 @@ def parse_generation_overrides(value: str | dict | None) -> dict:
     if "temperature" in overrides and "do_sample" not in overrides:
         overrides["do_sample"] = float(overrides["temperature"]) > 0
     return overrides
+
+
+def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict | None:
+    if value is None:
+        return None
+    parsed = json.loads(value) if isinstance(value, str) else value
+    if not isinstance(parsed, Mapping):
+        raise ValueError(f"{name} must be a JSON object")
+    return dict(parsed)
 
 
 def apply() -> bool:
@@ -478,8 +491,18 @@ def apply_openai_payload_controls() -> bool:
         return True
 
     original_completions_payload = LocalCompletionsAPI._create_payload
+    original_local_chat_init = LocalChatCompletion.__init__
     original_local_chat_payload = LocalChatCompletion._create_payload
     original_openai_chat_payload = OpenAIChatCompletion._create_payload
+
+    def _local_chat_init(self, *args, chat_template_kwargs=None, extra_body=None, **kwargs):
+        setattr(
+            self,
+            _CHAT_TEMPLATE_KWARGS_ATTR,
+            _parse_request_body_mapping(chat_template_kwargs, "chat_template_kwargs"),
+        )
+        setattr(self, _EXTRA_BODY_ATTR, _parse_request_body_mapping(extra_body, "extra_body"))
+        original_local_chat_init(self, *args, **kwargs)
 
     def _merged_stop_kwargs(gen_kwargs, eos, default_until=None):
         request_kwargs = dict(gen_kwargs or {})
@@ -538,6 +561,10 @@ def apply_openai_payload_controls() -> bool:
         if not payload.get("stop"):
             # No sentinels to send: the endpoint ends the turn at EOS.
             payload.pop("stop", None)
+        payload.update(getattr(self, _EXTRA_BODY_ATTR, None) or {})
+        chat_template_kwargs = getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None)
+        if chat_template_kwargs is not None:
+            payload["chat_template_kwargs"] = chat_template_kwargs
         return _caller_generation_payload(self, payload)
 
     def _create_completions_payload(
@@ -601,6 +628,7 @@ def apply_openai_payload_controls() -> bool:
         return _caller_generation_payload(self, payload)
 
     LocalCompletionsAPI._create_payload = _create_completions_payload
+    LocalChatCompletion.__init__ = _local_chat_init
     LocalChatCompletion._create_payload = _create_local_payload
     OpenAIChatCompletion._create_payload = _create_openai_payload
     setattr(LocalCompletionsAPI, _OPENAI_PAYLOAD_PATCH_FLAG, True)
