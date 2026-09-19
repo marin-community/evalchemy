@@ -1,24 +1,33 @@
+import asyncio
 import json
 import logging
 import os
 import re
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import (
-    is_equiv,
-)
 
+from eval.contracts.failures import FailureCategory
+from eval.contracts.sample_results import record_sample_metrics
+from eval.contracts.task_outcome import TaskFailure
 from eval.graders.answer_extraction import (
     AnswerExtractionError,
     ExtractionFailure,
     extract_boxed_answer,
     extraction_failure,
 )
-from eval.contracts.sample_results import record_sample_metrics
+from eval.graders.answer_equivalence import (
+    EquivalenceMethod,
+    EquivalenceRequest,
+    EquivalenceResult,
+    JudgeConfig,
+    grade_math_equivalence,
+)
 from eval.generation_stops import END_OF_TURN_SEQUENCES
+from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
 # Same prompt shape as MATH500/AMC23/AIME24 (math reasoning benchmarks in this tree):
@@ -83,49 +92,6 @@ def _flatten_reference_answers(raw: Any) -> List[str]:
     return out
 
 
-def _normalize_numerical(s: str) -> str:
-    """Normalize whitespace and strip trailing units so two numerical answers compare cleanly."""
-    s = s.strip()
-    s = re.sub(
-        r"\s+", "", s
-    )  # crush ALL internal whitespace (matches "1 / 5" <-> "1/5")
-    return s
-
-
-def grade_single(model_answer: str, reference: str) -> bool:
-    """Return True if ``model_answer`` matches a single reference answer.
-
-    Uses ``is_equiv`` (the lm-eval hendrycks_math symbolic/expression equivalence
-    grader, which already handles numbers, expressions, equations, intervals, and
-    tuples) as the primary comparator, with a whitespace-collapsed numerical
-    fallback for cases where ``is_equiv`` gives up but the strings are otherwise
-    identical modulo spacing.
-    """
-    if model_answer is None or reference is None:
-        return False
-    m = str(model_answer).strip()
-    r = str(reference).strip()
-    if not m or not r:
-        return False
-    if is_equiv(r, m):
-        return True
-    if _normalize_numerical(m) == _normalize_numerical(r):
-        return True
-    return False
-
-
-def grade_answer(model_answer: str, reference_answers: Any) -> bool:
-    """Grade a model answer against a reference that may be a single value or a list.
-
-    OlympiadBench problems can have multiple acceptable answers; a model response is
-    correct if it matches ANY of them.
-    """
-    candidates = _flatten_reference_answers(reference_answers)
-    if not candidates:
-        return False
-    return any(grade_single(model_answer, c) for c in candidates)
-
-
 class OlympiadBenchBenchmark(BaseBenchmark):
     """
     OlympiadBench Benchmark for evaluating competition math/physics reasoning of LLMs.
@@ -133,12 +99,14 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
     Uses the text-only English split (``test_en``). Each problem's reference answer may
     be a single value or a list of acceptable values; grading is correct-if-any-match
-    via ``is_equiv`` (with a numerical-exact fallback). Follows the MATH500/AMC23
-    pattern in this tree: the model is asked to box its final answer.
+    through Minerva/SymPy first and an LLM equivalence judge for unresolved answers.
+    Follows the MATH500/AMC23 pattern in this tree: the model is asked to box its
+    final answer.
     """
 
     METRICS = ("accuracy",)
     PRIMARY_METRIC = "accuracy"
+    REQUIRES_JUDGE = True
 
     def benchmark_size(self) -> int:
         return len(self.load_questions())
@@ -167,6 +135,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
         n_repeat: int = 10,
+        annotator_model: Optional[str] = None,
+        judge_api_key: Optional[str] = None,
+        judge_base_url: Optional[str] = None,
     ):
         """
         Initialize OlympiadBench benchmark.
@@ -184,6 +155,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             num_samples: Number of completions per problem. 1 (default) = single-sample path.
             pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
             n_repeat: Number of seeded repetitions for the subset's single-sample score.
+            annotator_model: Explicit judge model, or ``auto`` to use ``$JUDGE_MODEL``.
+            judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
+            judge_base_url: Judge endpoint. Falls back to ``$JUDGE_BASE_URL``.
         """
         super().__init__(
             logger=logger,
@@ -199,6 +173,11 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         self.seed = seed
         self.max_new_tokens = max_tokens
         self.n_repeat = n_repeat
+        self.judge_config = JudgeConfig.resolve(
+            judge_model=annotator_model,
+            api_key=judge_api_key,
+            base_url=judge_base_url,
+        )
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -368,10 +347,10 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         # ---- native pass@k aggregation ----
         if results.get("pass_at_k"):
-            num_correct = [
-                sum(int(grade_answer(ans, ex["answer"])) for ans in ex["model_answers"])
-                for ex in examples
-            ]
+            correct_by_example, grading_summary = self._grade_model_answers(
+                examples, [example["model_answers"] for example in examples]
+            )
+            num_correct = [sum(int(correct) for correct in answers) for answers in correct_by_example]
             self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
             results.update(
@@ -379,6 +358,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                     "num_total": total,
                     "num_samples": self.num_samples,
                     "num_correct": num_correct,
+                    **grading_summary,
                     **self._dataset_provenance(total),
                     **pass_at_k_table,
                 }
@@ -386,12 +366,15 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             return results
 
         if self.n_repeat > 1:
+            correct_by_example, grading_summary = self._grade_model_answers(
+                examples, [example["model_answers"] for example in examples]
+            )
             all_results = []
-            correct_by_repeat = []
+            correct_by_repeat = [
+                [answers[repeat_idx] for answers in correct_by_example]
+                for repeat_idx in range(self.n_repeat)
+            ]
             for repeat_idx in range(self.n_repeat):
-                correct_by_repeat.append(
-                    [grade_answer(example["model_answers"][repeat_idx], example["answer"]) for example in examples]
-                )
                 solved = sum(correct_by_repeat[repeat_idx])
                 all_results.append(
                     {
@@ -412,12 +395,16 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                     "accuracy_avg": np.mean(accuracies),
                     "accuracy_std_err": np.std(accuracies) / np.sqrt(self.n_repeat),
                     "num_repeat": self.n_repeat,
+                    **grading_summary,
                     **self._dataset_provenance(total),
                 }
             )
             return results
 
-        correct = [grade_answer(example["model_answer"], example["answer"]) for example in examples]
+        correct_by_example, grading_summary = self._grade_model_answers(
+            examples, [[example["model_answer"]] for example in examples]
+        )
+        correct = [answers[0] for answers in correct_by_example]
         for example, is_correct in zip(examples, correct):
             record_sample_metrics(example, accuracy=is_correct)
         solved = sum(correct)
@@ -430,11 +417,101 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 "accuracy_stderr": np.sqrt((solved / total) * (1 - solved / total) / (total - 1))
                 if total > 1
                 else 0.0,
+                **grading_summary,
                 **self._dataset_provenance(total),
             }
         )
 
         return results
+
+    def _grade_model_answers(
+        self,
+        examples: List[Dict[str, Any]],
+        answers_by_example: List[List[str]],
+    ) -> tuple[List[List[bool]], Dict[str, Any]]:
+        """Grade extracted answers with Minerva followed by the shared LLM judge."""
+        requests = []
+        positions = []
+        for example_index, (example, answers) in enumerate(zip(examples, answers_by_example, strict=True)):
+            references = tuple(_flatten_reference_answers(example["answer"]))
+            for answer_index, answer in enumerate(answers):
+                requests.append(
+                    EquivalenceRequest(
+                        question=str(example.get("problem", example.get("question", ""))),
+                        reference_answers=references,
+                        candidate_answer=answer,
+                    )
+                )
+                positions.append((example_index, answer_index))
+
+        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
+        correct_by_example = [[False] * len(answers) for answers in answers_by_example]
+        grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
+        num_graded_by_minerva = 0
+        num_judged_by_llm = 0
+        num_judge_failed = 0
+        for (example_index, answer_index), outcome in zip(positions, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
+                if not isinstance(outcome, Exception):
+                    raise outcome
+                num_judge_failed += 1
+                record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
+                grades_by_example[example_index][answer_index] = {
+                    "method": EquivalenceMethod.LLM_JUDGE.value,
+                    "judge_label": None,
+                    "judge_raw": None,
+                    "judge_error": asdict(
+                        TaskFailure(
+                            category=FailureCategory.GRADER_INFRASTRUCTURE,
+                            message=str(outcome)[:512] or type(outcome).__name__,
+                            exception_type=type(outcome).__name__,
+                        )
+                    ),
+                }
+                continue
+
+            assert isinstance(outcome, EquivalenceResult)
+            correct_by_example[example_index][answer_index] = outcome.equivalent
+            if outcome.method == EquivalenceMethod.MINERVA:
+                num_graded_by_minerva += 1
+                grades_by_example[example_index][answer_index] = {
+                    "method": outcome.method.value,
+                    "judge_label": None,
+                    "judge_raw": None,
+                }
+                continue
+
+            num_judged_by_llm += 1
+            assert outcome.judgment is not None
+            grades_by_example[example_index][answer_index] = {
+                "method": outcome.method.value,
+                "judge_label": outcome.judgment.label.value,
+                "judge_raw": outcome.judgment.raw,
+            }
+
+        for example, grades in zip(examples, grades_by_example, strict=True):
+            example["equivalence_grades"] = grades
+            if len(grades) == 1:
+                example.update(grades[0])
+
+        return correct_by_example, {
+            "num_graded_by_minerva": num_graded_by_minerva,
+            "num_judged_by_llm": num_judged_by_llm,
+            "num_judge_failed": num_judge_failed,
+            "judge_model": self.judge_config.model,
+        }
+
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        samples = super().to_samples(generation_result, scored_result)
+        for sample, example in zip(samples, generation_result["examples"], strict=True):
+            sample["equivalence_grades"] = example["equivalence_grades"]
+        return samples
+
+    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
+        doc = super()._sample_doc(example)
+        for key in ("equivalence_grades", "method", "judge_label", "judge_raw", "judge_error"):
+            doc.pop(key, None)
+        return doc
 
     def _dataset_provenance(self, total: int) -> Dict[str, Any]:
         """Return source details persisted with each score artifact."""

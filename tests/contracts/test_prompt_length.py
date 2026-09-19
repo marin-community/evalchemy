@@ -144,7 +144,8 @@ def test_a_benchmark_whose_prompts_exceed_the_window_keeps_its_own_default():
     )
 
 
-def test_a_loaded_benchmark_requests_the_derived_response_budget():
+def test_a_loaded_benchmark_requests_the_derived_response_budget(monkeypatch):
+    monkeypatch.setenv("JUDGE_API_KEY", "prompt-length-test")
     manager = TaskManager(task_list=["OlympiadBench"], max_length=CONTEXT_LENGTH)
     benchmark = manager.get_benchmark("OlympiadBench")
     expected = resolve_task_max_tokens(

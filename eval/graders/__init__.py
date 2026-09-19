@@ -1,5 +1,6 @@
-"""Self-contained graders that match lm-eval-harness verdicts without the harness.
+"""Reusable deterministic and model-based graders.
 
-Each grader exposes ``grade(problem, solution, reference_answer) -> float`` and
-needs nothing else: no ``datasets`` doc, no task registry, no harness import.
+The benchmark-parity modules expose ``grade(problem, solution, reference_answer)``.
+``answer_equivalence`` composes Minerva/SymPy comparison with an optional external
+judge for benchmarks that grade short answers.
 """

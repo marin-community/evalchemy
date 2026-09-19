@@ -1,8 +1,10 @@
 import math
+from types import SimpleNamespace
 
 import datasets
 import pytest
 
+from eval.graders import answer_equivalence
 from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
 from eval.chat_benchmarks.OlympiadBenchFull.eval_instruct import (
     DEFAULT_DATASET,
@@ -14,12 +16,52 @@ from eval.task import TaskManager
 from eval.graders.answer_extraction import EmptyResponseError, MissingAnswerError
 
 
+class _IncorrectJudgeClient:
+    def __init__(self, **kwargs):
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def create(self, **kwargs):
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="incorrect"))])
+
+
+@pytest.fixture(autouse=True)
+def _judge_credentials(monkeypatch):
+    monkeypatch.setenv("JUDGE_API_KEY", "olympiadbench-test-key")
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", _IncorrectJudgeClient)
+
+
 def test_olympiadbench_aliases_expose_the_legacy_subset_and_full_text_only_set():
     manager = TaskManager(task_list=["OlympiadBench", "OlympiadBenchFull"])
 
     assert set(manager.tasks) == {"OlympiadBench", "OlympiadBenchFull"}
     assert manager.get_benchmark("OlympiadBench").n_repeat == 10
     assert manager.get_benchmark("OlympiadBenchFull").dataset_revision == DEFAULT_DATASET_REVISION
+
+
+def test_olympiadbench_uses_judge_credentials_without_candidate_openai_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    manager = TaskManager(task_list=["OlympiadBench", "OlympiadBenchFull"])
+
+    assert manager.load_failures == {}
+    assert manager.requires_judge_credentials("OlympiadBench")
+    assert manager.requires_judge_credentials("OlympiadBenchFull")
+
+
+def test_olympiadbench_aliases_share_explicit_judge_model():
+    manager = TaskManager(
+        task_list=["OlympiadBench", "OlympiadBenchFull"],
+        annotator_model="judge-model",
+    )
+
+    assert manager.get_benchmark("OlympiadBench").judge_config.model == "judge-model"
+    assert manager.get_benchmark("OlympiadBenchFull").judge_config.model == "judge-model"
 
 
 def test_legacy_olympiadbench_subset_reports_aime_style_repeat_standard_error():
@@ -103,6 +145,96 @@ def test_full_olympiadbench_reports_dataset_provenance_and_sample_standard_error
     assert results["dataset_num_samples"] == 3
     assert results["accuracy"] == 1 / 3
     assert results["accuracy_stderr"] == pytest.approx(1 / 3)
+
+
+def test_olympiadbench_accepts_sympy_equivalence_without_contacting_judge(monkeypatch):
+    class UnexpectedJudgeClient:
+        def __init__(self, **kwargs):
+            raise AssertionError("symbolically equivalent answers must not call the LLM judge")
+
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", UnexpectedJudgeClient)
+    benchmark = OlympiadBenchBenchmark(n_repeat=1)
+
+    results = benchmark.evaluate_responses(
+        {"examples": [{"problem": "Compute one half.", "answer": ["0.5"], "model_answer": r"\frac{1}{2}"}]}
+    )
+
+    assert results["accuracy"] == 1.0
+    assert results["num_judged_by_llm"] == 0
+
+
+@pytest.mark.parametrize("benchmark_class", [OlympiadBenchBenchmark, OlympiadBenchFullBenchmark])
+def test_olympiadbench_uses_llm_fallback_for_unit_equivalence(monkeypatch, benchmark_class):
+    class UnitJudgeClient:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def create(self, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            assert "100 cm" in prompt
+            assert "1 m" in prompt
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="correct"))])
+
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", UnitJudgeClient)
+    benchmark = benchmark_class(n_repeat=1) if benchmark_class is OlympiadBenchBenchmark else benchmark_class()
+
+    results = benchmark.evaluate_responses(
+        {"examples": [{"problem": "Convert the length.", "answer": ["100 cm"], "model_answer": "1 m"}]}
+    )
+
+    assert results["accuracy"] == 1.0
+    assert results["num_judged_by_llm"] == 1
+    assert results["examples"][0]["judge_label"] == "correct"
+
+
+def test_olympiadbench_pass_at_k_uses_hybrid_grader_for_every_completion(monkeypatch):
+    class CorrectJudgeClient(_IncorrectJudgeClient):
+        async def create(self, **kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="correct"))])
+
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", CorrectJudgeClient)
+    benchmark = OlympiadBenchBenchmark(num_samples=2, pass_at_k=[1, 2], n_repeat=1)
+
+    results = benchmark.evaluate_responses(
+        {
+            "pass_at_k": True,
+            "examples": [
+                {
+                    "problem": "Convert the length.",
+                    "answer": ["100 cm"],
+                    "model_answers": ["100", "1 m"],
+                }
+            ],
+        }
+    )
+
+    assert results["pass@1"] == 1.0
+    assert results["pass@2"] == 1.0
+    assert results["num_graded_by_minerva"] == 1
+    assert results["num_judged_by_llm"] == 1
+
+
+def test_olympiadbench_records_llm_judge_failure_without_accepting_answer(monkeypatch):
+    class FailingJudgeClient(_IncorrectJudgeClient):
+        async def create(self, **kwargs):
+            raise TimeoutError("judge unavailable")
+
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", FailingJudgeClient)
+    benchmark = OlympiadBenchBenchmark(n_repeat=1)
+
+    results = benchmark.evaluate_responses(
+        {"examples": [{"problem": "Find x.", "answer": ["2"], "model_answer": "3"}]}
+    )
+
+    assert results["accuracy"] == 0.0
+    assert results["num_judge_failed"] == 1
+    assert results["examples"][0]["judge_error"]["exception_type"] == "TimeoutError"
 
 
 def test_olympiadbench_does_not_extract_boxed_answer_from_repeated_question():

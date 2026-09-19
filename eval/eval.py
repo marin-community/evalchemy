@@ -822,18 +822,32 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
 
     utils.eval_logger.info(f"Selected Tasks: {[task for task in task_list]}")
 
-    # Only check for OpenAI API keys if at least one task requires an annotator model
-    # TODO: Should we just skip the evaluation that requires the annotator model if the annotator model is not set or fail completely?
-    if args.annotator_model in LIST_OPENAI_MODELS and any(
-        task_manager.requires_annotator_model(task)
+    # Shared equivalence judges use credentials isolated from the candidate endpoint.
+    judge_tasks = [
+        task
         for task in task_list
         if task_routes[task] == CHAT_BENCHMARK_ROUTE
-    ):
+        and task_manager.requires_judge_credentials(task)
+    ]
+    if judge_tasks and not os.getenv("JUDGE_API_KEY"):
+        raise ValueError(
+            "Please set JUDGE_API_KEY to evaluate the following tasks: "
+            f"{judge_tasks}"
+        )
+
+    openai_annotator_tasks = [
+        task
+        for task in task_list
+        if task_routes[task] == CHAT_BENCHMARK_ROUTE
+        and task_manager.requires_annotator_model(task)
+        and not task_manager.requires_judge_credentials(task)
+    ]
+    if args.annotator_model in LIST_OPENAI_MODELS and openai_annotator_tasks:
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError(
                 f"Please set OPENAI_API_KEY to allow usage of {args.annotator_model}"
                 "to evaluate the following tasks: "
-                f"{[task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE and task_manager.requires_annotator_model(task)]}"
+                f"{openai_annotator_tasks}"
             )
 
     # Initialize model

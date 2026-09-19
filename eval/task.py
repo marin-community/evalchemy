@@ -882,6 +882,7 @@ class TaskManager:
         self.benchmark_kwargs = benchmark_kwargs
         self.task_list = task_list
         self.list_of_tasks_that_require_annotator_model = []
+        self.list_of_tasks_that_require_judge_credentials = []
         # Resolved once: every benchmark's generation budget is derived from the
         # same stored prompt lengths (eval/contracts/prompt_lengths.md).
         self.prompt_lengths = load_prompt_lengths()
@@ -952,9 +953,12 @@ class TaskManager:
                 requires_openai = (
                     hasattr(benchmark_class, "REQUIRES_OPENAI_ANNOTATOR") and benchmark_class.REQUIRES_OPENAI_ANNOTATOR
                 )
+                requires_judge = getattr(benchmark_class, "REQUIRES_JUDGE", False)
 
                 if requires_annotator:
                     self.list_of_tasks_that_require_annotator_model.append(item)
+                if requires_judge:
+                    self.list_of_tasks_that_require_judge_credentials.append(item)
 
                 if not has_openai_key and requires_openai:
                     self.logger.warning(
@@ -1074,6 +1078,10 @@ class TaskManager:
 
         # Check if 'annotator_model' is in the parameters
         return "annotator_model" in init_params
+
+    def requires_judge_credentials(self, task_name: str) -> bool:
+        """Return whether a task uses the normalized external judge endpoint."""
+        return task_name in self.list_of_tasks_that_require_judge_credentials
 
 
 def evaluate(

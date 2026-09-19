@@ -140,7 +140,10 @@ We have recorded reproduced results against published numbers for these benchmar
 
 ### Basic Usage
 
-Make sure your `OPENAI_API_KEY` is set in your environment before running evaluations, if an LLM judge is required. 
+FinanceBench and OlympiadBench use the shared OpenAI-compatible equivalence judge. Set
+`JUDGE_API_KEY`; optionally set `JUDGE_MODEL` and `JUDGE_BASE_URL`. These credentials
+are separate from the candidate endpoint. Older benchmark-specific judge integrations
+still use their provider's environment variables, such as `OPENAI_API_KEY`.
 
 ```bash
 python -m eval.eval \
