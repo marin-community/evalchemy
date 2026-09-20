@@ -44,9 +44,6 @@ from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
-from eval.lm_eval_tasks.tokenizer_compat import install_tokenizer_compat
-
-install_tokenizer_compat()
 
 from eval.robust_api import (
     EndpointFailureCapture,
