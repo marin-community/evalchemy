@@ -53,7 +53,10 @@ from eval.contracts.sample_manifest import (
 )
 from eval.contracts.sample_results import (
     SAMPLE_METRICS_ANNOTATION,
+    REPEATED_SAMPLE_METRICS_ANNOTATION,
     record_sample_metrics,
+    record_repeated_sample_metrics,
+    repeated_sample_metric_fields,
     sample_metric_fields,
 )
 from eval.contracts.task_outcome import TaskRoute
@@ -468,7 +471,7 @@ class BaseBenchmark(ABC):
             raise ValueError(f"{self.benchmark_name}: cannot record per-sample accuracy without a repetition")
         for index, example in enumerate(examples):
             scores = [float(repeat[index]) for repeat in correct_by_repeat]
-            record_sample_metrics(example, accuracy=sum(scores) / len(scores))
+            record_repeated_sample_metrics(example, accuracy=scores)
 
     def record_pass_at_k_metrics(
         self,
@@ -783,14 +786,17 @@ class BaseBenchmark(ABC):
 
         del scored_result  # Generation owns the per-example data; scoring owns only metrics.
         examples = (generation_result or {}).get("examples", []) or []
-        samples: List[Dict[str, Any]] = []
+        prepared: List[Dict[str, Any]] = []
         for doc_id, example in enumerate(examples):
             prompt = self._sample_prompt(example)
             gen_kwargs = self._sample_gen_kwargs(example)
             target = example.get("answer", "")
+            repeat_metrics = repeated_sample_metric_fields(example)
 
-            if "model_outputs" in example:  # native pass@k: list of completions
-                resps = list(example.get("model_outputs", []))
+            if "model_outputs" in example or repeat_metrics is not None:
+                # Repeated graders may retain only their extracted answers in
+                # synthetic/regraded inputs; keep one auditable row per trial.
+                resps = list(example.get("model_outputs", example.get("model_answers", [])))
                 filtered = list(example.get("model_answers", []))
                 extraction_errors = example.get("answer_extraction_errors")
             else:  # single-sample path
@@ -808,7 +814,7 @@ class BaseBenchmark(ABC):
                 extraction_errors = [extraction_error] if extraction_error is not None else None
 
             doc_hash = hash_string(_json.dumps(self._sample_doc(example), indent=2, default=_hns, ensure_ascii=False))
-            samples.append(
+            prepared.append(
                 {
                     "doc_id": doc_id,
                     "doc": self._sample_doc(example),
@@ -822,11 +828,51 @@ class BaseBenchmark(ABC):
                     "doc_hash": doc_hash,
                     "prompt_hash": hash_string(prompt),
                     "target_hash": hash_string(str(target)),
-                    # The grader's own per-sample scores, in lm-eval's record shape.
-                    **sample_metric_fields(example),
+                    "repeat_metrics": repeat_metrics,
+                    "aggregate_metrics": sample_metric_fields(example),
                 }
             )
-        return samples
+
+        repeated = [record["repeat_metrics"] for record in prepared]
+        if any(metrics is not None for metrics in repeated):
+            if any(metrics is None for metrics in repeated):
+                raise ValueError(f"{self.benchmark_name}: repeated metrics are missing for some examples")
+            repeat_counts = {len(metrics) for metrics in repeated if metrics is not None}
+            if len(repeat_counts) != 1:
+                raise ValueError(f"{self.benchmark_name}: examples have different repetition counts")
+            samples: List[Dict[str, Any]] = []
+            for repeat_idx in range(next(iter(repeat_counts))):
+                for record in prepared:
+                    responses = record["resps"][0]
+                    filtered = record["filtered_resps"]
+                    if len(responses) != len(filtered) or repeat_idx >= len(responses):
+                        raise ValueError(
+                            f"{self.benchmark_name}: repeated outputs, answers, and metrics must have equal lengths"
+                        )
+                    extraction_errors = record.get("answer_extraction_errors")
+                    samples.append(
+                        {
+                            **{key: value for key, value in record.items() if key not in {"repeat_metrics", "aggregate_metrics"}},
+                            "resps": [[responses[repeat_idx]]],
+                            "filtered_resps": [filtered[repeat_idx]],
+                            **(
+                                {"answer_extraction_errors": [extraction_errors[repeat_idx]]}
+                                if extraction_errors is not None
+                                else {}
+                            ),
+                            "sample_repeat": repeat_idx,
+                            **record["repeat_metrics"][repeat_idx],
+                        }
+                    )
+            return samples
+
+        return [
+            {
+                **{key: value for key, value in record.items() if key not in {"repeat_metrics", "aggregate_metrics"}},
+                **record["aggregate_metrics"],
+            }
+            for record in prepared
+        ]
 
     def _sample_prompt(self, example: Dict[str, Any]) -> str:
         """Best-effort rendered prompt string for a sample record.
@@ -852,6 +898,7 @@ class BaseBenchmark(ABC):
             "correct",
             "score",
             SAMPLE_METRICS_ANNOTATION,
+            REPEATED_SAMPLE_METRICS_ANNOTATION,
         }
         return {key: value for key, value in example.items() if key not in generated_fields}
 
