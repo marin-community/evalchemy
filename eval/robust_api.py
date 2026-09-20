@@ -95,6 +95,11 @@ class EndpointFailureCapture:
             self.response_summary.update(classifications)
 
 
+@dataclass(frozen=True)
+class _DeferredRequestError:
+    error: Exception
+
+
 @contextmanager
 def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
     """Isolate endpoint diagnostics to one task invocation."""
@@ -236,11 +241,12 @@ def apply() -> bool:
                         ctxlens=ctxlen,
                         **call_kwargs,
                     )
-                except BaseException as exc:  # noqa: BLE001 - one failed request must not nuke the batch
+                except Exception as exc:  # noqa: BLE001 - one failed request must not nuke the batch
                     if not generate:
-                        # Loglikelihood: a placeholder would corrupt scoring -> preserve
-                        # upstream fail-fast behavior.
-                        raise
+                        # Keep the shared session alive until sibling requests settle.
+                        # Raising here lets tqdm's gather exit without awaiting them;
+                        # the session context then closes beneath their retries.
+                        return _DeferredRequestError(exc)
                     n = len(message) if hasattr(message, "__len__") else 1
                     record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
                     logger.error(
@@ -297,6 +303,11 @@ def apply() -> bool:
                         )
                 tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
             outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
+            for output in outputs:
+                if isinstance(output, _DeferredRequestError):
+                    # Loglikelihood has no valid placeholder, so preserve fail-fast
+                    # scoring after all requests have released the shared session.
+                    raise output.error
             return outputs
 
     template_api.get_batched_requests = get_batched_requests
