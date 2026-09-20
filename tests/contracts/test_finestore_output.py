@@ -72,6 +72,38 @@ def test_normalized_metrics_exclude_sample_identity_coordinates():
     assert (sample.grading.metric, sample.grading.score) == ("accuracy", 1.0)
 
 
+def test_finestore_output_preserves_repeated_trials(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    records = [
+        {
+            "doc_id": 7,
+            "doc": {"question": "Choose A"},
+            "target": "A",
+            "arguments": [["Choose A", {}]],
+            "resps": [[answer]],
+            "filtered_resps": [answer],
+            "filter": "none",
+            "sample_repeat": repeat,
+            "metrics": ["accuracy"],
+            "accuracy": score,
+        }
+        for repeat, (answer, score) in enumerate((("A", 1.0), ("B", 0.0), ("A", 1.0)))
+    ]
+
+    write_finestore_output(
+        root,
+        "gpqa_diamond",
+        {"results": {"GPQADiamond": {"accuracy_avg": 2 / 3}}},
+        {"GPQADiamond": records},
+    )
+
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    rows = sorted(table.to_pylist(maps_as_pydicts="strict"), key=lambda row: row["trial_id"])
+    assert [row["trial_id"] for row in rows] == ["0", "1", "2"]
+    assert [sample_from_archive_row(row).correct for row in rows] == [True, False, True]
+
+
 def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
     tmp_path: Path,
 ):
@@ -202,7 +234,5 @@ def test_finestore_mode_does_not_write_a_second_sample_jsonl(tmp_path: Path):
     handle_evaluation_output(results, args, tracker)
 
     assert list(local_root.rglob("samples_*.jsonl")) == []
-    source = ReadView(str(archive_root)).read_blob(
-        "sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl"
-    )
+    source = ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl")
     assert source == samples_jsonl([record]).encode()

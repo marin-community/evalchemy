@@ -162,12 +162,41 @@ def test_sample_logging_uses_manifest_identity_and_coordinates():
     assert records[0]["sample_repeat"] == 2
 
 
+def test_sample_logging_preserves_every_repeated_manifest_unit():
+    manifest = SampleManifest("task")
+    entries = manifest.plan_batch(
+        [
+            SampleRequest(source_id=source_id, ordinal=source_id, repeat=repeat)
+            for repeat in range(3)
+            for source_id in range(2)
+        ]
+    )
+    manifest.mark_generated(entries, [f"answer-{index}" for index in range(6)])
+    samples = [
+        {"doc_id": source_id, "resps": [["answer"]], "metrics": ["accuracy"], "accuracy": 1.0}
+        for repeat in range(3)
+        for source_id in range(2)
+    ]
+
+    records = canonicalize_samples("task", samples, manifest)
+
+    assert [(record["source_id"], record["sample_repeat"]) for record in records] == [
+        (source_id, repeat) for repeat in range(3) for source_id in range(2)
+    ]
+
+
 def test_sample_logging_coalesces_complete_lm_eval_filter_cohorts():
     manifest = SampleManifest("gsm8k")
     entries = manifest.plan_batch([SampleRequest(source_id=str(doc_id), ordinal=doc_id) for doc_id in range(2)])
     manifest.mark_generated(entries, ["answer-0", "answer-1"])
     samples = [
-        {"doc_id": doc_id, "filter": filter_name, "filtered_resps": [filter_name], "metrics": ["score"], "score": doc_id}
+        {
+            "doc_id": doc_id,
+            "filter": filter_name,
+            "filtered_resps": [filter_name],
+            "metrics": ["score"],
+            "score": doc_id,
+        }
         for filter_name in ("strict", "flexible")
         for doc_id in range(2)
     ]
@@ -178,7 +207,10 @@ def test_sample_logging_coalesces_complete_lm_eval_filter_cohorts():
         (
             record["source_id"],
             record["filter"],
-            [(variant["filter"], variant["filtered_resps"], variant["metrics"]) for variant in record["filter_variants"]],
+            [
+                (variant["filter"], variant["filtered_resps"], variant["metrics"])
+                for variant in record["filter_variants"]
+            ],
         )
         for record in records
     ] == [

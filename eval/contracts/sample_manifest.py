@@ -210,6 +210,14 @@ class SampleManifest:
             return unique_entries
         return tuple(sorted(unique_entries, key=lambda entry: entry.ordinal))
 
+    def unit_entries(self, namespace: str | None = None) -> tuple[SampleEntry, ...]:
+        """Return every generated unit, including independently repeated trials."""
+        with self._lock:
+            entries = tuple(
+                entry for entry in self._entries.values() if namespace is None or entry.namespace == namespace
+            )
+        return entries
+
     def _sample_count(self, unit_ids: set[str]) -> int:
         with self._lock:
             return len({self._entries[unit_id].sample_id for unit_id in unit_ids})

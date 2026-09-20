@@ -22,7 +22,6 @@ from typing import Any
 import pytest
 
 from eval.contracts.grading import GenerationArtifactManifest
-from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
 from eval.contracts.sample_results import (
     SAMPLE_METRICS_FIELD,
     SampleMetricsError,
@@ -30,6 +29,7 @@ from eval.contracts.sample_results import (
     sample_metric_fields,
     validate_sample_metrics,
 )
+from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
 from eval.graders.answer_equivalence import EquivalenceJudgment, JudgeLabel
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark, TaskManager
@@ -450,6 +450,27 @@ def test_ifbench_sample_contains_per_instruction_results(monkeypatch, tmp_path):
     assert [record["strict_instruction_accuracy"] for record in records] == [1.0, 0.0]
     assert [record["resps"] for record in records] == [[["NoWhitespace"]], [["two words"]]]
     assert all("strict_instruction_pass" not in record["doc"] for record in records)
+
+
+def test_repeated_accuracy_serializes_one_sample_per_trial():
+    benchmark = _load_benchmark("GPQADiamond")
+    generation_result = {
+        "examples": [
+            {
+                "Question": "Choose A",
+                "answer": "A",
+                "model_outputs": ["A", "B", "A"],
+                "model_answers": ["A", "B", "A"],
+            }
+        ]
+    }
+
+    scored_result = benchmark.evaluate_responses(generation_result)
+    records = canonicalize_samples("GPQADiamond", benchmark.to_samples(generation_result, scored_result))
+
+    assert [record["sample_repeat"] for record in records] == [0, 1, 2]
+    assert [record["resps"] for record in records] == [[["A"]], [["B"]], [["A"]]]
+    assert [record["accuracy"] for record in records] == [1.0, 0.0, 1.0]
 
 
 def test_ifbench_scores_and_logs_samples_through_evaluation_driver(monkeypatch, tmp_path):

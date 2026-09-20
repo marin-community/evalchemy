@@ -59,7 +59,8 @@ def write_finestore_output(
             )
             for record in task_samples:
                 for sample in samples_from_lm_eval(normalized_task, dict(record)):
-                    store.add_sample(sample)
+                    repeat = record.get("sample_repeat")
+                    store.add_sample(sample, trial_id="" if repeat is None else str(repeat))
         store.seal()
     finally:
         store.close()

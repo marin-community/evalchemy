@@ -41,10 +41,15 @@ def canonicalize_samples(
     """
     manifest_entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
-        manifest_entries = sample_manifest.sample_entries(namespace=task_name)
-        if not manifest_entries and sample_manifest.task_name == task_name:
-            manifest_entries = sample_manifest.sample_entries()
-        samples = _coalesce_lm_eval_filter_variants(samples, len(manifest_entries))
+        sample_entries = sample_manifest.sample_entries(namespace=task_name)
+        unit_entries = sample_manifest.unit_entries(namespace=task_name)
+        if not sample_entries and sample_manifest.task_name == task_name:
+            sample_entries = sample_manifest.sample_entries()
+            unit_entries = sample_manifest.unit_entries()
+        samples = _coalesce_lm_eval_filter_variants(samples, len(sample_entries))
+        manifest_entries = sample_entries
+        if len(samples) != len(sample_entries) and len(samples) == len(unit_entries):
+            manifest_entries = unit_entries
         if len(manifest_entries) != len(samples):
             raise SampleCoverageError(
                 f"{task_name}: sample logger received {len(samples)} records but the manifest "

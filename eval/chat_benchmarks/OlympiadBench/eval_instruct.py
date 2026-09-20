@@ -503,8 +503,11 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
         samples = super().to_samples(generation_result, scored_result)
-        for sample, example in zip(samples, generation_result["examples"], strict=True):
-            sample["equivalence_grades"] = example["equivalence_grades"]
+        examples = generation_result["examples"]
+        for sample in samples:
+            grades = examples[sample["doc_id"]]["equivalence_grades"]
+            repeat = sample.get("sample_repeat")
+            sample["equivalence_grades"] = grades if repeat is None else [grades[repeat]]
         return samples
 
     def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
