@@ -180,6 +180,41 @@ def test_one_failed_async_request_returns_an_empty_classified_response():
     assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
 
 
+def test_loglikelihood_request_error_keeps_session_open_until_siblings_settle():
+    adapter = object.__new__(LocalChatCompletion)
+    adapter._concurrent = 2
+    adapter.verify_certificate = True
+    adapter.timeout = 1
+    adapter.max_retries = 1
+    adapter._batch_size = 1
+    adapter.tokenizer = None
+    adapter.max_length = None
+    session_states = []
+
+    async def fake_model_call(*, session, messages, **_kwargs):
+        if messages[0] == "bad":
+            raise RuntimeError("serve error")
+        await asyncio.sleep(0.01)
+        session_states.append(session.closed)
+        return [(-1.0, False)]
+
+    adapter.amodel_call = fake_model_call
+
+    async def fetch():
+        with pytest.raises(RuntimeError, match="serve error"):
+            await adapter.get_batched_requests(
+                ["bad", "good"],
+                ["a", "b"],
+                generate=False,
+            )
+        # The old gather path left the sibling alive after closing its session.
+        await asyncio.sleep(0.02)
+
+    asyncio.run(fetch())
+
+    assert session_states == [False]
+
+
 def test_chat_request_without_client_tokenizer_skips_preflight_and_sends_cap():
     adapter = object.__new__(LocalChatCompletion)
     adapter._concurrent = 2
