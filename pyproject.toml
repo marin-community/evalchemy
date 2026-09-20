@@ -46,9 +46,9 @@ dependencies = [
     # litellm / instructor / nest-asyncio / openai / pandas transitively.
     "bespokelabs-curator>=0.1.16.0",
 
-    # Runtime tokenizer / chat-template for API models. lm-eval 0.4.x imports symbols
-    # transformers 5 removed, so cap below it.
-    "transformers>=4.31,<5",
+    # Runtime tokenizer / chat-template for API models. Transformers 5 is required
+    # for checkpoints exported with the generic TokenizersBackend class.
+    "transformers>=5.17,<6",
     # Slow-tokenizer backends for common models.
     "sentencepiece",
     "protobuf",

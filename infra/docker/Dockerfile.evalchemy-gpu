@@ -13,11 +13,9 @@
 # teammate can reproduce this image bit-for-bit.
 #
 # What the lock reconciles (the three dependency failures this image exists to kill):
-#   1. transformers -- pinned <5 (4.57.6 in the lock). lm-eval 0.4.x imports symbols
-#      transformers 5 removed, so the harness needs <5; and a marin export tokenizer
-#      loads fine at 4.57.x ONCE its tokenizer_config.json is sanitized to
-#      `PreTrainedTokenizerFast` (the marin wrapper name `TokenizersBackend` is not a
-#      real transformers class at ANY version). No transformers-5 bump is needed.
+#   1. transformers -- pinned to 5.x. Marin exports can name the generic
+#      `TokenizersBackend` class, which the transformers 4 client cannot load. The
+#      contract suite covers lm-eval's API-model integration against transformers 5.
 #   2. math grader -- `lm-eval[api,math]@v0.4.12` pulls math_verify (0.9.0) + sympy +
 #      antlr, so minerva / the AIME/AMC/MATH500 boxed grader import and grade.
 #   3. lm-eval async batch -- v0.4.12 fixed the `UnboundLocalError: outputs` MASKING;
@@ -90,7 +88,7 @@ RUN . "$VIRTUAL_ENV/bin/activate" && python -c "\
 import importlib.metadata as m; \
 import lm_eval, transformers, math_verify; \
 import fire, langdetect, nltk, immutabledict; \
-assert transformers.__version__.split('.')[0] == '4', ('transformers must be <5, got ' + transformers.__version__); \
+assert transformers.__version__.split('.')[0] == '5', ('transformers must be 5.x, got ' + transformers.__version__); \
 from eval import robust_api; \
 assert robust_api._APPLIED, 'robust_api resilience patch did NOT apply'; \
 from lm_eval.models.api_models import TemplateAPI; \

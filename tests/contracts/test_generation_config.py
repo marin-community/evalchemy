@@ -20,7 +20,6 @@ from lm_eval.tasks import TaskManager
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.contracts.sample_manifest import SampleManifest
-from eval.lm_eval_tasks.tokenizer_compat import install_tokenizer_compat
 from eval.resume.lm_eval_native import resume_simple_evaluate
 from eval.robust_api import configure_generation_overrides
 from eval.serve_eval.providers import ServedModel
@@ -125,19 +124,18 @@ def test_served_completions_loads_custom_tokenizer_with_remote_code(monkeypatch)
     assert model.tok_encode("Hello") == [1, 2]
 
 
-def test_served_completions_loads_gemma4_tokenizer_config(tmp_path):
+def test_served_completions_loads_transformers5_tokenizer_config(tmp_path):
     tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0, "hello": 1, "<|video|>": 2}, unk_token="[UNK]"))
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "tokenizer_config.json").write_text(
         json.dumps({
-            "tokenizer_class": "PreTrainedTokenizerFast",
+            "tokenizer_class": "TokenizersBackend",
             "unk_token": "[UNK]",
             "extra_special_tokens": ["<|video|>"],
         })
     )
 
-    install_tokenizer_compat()
     model = LocalCompletionsAPI(
         model="served",
         tokenizer=str(tmp_path),
