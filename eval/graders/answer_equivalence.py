@@ -3,9 +3,10 @@
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Sequence
+from typing import Sequence, TypeVar
 from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
@@ -17,6 +18,8 @@ DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_NUM_WORKERS = 16
 JUDGE_TOKEN_BUDGETS = (128, 512, 2048)
+
+_Judgment = TypeVar("_Judgment")
 
 JUDGE_PROMPT = """You are an expert and precise grader. Determine whether the candidate answer is equivalent to any reference answer for the question.
 
@@ -121,10 +124,7 @@ class EquivalenceResult:
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
     """Return whether Minerva normalization and SymPy match any reference."""
     candidate = normalize_final_answer(candidate_answer)
-    return any(
-        minerva_is_equiv(candidate, normalize_final_answer(reference))
-        for reference in reference_answers
-    )
+    return any(minerva_is_equiv(candidate, normalize_final_answer(reference)) for reference in reference_answers)
 
 
 def _parse_judgment(text: str) -> JudgeLabel:
@@ -135,16 +135,11 @@ def _parse_judgment(text: str) -> JudgeLabel:
         raise ValueError(f"unrecognized equivalence judgment: {text!r}") from exc
 
 
-async def _judge_one(
-    request: EquivalenceRequest,
+async def _complete_judge_prompt(
+    prompt: str,
     config: JudgeConfig,
     client: AsyncOpenAI,
-) -> EquivalenceJudgment:
-    prompt = JUDGE_PROMPT.format(
-        question=request.question,
-        reference_answers=json.dumps(request.reference_answers, ensure_ascii=False),
-        candidate_answer=request.candidate_answer,
-    )
+) -> str:
     raw = ""
     for max_tokens in JUDGE_TOKEN_BUDGETS:
         response = await client.chat.completions.create(
@@ -155,17 +150,18 @@ async def _judge_one(
         )
         raw = (response.choices[0].message.content or "").strip()
         if raw:
-            return EquivalenceJudgment(_parse_judgment(raw), raw)
-    return EquivalenceJudgment(_parse_judgment(raw), raw)
+            return raw
+    return raw
 
 
-async def judge_equivalence(
-    requests: Sequence[EquivalenceRequest],
+async def judge_prompts(
+    prompts: Sequence[str],
     config: JudgeConfig,
+    parse_response: Callable[[str], _Judgment],
     num_workers: int = DEFAULT_NUM_WORKERS,
-) -> list[EquivalenceJudgment | BaseException]:
-    """Judge requests concurrently and preserve failures in input order."""
-    if not requests:
+) -> list[_Judgment | BaseException]:
+    """Complete and parse independent judge prompts while preserving input order."""
+    if not prompts:
         return []
     if num_workers < 1:
         raise ValueError("num_workers must be positive")
@@ -177,11 +173,34 @@ async def judge_equivalence(
         max_retries=5,
     ) as client:
 
-        async def bound(request: EquivalenceRequest) -> EquivalenceJudgment:
+        async def bound(prompt: str) -> _Judgment:
             async with semaphore:
-                return await _judge_one(request, config, client)
+                raw = await _complete_judge_prompt(prompt, config, client)
+                return parse_response(raw)
 
-        return await asyncio.gather(*(bound(request) for request in requests), return_exceptions=True)
+        return await asyncio.gather(*(bound(prompt) for prompt in prompts), return_exceptions=True)
+
+
+async def judge_equivalence(
+    requests: Sequence[EquivalenceRequest],
+    config: JudgeConfig,
+    num_workers: int = DEFAULT_NUM_WORKERS,
+) -> list[EquivalenceJudgment | BaseException]:
+    """Judge requests concurrently and preserve failures in input order."""
+    prompts = [
+        JUDGE_PROMPT.format(
+            question=request.question,
+            reference_answers=json.dumps(request.reference_answers, ensure_ascii=False),
+            candidate_answer=request.candidate_answer,
+        )
+        for request in requests
+    ]
+    return await judge_prompts(
+        prompts,
+        config,
+        lambda raw: EquivalenceJudgment(_parse_judgment(raw), raw),
+        num_workers=num_workers,
+    )
 
 
 async def grade_math_equivalence(

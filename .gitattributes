@@ -1,0 +1,2 @@
+# Preserve the canonical SimpleQA CSV byte-for-byte, including source answer whitespace.
+eval/chat_benchmarks/SimpleQA/data/simple_qa_test_set.csv -whitespace
