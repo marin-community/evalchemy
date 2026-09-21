@@ -25,7 +25,9 @@ extra_model_args:
   # don't gate, and re-record the gate when the allowed hardware changes.
   num_concurrent: 1
   timeout: 120
-  max_retries: 3
+  # A preempted Iris worker can take several minutes to replace and re-register.
+  # Keep the in-flight request alive across that recovery window.
+  max_retries: 100
 
 # marin-serve provider
 cluster: marin
