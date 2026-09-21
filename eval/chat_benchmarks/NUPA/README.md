@@ -1,129 +1,70 @@
 # NUPA
 
 NUPA is the direct numeric question-answering benchmark from
-["Number Cookbook: Number Understanding of Language Models and How to Improve It"](https://arxiv.org/abs/2411.03766).
+[Number Cookbook: Number Understanding of Language Models and How to Improve It](https://arxiv.org/abs/2411.03766).
 Evalchemy registers it as one native task named `NUPA`.
 
-The integration has two stages:
+## Dataset protocol
 
-1. `data_prep/flatten_hf_dataset.py` converts the original nested dataset once
-   and publishes row-oriented records to Hugging Face.
-2. `NUPABenchmark` loads those records, requests model completions, scores each
-   response, and aggregates the metrics.
-
-## Dataset repositories
-
-The conversion source is the MIT-licensed
+The benchmark downloads the canonical MIT-licensed
 [`HaotongYang/NUPA_text`](https://huggingface.co/datasets/HaotongYang/NUPA_text)
-dataset. The original source has nested task and digit mappings, so it is not
-loaded directly during evaluation.
+test data at revision `01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7`.
+The 688 MB source JSON contains 2,387,501 examples nested under 44 task keys and
+2,391 task/digit groups.
 
-The flattened dataset repository is currently `TODO_ORG/nupa-text-eval`.
-This identifier is a placeholder shared by the conversion command and runtime
-loader. Finalize the owning Hugging Face organization and repository name before
-publishing the production conversion or merging the integration. Update
-`PUBLISHED_DATASET_NAME` in `eval_instruct.py` when the repository is chosen.
+Evalchemy reproduces the Number Cookbook text-model evaluation default: sample
+100 examples from every task/digit group with Python's `random.Random(20222943)`.
+The resulting benchmark contains 238,926 prompts. Two source groups contain
+fewer than 100 examples; every other group contributes 100. The loader streams
+one source task at a time, so it does not deserialize the complete source file
+at once.
 
-The flattened schema is:
-
-```json
-{
-  "id": "test:max_Float_Float_Float:3:000000",
-  "task_name": "max_Float_Float_Float",
-  "operation": "max",
-  "answer_format": "Float",
-  "digit": 3,
-  "length_bucket": "S",
-  "prompt": "Directly return ... Get the maximal number: 9.11 and 9.9 =",
-  "answer": "9.9"
-}
-```
-
-`answer_format` is one of `Integer`, `Float`, `Fraction`, or
-`ScientificNotation`. `length_bucket` is one of `S`, `M`, `L`, or `XL`.
-
-## Convert and publish
-
-Install the benchmark dependency and authenticate the Hugging Face CLI before
-publishing:
-
-```bash
-uv sync --extra nupa
-hf auth login
-```
-
-Download the original `test.json`, stream-flatten it, and publish the result:
-
-```bash
-uv run python -m eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset \
-  --dataset-name HaotongYang/NUPA_text \
-  --split test \
-  --output /tmp/nupa_test.jsonl \
-  --repo-id TODO_ORG/nupa-text-eval
-```
-
-The converter records the source dataset revision in the published dataset card.
-It reads one top-level task at a time and writes JSONL incrementally; it does not
-hold the complete nested source or flattened result in memory.
-
-For a publishing smoke test, retain one example from every task-and-digit group:
-
-```bash
-uv run python -m eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset \
-  --dataset-name HaotongYang/NUPA_text \
-  --split test \
-  --limit-per-task-digit 1 \
-  --output /tmp/nupa_test_smoke.jsonl \
-  --repo-id USER/nupa-text-eval-smoke
-```
-
-The smoke dataset checks conversion coverage and upload behavior. Do not report
-benchmark performance from it.
+The source repository is GPL-3.0, so Evalchemy does not copy its implementation.
+The dataset is separately distributed under the MIT license. The loader and
+scorer here are clean-room implementations based on the paper's protocol and
+observable metric definitions.
 
 ## Run the benchmark
 
-Evaluate the published dataset against an OpenAI-compatible endpoint:
+Install the benchmark extra and evaluate an OpenAI-compatible endpoint:
 
 ```bash
+uv sync --extra nupa
+
 eval --model local-completions \
   --tasks NUPA \
+  --limit 1000 \
   --model_args model=served,base_url=http://localhost:8000/v1/completions
 ```
 
-Use `--debug` to load the four checked-in smoke records instead of Hugging Face:
+The full protocol contains 238,926 requests. Use `--limit` for development and
+small comparisons; record the limit with any reported score. `--debug` uses four
+checked-in records without downloading the source dataset.
+
+## Materialize the selected rows
+
+The production loader reads the pinned nested source directly. The same
+selection can be materialized as row-oriented JSONL for inspection:
 
 ```bash
-eval --model local-completions \
-  --tasks NUPA \
-  --debug \
-  --model_args model=served,base_url=http://localhost:8000/v1/completions
+uv run --extra nupa python -m eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset \
+  --output /tmp/nupa_test.jsonl
 ```
 
-## Scoring and metrics
+Each row records its task, operation, answer representation, digit length,
+S/M/L/XL length bucket, prompt, and target answer. `--num-each` and
+`--random-seed` override the published protocol for experiments.
 
-Response extraction and normalization follow the observable behavior of the
-official NUPA text evaluator. Evalchemy's scorer is a clean-room implementation;
-the Number Cookbook code repository is GPL-3.0 and its code is not copied here.
+## Metrics
 
-The benchmark reports:
+Response extraction and numeric-component alignment follow the public NUPA text
+evaluation protocol. The benchmark reports:
 
-- `exact_match`: representation-sensitive equality after format-specific
-  extraction and normalization.
+- `exact_match`: representation-sensitive equality after format-specific extraction.
 - `digit_match`: aligned digit accuracy between the extracted answer and target.
 - `dlength`: absolute difference in total digit count; lower is better.
-- `format_valid_rate`: fraction of responses accepted by the expected answer
-  format parser.
-- `no_answer_rate`: fraction of responses from which no answer was extracted;
-  lower is better.
-- `dataset_num_samples`: number of evaluated rows.
+- `format_valid_rate`: fraction of responses accepted by the expected answer parser.
+- `no_answer_rate`: fraction of responses without an extracted answer; lower is better.
 
-Metrics are emitted overall and under these prefixes:
-
-```text
-task:<task_name>/
-bucket:<length_bucket>/
-task:<task_name>/bucket:<length_bucket>/
-```
-
-The task key is grouping metadata, not an Evalchemy task. One `NUPA` evaluation
-runs dataset rows from multiple task-family and representation combinations.
+Metrics are emitted overall, by task, by length bucket, and by task/bucket pair.
+`exact_match` is the primary score.

@@ -404,6 +404,21 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy", "prefix_hit"),
     ),
+    "NUPA": GradingCase(
+        _examples_case(
+            "NUPA",
+            lambda _benchmark: [
+                {
+                    "task_name": "max_Float_Float_Float",
+                    "length_bucket": "S",
+                    "answer_format": "Float",
+                    "answer": "9.9",
+                    "output": "9.9",
+                }
+            ],
+        ),
+        ("exact_match", "digit_match", "dlength", "format_valid_rate", "no_answer_rate"),
+    ),
     # OlympiadBench repeats each problem while OlympiadBenchFull pins one
     # repetition, so the pair covers both of the shared grader's paths.
     "OlympiadBench": GradingCase(
