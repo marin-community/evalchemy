@@ -177,6 +177,18 @@
       "longest_prompt_tokens": 110520,
       "sha256": "83527f80747db50c658538f11297a19a94b56e2deec523f03a64caf87c86ce84"
     },
+    "SimpleQA": {
+      "distinct_prompt_count": 4326,
+      "longest_prompt_chars": 431,
+      "longest_prompt_tokens": 119,
+      "sha256": "c99608c0d5ca823cecae0014934409d2bd7d01dfc9b90d9171dc92b49f681176"
+    },
+    "SimpleQAMini": {
+      "distinct_prompt_count": 500,
+      "longest_prompt_chars": 362,
+      "longest_prompt_tokens": 80,
+      "sha256": "9ca3a56eae147d5d144ffd7457bef8d4775c74bfd6064f3f43e69ca3317c9e45"
+    },
     "alpaca_eval": {
       "distinct_prompt_count": 805,
       "longest_prompt_chars": 1967,

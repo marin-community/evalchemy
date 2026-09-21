@@ -129,6 +129,15 @@ def _patch_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> N
     monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_equivalence", judge_equivalence)
 
 
+def _patch_simpleqa_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> None:
+    """Stand in for the SimpleQA classifier's HTTP calls."""
+
+    async def judge_simpleqa(requests, *_args, **_kwargs):
+        return [EquivalenceJudgment(JudgeLabel.CORRECT, "A") for _ in requests]
+
+    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_simpleqa", judge_simpleqa)
+
+
 def _financebench_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
     """Grade one FinanceBench answer with the judge boundary stubbed out."""
     del tmp_path
@@ -410,6 +419,22 @@ GRADING_CASES: dict[str, GradingCase] = {
             lambda _benchmark: [{"problem": "p", "answer": ["17"], "model_answer": "17"}],
         ),
         ("accuracy",),
+    ),
+    "SimpleQA": GradingCase(
+        _examples_case(
+            "SimpleQA",
+            lambda _benchmark: [{"question": "q", "answer": "a", "model_output": "a"}],
+            patch=_patch_simpleqa_judge,
+        ),
+        ("accuracy", "incorrect", "not_attempted", "judge_failed"),
+    ),
+    "SimpleQAMini": GradingCase(
+        _examples_case(
+            "SimpleQAMini",
+            lambda _benchmark: [{"question": "q", "answer": "a", "model_output": "a"}],
+            patch=_patch_simpleqa_judge,
+        ),
+        ("accuracy", "incorrect", "not_attempted", "judge_failed"),
     ),
 }
 

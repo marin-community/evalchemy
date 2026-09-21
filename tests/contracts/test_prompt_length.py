@@ -39,6 +39,8 @@ REPO_LOCAL_BENCHMARKS = (
     "MBPP",
     "MBPPPlus",
     "OlympiadBench",
+    "SimpleQA",
+    "SimpleQAMini",
 )
 """Benchmarks whose prompts are reproducible from checked-in data alone."""
 
