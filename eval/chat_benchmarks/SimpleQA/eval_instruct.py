@@ -5,7 +5,7 @@ import asyncio
 import csv
 import logging
 import os
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional
 
 from lm_eval.api.instance import Instance
@@ -21,6 +21,22 @@ from eval.task import BaseBenchmark
 
 DATASET_SIZE = 4_326
 DEFAULT_DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "simple_qa_test_set.csv")
+
+
+@dataclass(frozen=True)
+class _GradeCounts:
+    correct: int
+    incorrect: int
+    not_attempted: int
+    judge_failed: int
+
+    @property
+    def judged(self) -> int:
+        return self.correct + self.incorrect + self.not_attempted
+
+    @property
+    def attempted(self) -> int:
+        return self.correct + self.incorrect
 
 
 class SimpleQABenchmark(BaseBenchmark):
@@ -123,12 +139,22 @@ class SimpleQABenchmark(BaseBenchmark):
 
         examples = results["examples"]
         judge_model = results.get("judge_model", self.judge_model)
+        judgments = self._judge_examples(examples, judge_model)
+        counts = self._record_judgments(examples, judgments)
+        self._record_aggregate_metrics(results, counts, len(examples), judge_model)
+        return results
+
+    def _judge_examples(
+        self,
+        examples: List[Dict[str, Any]],
+        judge_model: str,
+    ) -> List[EquivalenceJudgment | BaseException]:
         judge_config = JudgeConfig(
             model=judge_model,
             base_url=self.judge_config.base_url,
             api_key=self.judge_config.api_key,
         )
-        judgments = asyncio.run(
+        return asyncio.run(
             judge_simpleqa(
                 [
                     SimpleQARequest(
@@ -142,6 +168,11 @@ class SimpleQABenchmark(BaseBenchmark):
             )
         )
 
+    def _record_judgments(
+        self,
+        examples: List[Dict[str, Any]],
+        judgments: List[EquivalenceJudgment | BaseException],
+    ) -> _GradeCounts:
         counts = {label: 0 for label in JudgeLabel}
         num_judge_failed = 0
         for index, (example, judgment) in enumerate(zip(examples, judgments, strict=True)):
@@ -149,41 +180,57 @@ class SimpleQABenchmark(BaseBenchmark):
                 if not isinstance(judgment, Exception):
                     raise judgment
                 num_judge_failed += 1
-                record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
-                example["judge_label"] = None
-                example["judge_raw"] = None
-                example["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
-                example["judge_error"] = asdict(
-                    TaskFailure(
-                        category=FailureCategory.GRADER_INFRASTRUCTURE,
-                        message=str(judgment)[:512] or type(judgment).__name__,
-                        exception_type=type(judgment).__name__,
-                    )
-                )
-                record_sample_metrics(example, judge_failed=True)
-                self.logger.warning("SimpleQA judge failed for trial %d: %s", index, judgment)
+                self._record_judge_failure(example, index, judgment)
                 continue
 
             assert isinstance(judgment, EquivalenceJudgment)
             label = judgment.label
             counts[label] += 1
-            example["judge_label"] = label.value
-            example["judge_raw"] = judgment.raw
-            record_sample_metrics(
-                example,
-                accuracy=label == JudgeLabel.CORRECT,
-                incorrect=label == JudgeLabel.INCORRECT,
-                not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
-                judge_failed=False,
-            )
+            self._record_judgment(example, judgment)
+        return _GradeCounts(
+            correct=counts[JudgeLabel.CORRECT],
+            incorrect=counts[JudgeLabel.INCORRECT],
+            not_attempted=counts[JudgeLabel.NOT_ATTEMPTED],
+            judge_failed=num_judge_failed,
+        )
 
-        num_judged = len(examples) - num_judge_failed
-        num_correct = counts[JudgeLabel.CORRECT]
-        num_incorrect = counts[JudgeLabel.INCORRECT]
-        num_not_attempted = counts[JudgeLabel.NOT_ATTEMPTED]
-        num_attempted = num_correct + num_incorrect
-        accuracy = num_correct / num_judged if num_judged else None
-        accuracy_given_attempted = num_correct / num_attempted if num_attempted else 0.0
+    def _record_judge_failure(self, example: Dict[str, Any], index: int, error: Exception) -> None:
+        record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
+        example["judge_label"] = None
+        example["judge_raw"] = None
+        example["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
+        example["judge_error"] = asdict(
+            TaskFailure(
+                category=FailureCategory.GRADER_INFRASTRUCTURE,
+                message=str(error)[:512] or type(error).__name__,
+                exception_type=type(error).__name__,
+            )
+        )
+        record_sample_metrics(example, judge_failed=True)
+        self.logger.warning("SimpleQA judge failed for trial %d: %s", index, error)
+
+    @staticmethod
+    def _record_judgment(example: Dict[str, Any], judgment: EquivalenceJudgment) -> None:
+        label = judgment.label
+        example["judge_label"] = label.value
+        example["judge_raw"] = judgment.raw
+        record_sample_metrics(
+            example,
+            accuracy=label == JudgeLabel.CORRECT,
+            incorrect=label == JudgeLabel.INCORRECT,
+            not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
+            judge_failed=False,
+        )
+
+    @staticmethod
+    def _record_aggregate_metrics(
+        results: Dict[str, Any],
+        counts: _GradeCounts,
+        total: int,
+        judge_model: str,
+    ) -> None:
+        accuracy = counts.correct / counts.judged if counts.judged else None
+        accuracy_given_attempted = counts.correct / counts.attempted if counts.attempted else 0.0
         f1 = (
             2 * accuracy * accuracy_given_attempted / (accuracy + accuracy_given_attempted)
             if accuracy is not None and accuracy + accuracy_given_attempted
@@ -191,23 +238,22 @@ class SimpleQABenchmark(BaseBenchmark):
         )
         results.update(
             {
-                "num_total": len(examples),
-                "num_judged": num_judged,
-                "num_judge_failed": num_judge_failed,
-                "num_correct": num_correct,
-                "num_incorrect": num_incorrect,
-                "num_not_attempted": num_not_attempted,
+                "num_total": total,
+                "num_judged": counts.judged,
+                "num_judge_failed": counts.judge_failed,
+                "num_correct": counts.correct,
+                "num_incorrect": counts.incorrect,
+                "num_not_attempted": counts.not_attempted,
                 "accuracy": accuracy,
                 "correct_rate": accuracy,
-                "incorrect_rate": num_incorrect / num_judged if num_judged else None,
-                "not_attempted_rate": num_not_attempted / num_judged if num_judged else None,
+                "incorrect_rate": counts.incorrect / counts.judged if counts.judged else None,
+                "not_attempted_rate": counts.not_attempted / counts.judged if counts.judged else None,
                 "accuracy_given_attempted": accuracy_given_attempted,
                 "f1": f1,
-                "judge_coverage": num_judged / len(examples) if examples else 0.0,
+                "judge_coverage": counts.judged / total if total else 0.0,
                 "judge_model": judge_model,
             }
         )
-        return results
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
         samples = super().to_samples(generation_result, scored_result)
