@@ -128,6 +128,7 @@ uv run huggingface-cli login
   - **GPQA Diamond**: [A Graduate-Level Google-Proof Q&A Benchmark](https://huggingface.co/datasets/Idavidrein/gpqa)
   - **Alice in Wonderland**: [Simple Tasks Showing Complete Reasoning Breakdown in LLMs](https://arxiv.org/abs/2406.02061)
   - **FinanceBench**: [Financial document Q&A (10-K, 10-Q, earnings calls)](https://github.com/patronus-ai/financebench), graded with an LLM-as-judge (SimpleQA-style correct/incorrect/not_attempted). Each question ships with the supporting passage from the source filing as in-prompt document context.
+  - **NUPA**: [Direct number understanding and processing](https://arxiv.org/abs/2411.03766) across 44 released task variants, with exact-match and digit-level metrics by length bucket.
   - **SimpleQA / SimpleQAMini**: [Short-form factuality](https://openai.com/index/introducing-simpleqa/) over the full 4,326-question set or a deterministic 500-question subset, graded with the canonical SimpleQA classifier.
   - **Arena-Hard-Auto** (Coming soon): [Automatic evaluation tool for instruction-tuned LLMs](https://github.com/lmarena/arena-hard-auto)
   - **SWE-Bench** (Coming soon): [Evaluating large language models on real-world software issues](https://github.com/princeton-nlp/SWE-bench)
