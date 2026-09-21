@@ -7,7 +7,7 @@ from eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset import convert_file
 from eval.chat_benchmarks.NUPA.eval_instruct import (
     BENCHMARK_SIZE,
     NUPABenchmark,
-    flatten_nupa_row,
+    flatten_nupa_tasks,
     iter_nupa_source_records,
     split_prompt_answer,
 )
@@ -66,7 +66,7 @@ def test_converter_materializes_the_same_selected_rows(tmp_path):
 
 
 def test_flattening_preserves_metadata_and_uses_short_range_for_digit_21_bug():
-    records = flatten_nupa_row(
+    records = flatten_nupa_tasks(
         {
             "to_float_Fraction_none_Float": {
                 "1": ["Convert the number to float: 1/1 = 1.0"],

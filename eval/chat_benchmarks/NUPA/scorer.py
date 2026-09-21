@@ -39,11 +39,11 @@ class ExampleScore:
     no_answer: float
 
 
-def extract_answer(text: object, answer_format: str) -> str | None:
+def extract_answer(text: str | None, answer_format: str) -> str | None:
     """Extract an answer at the start of a direct-answer completion."""
     if answer_format not in _ANSWER_PATTERNS:
         raise ValueError(f"Unsupported NUPA answer format: {answer_format}")
-    if not isinstance(text, str):
+    if text is None:
         return None
     stripped = text.strip()
     stripped = _ANSWER_MARKER_RE.sub("", stripped, count=1)
@@ -51,16 +51,6 @@ def extract_answer(text: object, answer_format: str) -> str | None:
     if match is None:
         return None
     return match.group().replace("+", "").replace("-", "").replace("E", "e")
-
-
-def normalize_answer(answer: str | None, answer_format: str) -> str | None:
-    """Validate an extracted answer without changing its digit representation."""
-    if answer is None:
-        return None
-    extracted = extract_answer(answer, answer_format)
-    if extracted is None or extracted != answer.replace("+", "").replace("-", "").replace("E", "e"):
-        return None
-    return extracted
 
 
 def score_prediction(prediction: str | None, gold: str, answer_format: str) -> ExampleScore:

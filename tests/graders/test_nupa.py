@@ -7,7 +7,6 @@ from eval.chat_benchmarks.NUPA.scorer import (
     SCIENTIFIC,
     extract_answer,
     length_bucket,
-    normalize_answer,
     score_prediction,
 )
 
@@ -47,7 +46,6 @@ def test_fraction_and_scientific_components_are_scored_independently():
 
     assert fraction.dlength == 0.0
     assert scientific.exact_match == 1.0
-    assert normalize_answer("05.040e+04", SCIENTIFIC) == "05.040e04"
 
 
 def test_invalid_format_records_no_answer():

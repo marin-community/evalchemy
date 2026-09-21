@@ -24,7 +24,7 @@ from lm_eval.api.model import LM
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .scorer import ExampleScore, extract_answer, length_bucket, mean, normalize_answer, score_prediction
+from .scorer import ExampleScore, extract_answer, length_bucket, mean, score_prediction
 
 SOURCE_DATASET_NAME = "HaotongYang/NUPA_text"
 SOURCE_DATASET_REVISION = "01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7"
@@ -92,13 +92,10 @@ class NUPABenchmark(BaseBenchmark):
         elif self.data_file:
             records = _read_jsonl(Path(self.data_file))
         else:
-            source = Path(
-                hf_hub_download(
-                    repo_id=self.dataset_name,
-                    filename=f"{self.dataset_split}.json",
-                    repo_type="dataset",
-                    revision=self.dataset_revision,
-                )
+            source = download_nupa_source(
+                dataset_name=self.dataset_name,
+                dataset_revision=self.dataset_revision,
+                split=self.dataset_split,
             )
             records = iter_nupa_source_records(
                 source,
@@ -146,7 +143,6 @@ class NUPABenchmark(BaseBenchmark):
         for example in results["examples"]:
             score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
             example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
-            example["normalized_model_answer"] = normalize_answer(example["model_answer"], example["answer_format"])
             example["correct"] = bool(score.exact_match)
             example["score"] = score
             record_sample_metrics(
@@ -174,6 +170,18 @@ class NUPABenchmark(BaseBenchmark):
         return results
 
 
+def download_nupa_source(*, dataset_name: str, dataset_revision: str, split: str) -> Path:
+    """Download and return one pinned NUPA source split."""
+    return Path(
+        hf_hub_download(
+            repo_id=dataset_name,
+            filename=f"{split}.json",
+            repo_type="dataset",
+            revision=dataset_revision,
+        )
+    )
+
+
 def iter_nupa_source_records(
     source: Path,
     *,
@@ -187,25 +195,18 @@ def iter_nupa_source_records(
     random_generator = random.Random(random_seed)
     with source.open("rb") as source_file:
         for task_name, by_digit in ijson.kvitems(source_file, ""):
-            if not isinstance(by_digit, Mapping):
-                raise ValueError(f"NUPA task {task_name} must contain a digit mapping")
+            digit_groups = _validate_digit_groups(task_name, by_digit)
             sampled_by_digit = {}
-            for digit, examples in by_digit.items():
-                if not isinstance(examples, list):
-                    raise ValueError(f"NUPA task {task_name} digit {digit} must contain an example list")
+            for digit, examples in digit_groups.items():
                 sampled_by_digit[str(digit)] = random_generator.sample(examples, min(num_each, len(examples)))
-            yield from flatten_nupa_row({task_name: sampled_by_digit}, split=split)
+            yield from flatten_nupa_tasks({task_name: sampled_by_digit}, split=split)
 
 
-def flatten_nupa_row(row: Mapping[str, Any], split: str) -> List[Dict[str, Any]]:
+def flatten_nupa_tasks(tasks: Mapping[str, Any], split: str) -> List[Dict[str, Any]]:
     """Flatten one or more NUPA task mappings into row-oriented records."""
     flattened: List[Dict[str, Any]] = []
-    for task_name, by_digit in row.items():
-        if not isinstance(by_digit, Mapping):
-            raise ValueError(f"NUPA task {task_name} must contain a digit mapping")
-        digit_groups = {str(digit): examples for digit, examples in by_digit.items() if isinstance(examples, list)}
-        if len(digit_groups) != len(by_digit) or not digit_groups:
-            raise ValueError(f"NUPA task {task_name} has an invalid digit group")
+    for task_name, by_digit in tasks.items():
+        digit_groups = _validate_digit_groups(task_name, by_digit)
         answer_format = _answer_format_from_task_name(task_name)
         operation = _operation_from_task_name(task_name)
         max_digit = max(int(digit) for digit in digit_groups)
@@ -229,6 +230,15 @@ def flatten_nupa_row(row: Mapping[str, Any], split: str) -> List[Dict[str, Any]]
                     }
                 )
     return flattened
+
+
+def _validate_digit_groups(task_name: str, value: Any) -> Dict[str, List[str]]:
+    if not isinstance(value, Mapping) or not value:
+        raise ValueError(f"NUPA task {task_name} must contain a digit mapping")
+    digit_groups = {str(digit): examples for digit, examples in value.items() if isinstance(examples, list)}
+    if len(digit_groups) != len(value):
+        raise ValueError(f"NUPA task {task_name} has an invalid digit group")
+    return digit_groups
 
 
 def split_prompt_answer(text: str) -> tuple[str, str]:
