@@ -5,7 +5,6 @@ from typing import TypedDict
 
 from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
-from eval.completion_response import CompletionContentPolicy, CompletionText
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 
 _REASONING_END_MARKERS = ("</think>", "<|end_think|>")
@@ -37,9 +36,6 @@ def extraction_failure(exc: AnswerExtractionError) -> ExtractionFailure:
 
 def final_response_text(response: str) -> str:
     """Return final answer content without a preceding reasoning trace."""
-    if isinstance(response, CompletionText):
-        response = response.response.normalized_content(CompletionContentPolicy.FINAL_ONLY)
-
     reasoning_end = max(
         (
             index + len(marker)

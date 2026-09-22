@@ -7,6 +7,7 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
+from eval.completion_response import CompletionContentPolicy, CompletionText
 from eval.contracts.sample_results import record_sample_metrics
 from eval.graders.answer_equivalence import math_answers_equivalent
 from eval.graders.answer_extraction import final_response_text
@@ -224,9 +225,7 @@ class MATH500Benchmark(BaseBenchmark):
         return questions
 
     def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Excludes any reasoning trace before applying hendrycks_math boxed extraction.
+        """Return the final boxed answer without using reasoning text.
 
         Args:
             output (str): Model-generated solution text
@@ -234,6 +233,8 @@ class MATH500Benchmark(BaseBenchmark):
         Returns:
             str: Extracted final answer. Returns empty string if no answer found in \boxed.
         """
+        if isinstance(output, CompletionText):
+            output = output.response.normalized_content(CompletionContentPolicy.FINAL_ONLY)
         try:
             answer = remove_boxed(last_boxed_only_string(truncate_at_stop(final_response_text(output))))
             return answer

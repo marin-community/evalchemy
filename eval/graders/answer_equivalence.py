@@ -123,7 +123,7 @@ class EquivalenceResult:
 
 
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
-    """Match any reference with math-verify, or Minerva when parsing fails."""
+    """Return whether the candidate is mathematically equivalent to any reference."""
     candidate = normalize_final_answer(candidate_answer)
     parsed_candidate = parse(f"\\boxed{{{candidate_answer}}}")
     for reference in reference_answers:
