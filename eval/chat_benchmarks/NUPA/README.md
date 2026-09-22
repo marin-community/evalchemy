@@ -2,7 +2,8 @@
 
 NUPA is the direct numeric question-answering benchmark from
 [Number Cookbook: Number Understanding of Language Models and How to Improve It](https://arxiv.org/abs/2411.03766).
-Evalchemy registers it as one native task named `NUPA`.
+Evalchemy registers the full publication protocol as `NUPA` and a fixed
+stratified convenience panel as `NUPA5K`.
 
 ## Dataset protocol
 
@@ -40,6 +41,15 @@ eval --model local-completions \
 The full protocol contains 238,926 requests. Use `--limit` for development and
 small comparisons; record the limit with any reported score. `--debug` uses four
 checked-in records without downloading the source dataset.
+
+For a cheaper comparison that retains coverage of every released task/digit
+stratum, run `--tasks NUPA5K`. Its checked-in identity manifest selects 5,000
+unique records by deterministic round-robin over the 2,391 strata, ordered by
+task name and numeric digit length. Records within each stratum are ordered by
+the SHA-256 digest of their exact source text. NUPA5K reports the ordinary
+unweighted mean over the fixed panel; it is not an unbiased estimator of the
+full publication protocol. Reported results must name `NUPA` or `NUPA5K` and
+must not present the variants as interchangeable.
 
 ## Materialize the selected rows
 
