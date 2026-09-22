@@ -5,9 +5,11 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
+from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
 from eval.contracts.sample_results import record_sample_metrics
+from eval.graders.answer_equivalence import math_answers_equivalent
+from eval.graders.answer_extraction import final_response_text
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
 
@@ -21,7 +23,7 @@ class MATH500Benchmark(BaseBenchmark):
     MATH500 Benchmark for evaluating the math reasoning of LLMs.
     Link: https://huggingface.co/datasets/HuggingFaceH4/MATH-500
 
-    Follows the evaluation logic of hendrycks_math answer extraction.
+    Uses shared boxed-answer extraction and mathematical equivalence grading.
     """
 
     METRICS = ("accuracy",)
@@ -178,7 +180,8 @@ class MATH500Benchmark(BaseBenchmark):
         # ---- native pass@k aggregation (Stage 2b) ----
         if results.get("pass_at_k"):
             num_correct = [
-                sum(int(bool(is_equiv(str(ex["answer"]), ans))) for ans in ex["model_answers"]) for ex in examples
+                sum(math_answers_equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"])
+                for ex in examples
             ]
             self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
@@ -194,7 +197,7 @@ class MATH500Benchmark(BaseBenchmark):
 
         solved = 0
         for example in examples:
-            correct = bool(is_equiv(str(example["answer"]), example["model_answer"]))
+            correct = math_answers_equivalent(example["model_answer"], [str(example["answer"])])
             record_sample_metrics(example, accuracy=correct)
             solved += correct
 
@@ -223,7 +226,7 @@ class MATH500Benchmark(BaseBenchmark):
     def extract_answer(self, output: str) -> str:
         """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
 
-        Uses the same logic as hendrycks_math.
+        Excludes any reasoning trace before applying hendrycks_math boxed extraction.
 
         Args:
             output (str): Model-generated solution text
@@ -232,7 +235,7 @@ class MATH500Benchmark(BaseBenchmark):
             str: Extracted final answer. Returns empty string if no answer found in \boxed.
         """
         try:
-            answer = remove_boxed(last_boxed_only_string(truncate_at_stop(output)))
+            answer = remove_boxed(last_boxed_only_string(truncate_at_stop(final_response_text(output))))
             return answer
-        except:
+        except (AssertionError, TypeError, ValueError):
             return ""

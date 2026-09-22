@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Sequence, TypeVar
 from urllib.parse import urlsplit
 
+from math_verify import parse, verify
 from openai import AsyncOpenAI
 
 from eval.graders.minerva_math import is_equiv as minerva_is_equiv
@@ -122,9 +123,18 @@ class EquivalenceResult:
 
 
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
-    """Return whether Minerva normalization and SymPy match any reference."""
+    """Match any reference with math-verify, or Minerva when parsing fails."""
     candidate = normalize_final_answer(candidate_answer)
-    return any(minerva_is_equiv(candidate, normalize_final_answer(reference)) for reference in reference_answers)
+    parsed_candidate = parse(f"\\boxed{{{candidate_answer}}}")
+    for reference in reference_answers:
+        parsed_reference = parse(f"\\boxed{{{reference}}}")
+        if parsed_candidate and parsed_reference:
+            if verify(gold=parsed_reference, target=parsed_candidate):
+                return True
+            continue
+        if minerva_is_equiv(candidate, normalize_final_answer(reference)):
+            return True
+    return False
 
 
 def _parse_judgment(text: str) -> JudgeLabel:

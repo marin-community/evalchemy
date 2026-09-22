@@ -5,7 +5,10 @@ from typing import TypedDict
 
 from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
+from eval.completion_response import CompletionContentPolicy, CompletionText
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
+
+_REASONING_END_MARKERS = ("</think>", "<|end_think|>")
 
 
 class AnswerExtractionError(ValueError):
@@ -30,6 +33,22 @@ class ExtractionFailure(TypedDict):
 def extraction_failure(exc: AnswerExtractionError) -> ExtractionFailure:
     """Return the stable artifact fields for an extraction error."""
     return {"type": type(exc).__name__, "message": str(exc)}
+
+
+def final_response_text(response: str) -> str:
+    """Return final answer content without a preceding reasoning trace."""
+    if isinstance(response, CompletionText):
+        response = response.response.normalized_content(CompletionContentPolicy.FINAL_ONLY)
+
+    reasoning_end = max(
+        (
+            index + len(marker)
+            for marker in _REASONING_END_MARKERS
+            if (index := response.rfind(marker)) >= 0
+        ),
+        default=0,
+    )
+    return response[reasoning_end:]
 
 
 def _first_boxed_only_string(response: str) -> str | None:
