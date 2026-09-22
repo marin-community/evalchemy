@@ -4,7 +4,7 @@
     ".agents/marin-style/TESTING-core.md": "sha256:d69ffd9be454622b4a22d784cdbf495c1380ce0c63b971317ba14619d3c712f8",
     ".agents/skills/commit/SKILL.md": "sha256:853c7ede6c231e258caca81658cc90d5d7da0fee1e91d1fcfcf40dbbf6055322",
     ".agents/skills/consult-echo/SKILL.md": "sha256:b2a1eec30fe922b9c10b5681def7e2148c8c1ef9accf0f919783da5404bb6cbf",
-    ".agents/skills/consult-echo/scripts/echo.py": "sha256:da6e92dad299f6e69e161cdcb72f63e6baa9b9d9a5b4d0a17ab1e8fb6a2a6328",
+    ".agents/skills/consult-echo/scripts/echo.py": "sha256:80696cd993d846a5e60c46177e77d29f9f95153098c3caa956b82c42f81d8194",
     ".agents/skills/debug/SKILL.md": "sha256:da501488a822f0b548dccf9c37eeb9e15de8c905a74e78fa8ed54d22858fb533",
     ".agents/skills/file-issue/SKILL.md": "sha256:1a663308791e9390f05ab5a66cbcf52ac93df9af94d5eb444e2a1a41a6f2a68f",
     ".agents/skills/task-logbook/SKILL.md": "sha256:da55a9f8a31bfc8e27d2698fc41e9b4d985fb100e5b82bd4ffacd2d39e3fb4b6",
@@ -22,5 +22,5 @@
     ".agents/skills/writing-style/tutorials.md": "sha256:ea74d0a2603a065595a507118c282de3bff0c2aa06f6bb7bb2f99832f1f3e2eb"
   },
   "format": 1,
-  "revision": "d54272cad0f0823ab9a00e57fddcc169e9fcf3d2"
+  "revision": "727f180cd423246ca1a6164163a5883cda5bf52b"
 }

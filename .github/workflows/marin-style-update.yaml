@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ steps.token.outputs.token }}
-      - uses: marin-community/marin-style/actions/update-consumer@d54272cad0f0823ab9a00e57fddcc169e9fcf3d2
+      - uses: marin-community/marin-style/actions/update-consumer@727f180cd423246ca1a6164163a5883cda5bf52b
         with:
           token: ${{ steps.token.outputs.token }}
           app-slug: marin-external-runtime-updater
