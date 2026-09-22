@@ -1,8 +1,16 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
+from eval.chat_benchmarks.NUPA5K.eval_instruct import NUPA5KBenchmark
+from eval.chat_benchmarks.NUPA5K.panel import (
+    NUPA5K_SIZE,
+    build_nupa5k_identities,
+    load_nupa5k_manifest,
+    load_panel_records,
+)
 from eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset import convert_file
 from eval.chat_benchmarks.NUPA.eval_instruct import (
     BENCHMARK_SIZE,
@@ -134,3 +142,97 @@ def test_benchmark_metadata_describes_the_published_protocol():
     assert description.primary_metric == "accuracy"
     assert description.n_benchmark == BENCHMARK_SIZE
     assert description.n_attempted == BENCHMARK_SIZE
+
+
+def test_stratified_selection_is_stable_unique_and_round_robin(tmp_path):
+    first = tmp_path / "first.json"
+    reordered = tmp_path / "reordered.json"
+    first.write_text(
+        json.dumps(
+            {
+                "task_b": {"1": ["b1", "b1"]},
+                "task_a": {"2": ["a2-2", "a2-1"], "1": ["a1-3", "a1-1", "a1-2"]},
+            }
+        )
+    )
+    reordered.write_text(
+        json.dumps(
+            {
+                "task_a": {"1": ["a1-2", "a1-1", "a1-3"], "2": ["a2-1", "a2-2"]},
+                "task_b": {"1": ["b1", "b1"]},
+            }
+        )
+    )
+
+    selected = build_nupa5k_identities(first, panel_size=6)
+
+    assert selected == build_nupa5k_identities(reordered, panel_size=6)
+    assert [(identity.task_name, identity.digit) for identity in selected] == [
+        ("task_a", 1),
+        ("task_a", 2),
+        ("task_b", 1),
+        ("task_a", 1),
+        ("task_a", 2),
+        ("task_a", 1),
+    ]
+    assert len(set(selected)) == 6
+    assert [
+        identity.sha256 for identity in selected if identity.task_name == "task_a" and identity.digit == 1
+    ] == sorted(identity.sha256 for identity in selected if identity.task_name == "task_a" and identity.digit == 1)
+
+
+def test_stratified_selection_rejects_a_panel_larger_than_unique_source_records(tmp_path):
+    source = tmp_path / "test.json"
+    source.write_text(json.dumps({"task": {"1": ["same", "same"]}}))
+
+    with pytest.raises(ValueError, match="unique source records"):
+        build_nupa5k_identities(source, panel_size=2)
+
+
+def test_panel_loader_follows_manifest_order_and_skips_duplicate_identities(tmp_path):
+    source = tmp_path / "test.json"
+    source.write_text(
+        json.dumps(
+            {
+                "task_b_Integer_Integer_Integer": {
+                    "1": ["Directly return an integer. B: 2 = 2", "Directly return an integer. B: 2 = 2"]
+                },
+                "task_a_Integer_Integer_Integer": {"1": ["Directly return an integer. A: 1 = 1"]},
+            }
+        )
+    )
+    identities = build_nupa5k_identities(source, panel_size=2)
+
+    records = load_panel_records(source, split="test", identities=identities)
+
+    assert [record["source_sha256"] for record in records] == [identity.sha256 for identity in identities]
+    assert len({record["id"] for record in records}) == 2
+
+
+def test_checked_in_nupa5k_manifest_pins_complete_stratified_panel():
+    manifest = load_nupa5k_manifest()
+    strata_counts = Counter((identity.task_name, identity.digit) for identity in manifest)
+    expected_stratum_order = tuple(
+        stratum
+        for round_index in range(max(strata_counts.values()))
+        for stratum in sorted(strata_counts)
+        if strata_counts[stratum] > round_index
+    )
+
+    assert len(manifest) == NUPA5K_SIZE
+    assert len(set(manifest)) == NUPA5K_SIZE
+    assert len({identity.task_name for identity in manifest}) == 44
+    assert len(strata_counts) == 2_391
+    assert Counter(strata_counts.values()) == {1: 1, 2: 2_171, 3: 219}
+    assert tuple((identity.task_name, identity.digit) for identity in manifest) == expected_stratum_order
+    for stratum in strata_counts:
+        digests = [identity.sha256 for identity in manifest if (identity.task_name, identity.digit) == stratum]
+        assert digests == sorted(digests)
+
+
+def test_nupa5k_metadata_describes_fixed_panel():
+    description = NUPA5KBenchmark().describe("NUPA5K")
+
+    assert description is not None
+    assert description.n_benchmark == NUPA5K_SIZE
+    assert description.n_attempted == NUPA5K_SIZE

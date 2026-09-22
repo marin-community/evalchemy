@@ -31,6 +31,7 @@ SOURCE_DATASET_REVISION = "01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7"
 DEFAULT_SPLIT = "test"
 DEFAULT_NUM_EACH = 100
 DEFAULT_RANDOM_SEED = 20_222_943
+DEFAULT_MAX_TOKENS = 256
 BENCHMARK_SIZE = 238_926
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 SMOKE_DATA = os.path.join(DATA_DIR, "nupa_smoke.jsonl")
@@ -50,7 +51,7 @@ class NUPABenchmark(BaseBenchmark):
         data_file: Optional[str] = None,
         num_each: int = DEFAULT_NUM_EACH,
         random_seed: int = DEFAULT_RANDOM_SEED,
-        max_tokens: int = 256,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         debug: bool = False,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
@@ -195,7 +196,7 @@ def iter_nupa_source_records(
     random_generator = random.Random(random_seed)
     with source.open("rb") as source_file:
         for task_name, by_digit in ijson.kvitems(source_file, ""):
-            digit_groups = _validate_digit_groups(task_name, by_digit)
+            digit_groups = validate_nupa_digit_groups(task_name, by_digit)
             sampled_by_digit = {}
             for digit, examples in digit_groups.items():
                 sampled_by_digit[str(digit)] = random_generator.sample(examples, min(num_each, len(examples)))
@@ -206,7 +207,7 @@ def flatten_nupa_tasks(tasks: Mapping[str, Any], split: str) -> List[Dict[str, A
     """Flatten one or more NUPA task mappings into row-oriented records."""
     flattened: List[Dict[str, Any]] = []
     for task_name, by_digit in tasks.items():
-        digit_groups = _validate_digit_groups(task_name, by_digit)
+        digit_groups = validate_nupa_digit_groups(task_name, by_digit)
         answer_format = _answer_format_from_task_name(task_name)
         operation = _operation_from_task_name(task_name)
         max_digit = max(int(digit) for digit in digit_groups)
@@ -232,7 +233,7 @@ def flatten_nupa_tasks(tasks: Mapping[str, Any], split: str) -> List[Dict[str, A
     return flattened
 
 
-def _validate_digit_groups(task_name: str, value: Any) -> Dict[str, List[str]]:
+def validate_nupa_digit_groups(task_name: str, value: Any) -> Dict[str, List[str]]:
     if not isinstance(value, Mapping) or not value:
         raise ValueError(f"NUPA task {task_name} must contain a digit mapping")
     digit_groups = {str(digit): examples for digit, examples in value.items() if isinstance(examples, list)}
