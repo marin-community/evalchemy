@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from eval.chat_benchmarks.NUPA.eval_instruct import (
+    DEFAULT_MAX_TOKENS,
     DEFAULT_SPLIT,
     SOURCE_DATASET_NAME,
     SOURCE_DATASET_REVISION,
@@ -26,7 +27,7 @@ class NUPA5KBenchmark(NUPABenchmark):
         dataset_revision: str = SOURCE_DATASET_REVISION,
         dataset_split: str = DEFAULT_SPLIT,
         source_file: str | None = None,
-        max_tokens: int = 256,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
         debug: bool = False,
         logger: logging.Logger | None = None,
         system_instruction: str | None = None,

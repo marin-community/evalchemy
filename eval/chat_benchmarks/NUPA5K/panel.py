@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import ijson
 
-from eval.chat_benchmarks.NUPA.eval_instruct import flatten_nupa_tasks
+from eval.chat_benchmarks.NUPA.eval_instruct import flatten_nupa_tasks, validate_nupa_digit_groups
 
 NUPA5K_SIZE = 5_000
 NUPA5K_TASK_COUNT = 44
@@ -40,43 +40,34 @@ class SourceIdentity:
 Stratum = tuple[str, int]
 
 
+@dataclass(frozen=True)
+class SourceStratum:
+    """Source strings belonging to one task and digit length."""
+
+    task_name: str
+    digit: int
+    texts: tuple[str, ...]
+
+
 def source_text_sha256(text: str) -> str:
     """Return the identity digest for an exact NUPA source string."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def select_stratified_identities(
-    strata: Mapping[Stratum, Iterable[str]], *, panel_size: int
-) -> tuple[SourceIdentity, ...]:
-    """Select a stable hash-ordered, round-robin panel from in-memory strata."""
-    digests = {stratum: sorted({source_text_sha256(text) for text in texts}) for stratum, texts in strata.items()}
-    allocation = _round_robin_allocation(
-        {stratum: len(unique_digests) for stratum, unique_digests in digests.items()},
-        panel_size=panel_size,
-    )
-    offsets: Counter[Stratum] = Counter()
-    selected = []
-    for task_name, digit in allocation:
-        stratum = (task_name, digit)
-        selected.append(SourceIdentity(task_name, digit, digests[stratum][offsets[stratum]]))
-        offsets[stratum] += 1
-    return tuple(selected)
-
-
 def build_nupa5k_identities(source: Path, *, panel_size: int = NUPA5K_SIZE) -> tuple[SourceIdentity, ...]:
-    """Build a bounded-memory panel identity list from nested source JSON."""
+    """Build ordered panel identities from nested source JSON."""
     unique_counts = {
-        (task_name, digit): len({source_text_sha256(text) for text in texts})
-        for task_name, digit, texts in iter_source_strata(source)
+        (stratum.task_name, stratum.digit): len({source_text_sha256(text) for text in stratum.texts})
+        for stratum in iter_source_strata(source)
     }
     allocation = _round_robin_allocation(unique_counts, panel_size=panel_size)
     quotas = Counter(allocation)
 
     selected_digests = {}
-    for task_name, digit, texts in iter_source_strata(source):
-        stratum = (task_name, digit)
+    for source_stratum in iter_source_strata(source):
+        stratum = (source_stratum.task_name, source_stratum.digit)
         if quota := quotas[stratum]:
-            selected_digests[stratum] = sorted({source_text_sha256(text) for text in texts})[:quota]
+            selected_digests[stratum] = sorted({source_text_sha256(text) for text in source_stratum.texts})[:quota]
 
     offsets: Counter[Stratum] = Counter()
     identities = []
@@ -182,20 +173,15 @@ def iter_source_tasks(source: Path) -> Iterator[tuple[str, dict[str, list[str]]]
     """Yield validated NUPA tasks from nested source JSON."""
     with source.open("rb") as source_file:
         for task_name, value in ijson.kvitems(source_file, ""):
-            if not isinstance(value, Mapping) or not value:
-                raise ValueError(f"NUPA task {task_name} must contain a digit mapping")
-            digit_groups = {str(digit): texts for digit, texts in value.items() if isinstance(texts, list)}
-            if len(digit_groups) != len(value):
-                raise ValueError(f"NUPA task {task_name} has an invalid digit group")
-            yield task_name, digit_groups
+            yield task_name, validate_nupa_digit_groups(task_name, value)
 
 
-def iter_source_strata(source: Path) -> Iterator[tuple[str, int, list[str]]]:
+def iter_source_strata(source: Path) -> Iterator[SourceStratum]:
     """Yield each nonempty task/digit stratum from nested source JSON."""
     for task_name, digit_groups in iter_source_tasks(source):
         for digit, texts in digit_groups.items():
             if texts:
-                yield task_name, int(digit), texts
+                yield SourceStratum(task_name, int(digit), tuple(texts))
 
 
 def _round_robin_allocation(unique_counts: Mapping[Stratum, int], *, panel_size: int) -> tuple[Stratum, ...]:
