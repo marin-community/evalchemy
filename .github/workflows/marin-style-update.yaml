@@ -1,0 +1,39 @@
+name: "Marin - Update marin-style"
+
+on:
+  schedule:
+    - cron: "35 4 * * *"
+  workflow_dispatch:
+    inputs:
+      merge:
+        description: Merge after protected checks pass
+        type: boolean
+        default: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    environment: external-runtime-updater
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/create-github-app-token@v3
+        id: token
+        with:
+          client-id: Iv23liNdDvC85E67xNa6
+          private-key: ${{ secrets.DEPENDENCY_UPDATER_PRIVATE_KEY }}
+          owner: marin-community
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+      - uses: marin-community/marin-style/actions/update-consumer@d54272cad0f0823ab9a00e57fddcc169e9fcf3d2
+        with:
+          token: ${{ steps.token.outputs.token }}
+          app-slug: marin-external-runtime-updater
+          base-branch: ${{ github.event.repository.default_branch }}
+          mode: ${{ (github.event_name == 'schedule' || inputs.merge) && 'merge' || 'publish' }}

@@ -3,7 +3,7 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "marin-style @ git+https://github.com/marin-community/marin-style@67f567027056ba465468e67dfb0ee59c07c1d0ce",
+#     "marin-style @ git+https://github.com/marin-community/marin-style@d54272cad0f0823ab9a00e57fddcc169e9fcf3d2",
 # ]
 # ///
 
