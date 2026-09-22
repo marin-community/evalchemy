@@ -183,7 +183,7 @@ jobs:
       actions: read    # pull failed-job logs for the excerpt
       contents: read
     steps:
-      - uses: marin-community/marin-style/actions/report-failure@67f567027056ba465468e67dfb0ee59c07c1d0ce  # v0.4.0
+      - uses: marin-community/marin-style/actions/report-failure@727f180cd423246ca1a6164163a5883cda5bf52b
         with:
           lane: e2e
           trigger-token: ${{ secrets.LOOM_TRIGGER_GH_TOKEN }}

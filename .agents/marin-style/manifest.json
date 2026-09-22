@@ -1,0 +1,26 @@
+{
+  "files": {
+    ".agents/marin-style/AGENTS-core.md": "sha256:c3931a985c0bf4ae7158caa00418ba8c975cb54a5472428aab3fa896325399c3",
+    ".agents/marin-style/TESTING-core.md": "sha256:d69ffd9be454622b4a22d784cdbf495c1380ce0c63b971317ba14619d3c712f8",
+    ".agents/skills/commit/SKILL.md": "sha256:853c7ede6c231e258caca81658cc90d5d7da0fee1e91d1fcfcf40dbbf6055322",
+    ".agents/skills/consult-echo/SKILL.md": "sha256:b2a1eec30fe922b9c10b5681def7e2148c8c1ef9accf0f919783da5404bb6cbf",
+    ".agents/skills/consult-echo/scripts/echo.py": "sha256:80696cd993d846a5e60c46177e77d29f9f95153098c3caa956b82c42f81d8194",
+    ".agents/skills/debug/SKILL.md": "sha256:da501488a822f0b548dccf9c37eeb9e15de8c905a74e78fa8ed54d22858fb533",
+    ".agents/skills/file-issue/SKILL.md": "sha256:1a663308791e9390f05ab5a66cbcf52ac93df9af94d5eb444e2a1a41a6f2a68f",
+    ".agents/skills/task-logbook/SKILL.md": "sha256:da55a9f8a31bfc8e27d2698fc41e9b4d985fb100e5b82bd4ffacd2d39e3fb4b6",
+    ".agents/skills/write-design-doc/SKILL.md": "sha256:f3fd73baca28ebb1c064e67e5662c2ee3d4ca37674eb719b40cbc506fdae1dd7",
+    ".agents/skills/write-ops-log/SKILL.md": "sha256:fad69fe4094cda37f3c757984ea0533eeda2f3c0a873e9008ef532322f4a3263",
+    ".agents/skills/write-tests/SKILL.md": "sha256:292f10bde179fb0da7f55707b07b6124a07eccee6672da08566e82cbeea4a32b",
+    ".agents/skills/writing-style/SKILL.md": "sha256:89d1e38fc2414036b82538ed4506a2a454092f55dbb9e1650f9df077cf8cc5fb",
+    ".agents/skills/writing-style/ai-writing-donts.md": "sha256:221575fd81d571c9d04bd0d40c1927969e4e552bd42b0206bf642251747d1f18",
+    ".agents/skills/writing-style/blog-posts.md": "sha256:a75cf48785df1310385502c20fe5c68820d5da1ac937a7fdba437a35249b8877",
+    ".agents/skills/writing-style/discord.md": "sha256:2d309f31ff305c03f5a028ef8e8d0d19acc969831ccf1019ea858b4f36a0769d",
+    ".agents/skills/writing-style/issues.md": "sha256:46d11f45703484a32245236158fef693a788b61a171023386d3def977546d0ea",
+    ".agents/skills/writing-style/pull-requests.md": "sha256:78c94e2481281c1b850fedf62383fba02ec787fd6d9e824f0ed9e3aea480a26f",
+    ".agents/skills/writing-style/reference-docs.md": "sha256:c620fd1ec2f8f7997234fd695cb91e855861225bab2680de5c787d601c946024",
+    ".agents/skills/writing-style/reports.md": "sha256:9645e77bdb25d1b6fa73d8f5b1387ebe6b64d8657439066ea332078d45017f8e",
+    ".agents/skills/writing-style/tutorials.md": "sha256:ea74d0a2603a065595a507118c282de3bff0c2aa06f6bb7bb2f99832f1f3e2eb"
+  },
+  "format": 1,
+  "revision": "727f180cd423246ca1a6164163a5883cda5bf52b"
+}
