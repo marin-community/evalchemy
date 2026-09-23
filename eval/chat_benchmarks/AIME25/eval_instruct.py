@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
+from eval.graders.answer_equivalence import math_answers_equivalent
+from eval.graders.answer_extraction import extract_final_boxed_answer
 
 from eval.task import BaseBenchmark
 
@@ -20,7 +21,7 @@ class AIME25Benchmark(BaseBenchmark):
     AIME25 Benchmark for evaluating the math reasoning of LLMs.
     Link: https://huggingface.co/datasets/zwhe99/aime25
 
-    Follows the evaluation logic of hendrycks_math answer extraction.
+    Grades boxed final answers with shared mathematical equivalence.
     """
 
     def __init__(
@@ -127,7 +128,9 @@ class AIME25Benchmark(BaseBenchmark):
         all_results = []
         correct_by_repeat = []
         for i in range(self.n_repeat):
-            correct = [is_equiv(str(example["answer"]), example["model_answers"][i]) for example in examples]
+            correct = [
+                math_answers_equivalent(example["model_answers"][i], [str(example["answer"])]) for example in examples
+            ]
             correct_by_repeat.append(correct)
             solved = sum(correct)
             all_results.append(
@@ -175,7 +178,7 @@ class AIME25Benchmark(BaseBenchmark):
     def extract_answer(self, output: str) -> str:
         """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
 
-        Uses the same logic as hendrycks_math.
+        Excludes reasoning content before selecting the final box.
 
         Args:
             output (str): Model-generated solution text
@@ -183,8 +186,4 @@ class AIME25Benchmark(BaseBenchmark):
         Returns:
             str: Extracted final answer. Returns empty string if no answer found in \boxed.
         """
-        try:
-            answer = remove_boxed(last_boxed_only_string(output))
-            return answer
-        except:
-            return ""
+        return extract_final_boxed_answer(output)
