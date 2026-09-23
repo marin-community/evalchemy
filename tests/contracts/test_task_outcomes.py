@@ -3,6 +3,7 @@
 """Behavioral coverage for the task-outcome boundary."""
 
 from argparse import Namespace
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
@@ -22,8 +23,8 @@ from eval.contracts.task_outcome import (
 )
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.completion_response import CompletionContentPolicy
-from eval.robust_api import record_endpoint_failure
+from eval.completion_response import CompletionClassification, CompletionContentPolicy
+from eval.robust_api import record_completion_responses, record_endpoint_failure
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
 from lm_eval.models.openai_completions import LocalChatCompletion
@@ -232,6 +233,31 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
     validate_result_document(result)
 
 
+def test_custom_task_with_majority_missing_final_content_has_no_canonical_score():
+    class _MalformedResponsesBenchmark(_Benchmark):
+        def generate_responses(self, model):
+            record_completion_responses(
+                Counter({CompletionClassification.REASONING_ONLY: 2, CompletionClassification.FINAL: 1})
+            )
+            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE, 2)
+            return {"examples": [{"output": "reasoning"}, {"output": "reasoning"}, {"output": "answer"}]}
+
+    result = _custom_evaluate(
+        _MalformedResponsesBenchmark({}, scored_result={"accuracy": 1.0 / 3.0})
+    )
+
+    outcome = result["task_outcomes"]["contract_task"]
+    assert outcome["status"] is TaskStatus.FAILED
+    assert outcome["failure"]["category"] is FailureCategory.MALFORMED_MODEL_RESPONSE
+    assert outcome["generated_count"] == 3
+    assert outcome["scored_count"] == 3
+    assert outcome["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 2}
+    assert outcome["completion_response_summary"] == {"reasoning_only": 2, "final": 1}
+    assert result["results"] == {}
+    assert result["canonical_results"] == {}
+    validate_result_document(result)
+
+
 def test_artifacts_are_cleaned_when_grader_infrastructure_fails():
     artifacts = GenerationArtifactManifest.temporary()
     artifact = artifacts.write_jsonl("generated", "generated.jsonl", [{"id": "a"}], expected_count=1)
@@ -353,16 +379,17 @@ def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatc
         responses = adapter.parse_generations(
             [
                 {"choices": [{"index": 0, "message": {"content": "correct"}}]},
+                {"choices": [{"index": 0, "message": {"content": "correct"}}]},
                 {"choices": [{"index": 4, "message": {"content": "unparseable"}}]},
             ]
         )
-        assert responses == ["correct", ""]
+        assert responses == ["correct", "correct", ""]
         return {
-            "results": {"arc_easy": {"acc,none": 0.5}},
-            "n-samples": {"arc_easy": {"original": 2, "effective": 2}},
+            "results": {"arc_easy": {"acc,none": 2 / 3}},
+            "n-samples": {"arc_easy": {"original": 3, "effective": 3}},
             "samples": {
                 "arc_easy": [
-                    {"resps": [[response]], "metrics": ["acc,none"], "acc,none": float(index == 0)}
+                    {"resps": [[response]], "metrics": ["acc,none"], "acc,none": float(index < 2)}
                     for index, response in enumerate(responses)
                 ]
             },
@@ -370,13 +397,34 @@ def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatc
 
     result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses, log_samples=True)
 
-    assert result["results"]["arc_easy"]["acc,none"] == 0.5
+    assert result["results"]["arc_easy"]["acc,none"] == 2 / 3
     assert result["task_outcomes"]["arc_easy"]["failure_counts"] == {
         FailureCategory.MALFORMED_MODEL_RESPONSE: 1
     }
-    assert result["task_outcomes"]["arc_easy"]["completion_response_summary"] == {"final": 1, "empty": 1}
-    assert result["samples"]["arc_easy"][1]["resps"] == [[""]]
-    assert result["samples"]["arc_easy"][1]["failure_category"] == FailureCategory.MALFORMED_MODEL_RESPONSE
+    assert result["task_outcomes"]["arc_easy"]["completion_response_summary"] == {"final": 2, "empty": 1}
+    assert result["samples"]["arc_easy"][2]["resps"] == [[""]]
+    assert result["samples"]["arc_easy"][2]["failure_category"] == FailureCategory.MALFORMED_MODEL_RESPONSE
+    validate_result_document(result)
+
+
+def test_lm_eval_task_with_half_missing_final_content_has_no_canonical_score(monkeypatch):
+    def evaluate_responses(*_args, **_kwargs):
+        record_completion_responses(
+            Counter({CompletionClassification.REASONING_ONLY: 1, CompletionClassification.FINAL: 1})
+        )
+        return {
+            "results": {"arc_easy": {"acc,none": 0.5}},
+            "n-samples": {"arc_easy": {"original": 2, "effective": 2}},
+        }
+
+    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
+
+    outcome = result["task_outcomes"]["arc_easy"]
+    assert outcome["status"] is TaskStatus.FAILED
+    assert outcome["failure"]["category"] is FailureCategory.MALFORMED_MODEL_RESPONSE
+    assert outcome["completion_response_summary"] == {"reasoning_only": 1, "final": 1}
+    assert result["results"] == {}
+    assert result["canonical_results"] == {}
     validate_result_document(result)
 
 
