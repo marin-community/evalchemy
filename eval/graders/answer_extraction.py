@@ -5,6 +5,7 @@ from typing import TypedDict
 
 from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
+from eval.completion_response import CompletionContentPolicy, CompletionText
 from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
 
 _REASONING_END_MARKERS = ("</think>", "<|end_think|>")
@@ -45,6 +46,16 @@ def final_response_text(response: str) -> str:
         default=0,
     )
     return response[reasoning_end:]
+
+
+def extract_final_boxed_answer(response: str) -> str:
+    """Extract the last box from final content, or return an empty answer."""
+    if isinstance(response, CompletionText):
+        response = response.response.normalized_content(CompletionContentPolicy.FINAL_ONLY)
+    try:
+        return remove_boxed(last_boxed_only_string(truncate_at_stop(final_response_text(response))))
+    except (AssertionError, TypeError, ValueError):
+        return ""
 
 
 def _first_boxed_only_string(response: str) -> str | None:
