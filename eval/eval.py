@@ -48,6 +48,7 @@ from eval import robust_api  # noqa: F401
 from eval.robust_api import (
     EndpointFailureCapture,
     capture_endpoint_failures,
+    completion_response_quality_invalid,
     configure_generation_overrides,
     parse_generation_overrides,
 )
@@ -68,6 +69,7 @@ from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
     FailurePhase,
+    TaskFailure,
     TaskOutcome,
     TaskRoute,
     TaskStatus,
@@ -136,6 +138,21 @@ def _cleanup_generation_result(generation_result: Any) -> None:
     artifacts = generation_artifacts(generation_result)
     if artifacts is not None:
         artifacts.cleanup()
+
+
+def _outcome_with_response_quality(outcome: TaskOutcome, capture: EndpointFailureCapture) -> TaskOutcome:
+    """Fail a scored task whose chat completions mostly lack final content."""
+    if outcome.status is not TaskStatus.SUCCEEDED or not completion_response_quality_invalid(capture.response_summary):
+        return outcome
+    return replace(
+        outcome,
+        status=TaskStatus.FAILED,
+        metrics={},
+        failure=TaskFailure(
+            FailureCategory.MALFORMED_MODEL_RESPONSE,
+            "at least half of chat completions lacked final content",
+        ),
+    )
 
 
 def _record_generation_artifacts(results: dict[str, Any], work: _CustomTaskWork) -> None:
@@ -602,6 +619,7 @@ def evaluate(
                 pretrain_results,
                 sample_manifest,
             )
+            outcome = _outcome_with_response_quality(outcome, endpoint_captures[pretrain_task])
             outcomes.append(outcome)
             if outcome.status is TaskStatus.FAILED:
                 continue
@@ -623,16 +641,20 @@ def evaluate(
                         sample_manifest,
                     )
 
-    outcomes = [
-        replace(
-            outcome,
-            failure_counts=dict(Counter(outcome.failure_counts) + endpoint_captures[outcome.task_name].counts),
-            completion_response_summary=dict(endpoint_captures[outcome.task_name].response_summary),
-        )
-        if outcome.task_name in endpoint_captures
-        else outcome
-        for outcome in outcomes
-    ]
+    finalized_outcomes = []
+    for outcome in outcomes:
+        capture = endpoint_captures.get(outcome.task_name)
+        if capture is not None:
+            validated = _outcome_with_response_quality(outcome, capture)
+            if validated.status is TaskStatus.FAILED and outcome.status is TaskStatus.SUCCEEDED:
+                results["results"].pop(outcome.task_name, None)
+            outcome = replace(
+                validated,
+                failure_counts=dict(Counter(validated.failure_counts) + capture.counts),
+                completion_response_summary=dict(capture.response_summary),
+            )
+        finalized_outcomes.append(outcome)
+    outcomes = finalized_outcomes
     results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
     _attach_benchmark_metadata(results, args, outcomes)
     if getattr(lm, "rank", 0) == 0:
