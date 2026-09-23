@@ -60,6 +60,8 @@ def parse_prompt(prompt: str) -> List[Dict[str, str]]:
             or not isinstance(message.get("content"), str)
         ):
             raise ValueError("MRCR prompt messages must contain string role and content fields")
+        if message["role"] == "assistant":
+            message.setdefault("reasoning_content", "")
     return messages
 
 

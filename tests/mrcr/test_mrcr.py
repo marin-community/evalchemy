@@ -46,6 +46,16 @@ def test_mrcr_requires_the_run_context_contract(monkeypatch):
         benchmark.generate_responses(_Model())
 
 
+def test_mrcr_assistant_messages_include_empty_reasoning():
+    messages = mrcr.parse_prompt(_row(2, "a")["prompt"])
+
+    assert messages[1] == {
+        "role": "assistant",
+        "content": "distractor",
+        "reasoning_content": "",
+    }
+
+
 def test_mrcr_streams_pinned_data_and_honors_balanced_global_limit(monkeypatch):
     rows = [_row(needles, suffix) for needles in (2, 4, 8) for suffix in ("a", "b")]
     load_calls = []
