@@ -22,6 +22,7 @@ class FailureCategory(StrEnum):
 
     PREPARATION = "preparation"
     RESOURCE = "resource"
+    AGENT_TIMEOUT = "AgentTimeoutError"
     MODEL_TRANSPORT = "model_transport"
     MALFORMED_MODEL_RESPONSE = "malformed_model_response"
     GENERATION_POLICY = "generation_policy"

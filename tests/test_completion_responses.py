@@ -1,10 +1,11 @@
 """Regression coverage for OpenAI-compatible reasoning responses."""
 
 import asyncio
-from collections import Counter
 import json
+from collections import Counter
 
 import pytest
+from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
 
 from eval import robust_api  # noqa: F401 - installs the lm-eval adapter patch
 from eval.completion_response import (
@@ -14,12 +15,11 @@ from eval.completion_response import (
     FailedGeneration,
     completion_response_from_chat_choice,
 )
-from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.failures import FailureCategory
+from eval.contracts.sample_results import record_sample_metrics
 from eval.robust_api import capture_endpoint_failures
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
-from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
 
 
 def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
@@ -178,6 +178,45 @@ def test_one_failed_async_request_returns_an_empty_classified_response():
     assert outputs[0][0] == ""
     assert outputs[1] == ["ok"]
     assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
+
+
+def test_generation_retry_loop_is_bounded_by_one_agent_timeout():
+    adapter = object.__new__(LocalChatCompletion)
+    adapter._concurrent = 1
+    adapter.verify_certificate = True
+    adapter.timeout = 0.01
+    adapter.max_retries = 8
+    adapter._batch_size = 1
+    adapter.tokenizer = None
+    adapter.max_length = None
+    never_returns = asyncio.Event()
+
+    async def fake_model_call(*, messages, **_kwargs):
+        if messages[0] == "slow":
+            await never_returns.wait()
+        return ["ok"]
+
+    adapter.amodel_call = fake_model_call
+
+    async def fetch():
+        with capture_endpoint_failures() as failures:
+            outputs = await adapter.get_batched_requests(
+                ["slow", "queued"],
+                ["slow-cache", "queued-cache"],
+                gen_kwargs={},
+            )
+        return outputs, failures
+
+    outputs, failures = asyncio.run(fetch())
+    record = canonicalize_samples(
+        "task",
+        [{"resps": [outputs[0]], "metrics": ["accuracy"], "accuracy": 0.0}],
+    )[0]
+
+    assert outputs[0] == [""]
+    assert outputs[1] == ["ok"]
+    assert failures.counts == {FailureCategory.AGENT_TIMEOUT: 1}
+    assert record["failure_category"] == "AgentTimeoutError"
 
 
 def test_loglikelihood_request_error_keeps_session_open_until_siblings_settle():
