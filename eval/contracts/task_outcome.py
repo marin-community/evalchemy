@@ -69,6 +69,9 @@ class TaskOutcome:
         *,
         exception: BaseException | None = None,
     ) -> "TaskOutcome":
+        failure_message = message.strip()
+        if not failure_message:
+            failure_message = type(exception).__name__ if exception is not None else category.value
         return cls(
             task_name=task_name,
             route=route,
@@ -79,7 +82,7 @@ class TaskOutcome:
             scored_count=None,
             failure=TaskFailure(
                 category=category,
-                message=message,
+                message=failure_message,
                 exception_type=type(exception).__name__ if exception is not None else None,
             ),
         )
