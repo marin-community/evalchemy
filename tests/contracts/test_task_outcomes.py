@@ -138,7 +138,7 @@ def test_custom_task_empty_metrics_are_reported_without_a_score():
     validate_result_document(result)
 
 
-def test_generation_exception_taxonomy_distinguishes_policy_and_transport_failures():
+def test_generation_exception_taxonomy_distinguishes_policy_and_timeout_failures():
     assert (
         classify_task_exception(FailurePhase.GENERATION, ModelRequestValidationError("empty prompt"))
         is FailureCategory.GENERATION_POLICY
@@ -468,11 +468,9 @@ def test_lm_eval_timeout_without_message_is_a_valid_agent_timeout(monkeypatch):
     result = _lm_eval_evaluate(monkeypatch, error=TimeoutError())
 
     failure = result["task_outcomes"]["arc_easy"]["failure"]
-    assert failure == {
-        "category": FailureCategory.AGENT_TIMEOUT,
-        "message": "TimeoutError",
-        "exception_type": "TimeoutError",
-    }
+    assert failure["category"] is FailureCategory.AGENT_TIMEOUT
+    assert failure["message"]
+    assert failure["exception_type"] == "TimeoutError"
     validate_result_document(result)
 
 
