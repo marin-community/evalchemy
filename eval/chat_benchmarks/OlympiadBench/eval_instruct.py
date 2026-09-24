@@ -25,6 +25,7 @@ from eval.graders.answer_equivalence import (
     EquivalenceResult,
     JudgeConfig,
     grade_math_equivalence,
+    math_answers_equivalent,
 )
 from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.robust_api import record_endpoint_failure
@@ -173,10 +174,14 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         self.seed = seed
         self.max_new_tokens = max_tokens
         self.n_repeat = n_repeat
-        self.judge_config = JudgeConfig.resolve(
-            judge_model=annotator_model,
-            api_key=judge_api_key,
-            base_url=judge_base_url,
+        self.judge_config = (
+            JudgeConfig.resolve(
+                judge_model=annotator_model,
+                api_key=judge_api_key,
+                base_url=judge_base_url,
+            )
+            if self.REQUIRES_JUDGE
+            else None
         )
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
@@ -444,7 +449,16 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 )
                 positions.append((example_index, answer_index))
 
-        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
+        if self.judge_config is None:
+            outcomes = [
+                EquivalenceResult(
+                    equivalent=math_answers_equivalent(request.candidate_answer, request.reference_answers),
+                    method=EquivalenceMethod.MINERVA,
+                )
+                for request in requests
+            ]
+        else:
+            outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
         correct_by_example = [[False] * len(answers) for answers in answers_by_example]
         grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
         num_graded_by_minerva = 0
@@ -498,7 +512,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             "num_graded_by_minerva": num_graded_by_minerva,
             "num_judged_by_llm": num_judged_by_llm,
             "num_judge_failed": num_judge_failed,
-            "judge_model": self.judge_config.model,
+            "judge_model": self.judge_config.model if self.judge_config is not None else None,
         }
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:

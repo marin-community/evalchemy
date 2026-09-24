@@ -12,6 +12,7 @@ from eval.chat_benchmarks.OlympiadBenchFull.eval_instruct import (
     DEFAULT_SPLIT,
     OlympiadBenchFullBenchmark,
 )
+from eval.chat_benchmarks.OlympiadBenchDeterministic.eval_instruct import OlympiadBenchDeterministicBenchmark
 from eval.task import TaskManager
 from eval.graders.answer_extraction import EmptyResponseError, MissingAnswerError
 
@@ -52,6 +53,28 @@ def test_olympiadbench_uses_judge_credentials_without_candidate_openai_key(monke
     assert manager.load_failures == {}
     assert manager.requires_judge_credentials("OlympiadBench")
     assert manager.requires_judge_credentials("OlympiadBenchFull")
+
+
+def test_deterministic_olympiadbench_scores_without_judge_credentials(monkeypatch):
+    monkeypatch.delenv("JUDGE_API_KEY")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    manager = TaskManager(task_list=["OlympiadBenchDeterministic"])
+
+    assert manager.load_failures == {}
+    assert not manager.requires_judge_credentials("OlympiadBenchDeterministic")
+    benchmark = OlympiadBenchDeterministicBenchmark(n_repeat=1)
+    results = benchmark.evaluate_responses(
+        {
+            "examples": [
+                {"problem": "Compute one half.", "answer": ["0.5"], "model_answer": r"\frac{1}{2}"},
+                {"problem": "Convert the length.", "answer": ["100 cm"], "model_answer": "1 m"},
+            ]
+        }
+    )
+
+    assert results["accuracy"] == 0.5
+    assert results["num_judged_by_llm"] == 0
+    assert results["judge_model"] is None
 
 
 def test_olympiadbench_aliases_share_explicit_judge_model():

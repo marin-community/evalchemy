@@ -443,6 +443,13 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy",),
     ),
+    "OlympiadBenchDeterministic": GradingCase(
+        _examples_case(
+            "OlympiadBenchDeterministic",
+            lambda benchmark: [{"problem": "p", "answer": ["17"], "model_answers": _repeated("17", benchmark)}],
+        ),
+        ("accuracy",),
+    ),
     "OlympiadBenchFull": GradingCase(
         _examples_case(
             "OlympiadBenchFull",
