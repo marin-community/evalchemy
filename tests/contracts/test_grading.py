@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Behavioral coverage for shared grader execution and artifact contracts."""
 
+import json
 import os
 import sys
 import threading
@@ -136,6 +137,20 @@ def test_generation_artifact_manifest_writes_and_validates_jsonl_atomically():
     validate_serialized_artifact_manifests({"task": manifest.to_dict()})
     manifest.cleanup()
     assert not artifact.path.parent.exists()
+
+
+@pytest.mark.parametrize("line_separator", ["\u2028", "\u2029"])
+def test_generation_artifact_manifest_preserves_unicode_line_separators(line_separator):
+    manifest = GenerationArtifactManifest.temporary()
+    record = {"completion": f"first{line_separator}second"}
+
+    try:
+        artifact = manifest.write_jsonl("generated", "generated.jsonl", [record], expected_count=1)
+
+        assert json.loads(artifact.path.read_text(encoding="utf-8").removesuffix("\n")) == record
+        manifest.validate_required()
+    finally:
+        manifest.cleanup()
 
 
 def test_serialized_artifact_manifest_rejects_schema_and_digest_corruption():

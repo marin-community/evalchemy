@@ -115,7 +115,11 @@ class GenerationArtifactManifest:
         if not artifact.path.is_file():
             raise ArtifactValidationError(f"required artifact is missing: {name}")
         try:
-            lines = artifact.path.read_text(encoding="utf-8").splitlines()
+            # JSONL records are separated by LF; splitlines() also treats legal
+            # Unicode line and paragraph separators inside JSON strings as boundaries.
+            lines = artifact.path.read_text(encoding="utf-8").split("\n")
+            if lines[-1] == "":
+                lines.pop()
             records = [json.loads(line) for line in lines]
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise ArtifactValidationError(f"required artifact is invalid JSONL: {name}") from exc
@@ -165,9 +169,7 @@ def validate_serialized_artifact_manifests(serialized: Any) -> None:
         if not isinstance(manifest, Mapping):
             raise TypeError("generation artifact manifest must be a mapping")
         if manifest.get("schema_version") != GENERATION_ARTIFACT_SCHEMA_VERSION:
-            raise ValueError(
-                f"generation artifact schema_version must be {GENERATION_ARTIFACT_SCHEMA_VERSION}"
-            )
+            raise ValueError(f"generation artifact schema_version must be {GENERATION_ARTIFACT_SCHEMA_VERSION}")
         artifacts = manifest.get("artifacts")
         if not isinstance(artifacts, Sequence) or isinstance(artifacts, (str, bytes)) or not artifacts:
             raise ValueError("generation artifact manifest must contain artifacts")
