@@ -1,7 +1,7 @@
 """OlympiadBench subset scored only by Minerva/SymPy equivalence."""
 
 import logging
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
 
@@ -22,7 +22,7 @@ class OlympiadBenchDeterministicBenchmark(OlympiadBenchBenchmark):
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
         num_samples: int = 1,
-        pass_at_k: Optional[Any] = None,
+        pass_at_k: Optional[List[int] | str] = None,
         n_repeat: int = 10,
     ):
         super().__init__(

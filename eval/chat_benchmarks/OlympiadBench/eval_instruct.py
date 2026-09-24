@@ -25,7 +25,6 @@ from eval.graders.answer_equivalence import (
     EquivalenceResult,
     JudgeConfig,
     grade_math_equivalence,
-    math_answers_equivalent,
 )
 from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.robust_api import record_endpoint_failure
@@ -449,16 +448,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 )
                 positions.append((example_index, answer_index))
 
-        if self.judge_config is None:
-            outcomes = [
-                EquivalenceResult(
-                    equivalent=math_answers_equivalent(request.candidate_answer, request.reference_answers),
-                    method=EquivalenceMethod.MINERVA,
-                )
-                for request in requests
-            ]
-        else:
-            outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
+        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
         correct_by_example = [[False] * len(answers) for answers in answers_by_example]
         grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
         num_graded_by_minerva = 0
