@@ -62,6 +62,7 @@ def test_deterministic_olympiadbench_scores_without_judge_credentials(monkeypatc
 
     assert manager.load_failures == {}
     assert not manager.requires_judge_credentials("OlympiadBenchDeterministic")
+    assert manager.get_benchmark("OlympiadBenchDeterministic").n_repeat == 1
     benchmark = OlympiadBenchDeterministicBenchmark(n_repeat=1)
     results = benchmark.evaluate_responses(
         {

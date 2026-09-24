@@ -23,7 +23,7 @@ class OlympiadBenchDeterministicBenchmark(OlympiadBenchBenchmark):
         system_instruction: Optional[str] = None,
         num_samples: int = 1,
         pass_at_k: Optional[List[int] | str] = None,
-        n_repeat: int = 10,
+        n_repeat: int = 1,
     ):
         super().__init__(
             debug=debug,
