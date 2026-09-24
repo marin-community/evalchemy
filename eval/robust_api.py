@@ -254,12 +254,14 @@ def apply() -> bool:
                             except Exception as exc:  # noqa: BLE001 - distinguish retry exhaustion from the deadline
                                 request_error = exc
                     except TimeoutError as exc:
-                        category = FailureCategory.AGENT_TIMEOUT
                         request_error = exc
-                    else:
-                        category = FailureCategory.MODEL_TRANSPORT
 
                 assert request_error is not None
+                category = (
+                    FailureCategory.AGENT_TIMEOUT
+                    if isinstance(request_error, TimeoutError)
+                    else FailureCategory.MODEL_TRANSPORT
+                )
                 if not generate:
                     # Keep the shared session alive until sibling requests settle.
                     # Raising here lets tqdm's gather exit without awaiting them;

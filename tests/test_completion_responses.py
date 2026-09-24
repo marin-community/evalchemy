@@ -150,7 +150,14 @@ def test_failed_completion_is_empty_and_classified_in_sample_artifact():
     assert record["completion_responses"][0][0]["normalized_content"] == ""
 
 
-def test_one_failed_async_request_returns_an_empty_classified_response():
+@pytest.mark.parametrize(
+    ("request_error", "expected_category"),
+    [
+        (TimeoutError("endpoint timed out"), FailureCategory.AGENT_TIMEOUT),
+        (RuntimeError("endpoint failed"), FailureCategory.MODEL_TRANSPORT),
+    ],
+)
+def test_one_failed_async_request_returns_an_empty_classified_response(request_error, expected_category):
     adapter = object.__new__(LocalChatCompletion)
     adapter._concurrent = 2
     adapter.verify_certificate = True
@@ -162,7 +169,7 @@ def test_one_failed_async_request_returns_an_empty_classified_response():
 
     async def fake_model_call(*, messages, **_kwargs):
         if messages[0] == "bad":
-            raise TimeoutError("endpoint timed out")
+            raise request_error
         return ["ok"]
 
     adapter.amodel_call = fake_model_call
@@ -177,7 +184,7 @@ def test_one_failed_async_request_returns_an_empty_classified_response():
     assert isinstance(outputs[0][0], FailedGeneration)
     assert outputs[0][0] == ""
     assert outputs[1] == ["ok"]
-    assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
+    assert failures.counts == {expected_category: 1}
 
 
 def test_generation_retry_loop_is_bounded_by_one_agent_timeout():
