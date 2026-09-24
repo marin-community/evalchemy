@@ -14,9 +14,10 @@ but the batch-abort itself remains.)
 
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
 prevents one exhausted generation request from cancelling its siblings. It supplies
-an empty response with a classified failure, then lets scoring finish. Retries
-remain unchanged. Loglikelihood requests still propagate errors because an empty
-logprob cannot be scored.
+an empty response with a classified failure, then lets scoring finish. Retries share
+the request timeout as one wall-clock deadline instead of resetting that window for
+each attempt. Loglikelihood requests still propagate errors because an empty logprob
+cannot be scored.
 
 Import for side effect (idempotent):
 
@@ -42,12 +43,12 @@ from typing import Iterator
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES
 
 from eval.completion_response import (
+    MISSING_FINAL_CLASSIFICATIONS,
     CompletionClassification,
     CompletionContentPolicy,
     CompletionResponse,
     CompletionText,
     FailedGeneration,
-    MISSING_FINAL_CLASSIFICATIONS,
     completion_response_from_chat_choice,
 )
 from eval.contracts.failures import FailureCategory
@@ -66,6 +67,7 @@ _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
+    FailureCategory.AGENT_TIMEOUT,
     FailureCategory.MODEL_TRANSPORT,
     FailureCategory.MALFORMED_MODEL_RESPONSE,
     FailureCategory.GRADER_INFRASTRUCTURE,
@@ -100,6 +102,19 @@ class _DeferredRequestError:
     error: Exception
 
 
+class _AdmittedSemaphore:
+    """Let ``amodel_call`` use a concurrency slot already held by its trial."""
+
+    async def acquire(self) -> bool:
+        return True
+
+    def release(self) -> None:
+        return None
+
+
+_ADMITTED_SEMAPHORE = _AdmittedSemaphore()
+
+
 @contextmanager
 def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
     """Isolate endpoint diagnostics to one task invocation."""
@@ -127,10 +142,7 @@ def record_completion_responses(classifications: Counter[CompletionClassificatio
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
     """Return whether a generation run has too many unusable chat completions."""
     total = sum(classifications.values())
-    missing_final = sum(
-        classifications[classification]
-        for classification in MISSING_FINAL_CLASSIFICATIONS
-    )
+    missing_final = sum(classifications[classification] for classification in MISSING_FINAL_CLASSIFICATIONS)
     return total > 0 and missing_final / total >= 0.5
 
 
@@ -143,15 +155,9 @@ def configure_generation_overrides(model: object, overrides: dict) -> None:
     """Give endpoint adapters the caller's generation settings, including an empty set."""
     # The runner imports this module without lm-eval installed. Import adapters
     # only when a model is being configured by the evaluation driver.
-    from lm_eval.models.openai_completions import (
-        LocalCompletionsAPI,
-        OpenAIChatCompletion,
-        OpenAICompletionsAPI,
-    )
+    from lm_eval.models.openai_completions import LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI
 
-    if isinstance(model, LocalCompletionsAPI) and not isinstance(
-        model, (OpenAICompletionsAPI, OpenAIChatCompletion)
-    ):
+    if isinstance(model, LocalCompletionsAPI) and not isinstance(model, (OpenAICompletionsAPI, OpenAIChatCompletion)):
         setattr(model, _GENERATION_OVERRIDES_ATTR, dict(overrides))
 
 
@@ -231,30 +237,43 @@ def apply() -> bool:
             )(self.amodel_call)
 
             async def _guarded(message, cache_key, ctxlen, call_kwargs):
-                try:
-                    return await retry_(
-                        session=session,
-                        sem=sem,
-                        messages=message,
-                        cache_keys=cache_key,
-                        generate=generate,
-                        ctxlens=ctxlen,
-                        **call_kwargs,
-                    )
-                except Exception as exc:  # noqa: BLE001 - one failed request must not nuke the batch
-                    if not generate:
-                        # Keep the shared session alive until sibling requests settle.
-                        # Raising here lets tqdm's gather exit without awaiting them;
-                        # the session context then closes beneath their retries.
-                        return _DeferredRequestError(exc)
-                    n = len(message) if hasattr(message, "__len__") else 1
-                    record_endpoint_failure(FailureCategory.MODEL_TRANSPORT, n)
-                    logger.error(
-                        "Request failed after all retries; recording an empty generation for %d prompt(s). Cause: %r",
-                        n,
-                        exc,
-                    )
-                    return [FailedGeneration(FailureCategory.MODEL_TRANSPORT.value) for _ in range(n)]
+                request_error = None
+                async with sem:
+                    try:
+                        async with asyncio.timeout(self.timeout):
+                            try:
+                                return await retry_(
+                                    session=session,
+                                    sem=_ADMITTED_SEMAPHORE,
+                                    messages=message,
+                                    cache_keys=cache_key,
+                                    generate=generate,
+                                    ctxlens=ctxlen,
+                                    **call_kwargs,
+                                )
+                            except Exception as exc:  # noqa: BLE001 - distinguish retry exhaustion from the deadline
+                                request_error = exc
+                    except TimeoutError as exc:
+                        category = FailureCategory.AGENT_TIMEOUT
+                        request_error = exc
+                    else:
+                        category = FailureCategory.MODEL_TRANSPORT
+
+                assert request_error is not None
+                if not generate:
+                    # Keep the shared session alive until sibling requests settle.
+                    # Raising here lets tqdm's gather exit without awaiting them;
+                    # the session context then closes beneath their retries.
+                    return _DeferredRequestError(request_error)
+                n = len(message) if hasattr(message, "__len__") else 1
+                record_endpoint_failure(category, n)
+                logger.error(
+                    "Request ended as %s; recording an empty generation for %d prompt(s). Cause: %r",
+                    category.value,
+                    n,
+                    request_error,
+                )
+                return [FailedGeneration(category.value) for _ in range(n)]
 
             tasks = []
             skipped_preflight_logged = False
@@ -290,9 +309,7 @@ def apply() -> bool:
                         and any(alias in bounded for alias in MAX_OUTPUT_ALIASES)
                         and not skipped_preflight_logged
                     ):
-                        logger.warning(
-                            "endpoint context preflight skipped prompt-length check: no client tokenizer"
-                        )
+                        logger.warning("endpoint context preflight skipped prompt-length check: no client tokenizer")
                         skipped_preflight_logged = True
                     if prompt_tokens is not None and effective_cap is not None:
                         logger.info(
@@ -319,10 +336,9 @@ def apply() -> bool:
 def apply_rolling_loglikelihood_batching() -> bool:
     """Batch rolling-likelihood windows across documents for API models."""
     try:
-        from tqdm import tqdm
-
         from lm_eval import utils
         from lm_eval.models.api_models import TemplateAPI
+        from tqdm import tqdm
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("rolling likelihood batching: could not import lm-eval symbols (%r); patch skipped.", exc)
         return False
@@ -439,10 +455,7 @@ def apply_completion_normalization() -> bool:
         parsed_responses = self.completion_responses[response_start:]
         classifications = Counter(response.classification for response in parsed_responses)
         record_completion_responses(classifications)
-        missing_final = sum(
-            classifications[classification]
-            for classification in MISSING_FINAL_CLASSIFICATIONS
-        )
+        missing_final = sum(classifications[classification] for classification in MISSING_FINAL_CLASSIFICATIONS)
         already_classified = sum(response.failure_category is not None for response in parsed_responses)
         if missing_final > already_classified:
             missing_count = missing_final - already_classified
@@ -472,9 +485,7 @@ def apply_completion_normalization() -> bool:
                 dict(self.completion_response_summary),
             )
         if self.completion_response_quality_invalid:
-            logger.warning(
-                "completion normalization: at least half of responses lacked final content"
-            )
+            logger.warning("completion normalization: at least half of responses lacked final content")
         return generated
 
     LocalChatCompletion.__init__ = __init__
