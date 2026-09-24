@@ -7,7 +7,9 @@ from collections import Counter
 from types import SimpleNamespace
 
 import pytest
+from lm_eval.models.openai_completions import LocalChatCompletion
 
+from eval.completion_response import CompletionClassification, CompletionContentPolicy
 from eval.contracts.failures import ModelRequestValidationError
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
@@ -23,11 +25,9 @@ from eval.contracts.task_outcome import (
 )
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.completion_response import CompletionClassification, CompletionContentPolicy
 from eval.robust_api import record_completion_responses, record_endpoint_failure
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
-from lm_eval.models.openai_completions import LocalChatCompletion
 
 
 class _Model:
@@ -145,7 +145,7 @@ def test_generation_exception_taxonomy_distinguishes_policy_and_transport_failur
     )
     assert (
         classify_task_exception(FailurePhase.GENERATION, TimeoutError("endpoint timeout"))
-        is FailureCategory.MODEL_TRANSPORT
+        is FailureCategory.AGENT_TIMEOUT
     )
 
 
@@ -184,9 +184,7 @@ def test_custom_grader_infrastructure_failure_is_reported_without_a_score():
 
 
 def test_failed_task_is_saved_in_the_results_package(tmp_path):
-    result = _custom_evaluate(
-        _Benchmark({"examples": [{"prompt": "x"}]}, grading_error=RuntimeError("sandbox failed"))
-    )
+    result = _custom_evaluate(_Benchmark({"examples": [{"prompt": "x"}]}, grading_error=RuntimeError("sandbox failed")))
     result["config"] = {"batch_sizes": [1]}
     tracker = DCEvaluationTracker(str(tmp_path))
     tracker.general_config_tracker.model_name_sanitized = "test-model"
@@ -213,11 +211,7 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
     class _TransportFailureBenchmark(_Benchmark):
         def generate_responses(self, model):
             record_endpoint_failure(FailureCategory.MODEL_TRANSPORT)
-            return {
-                "examples": [
-                    {"output": ""}
-                ]
-            }
+            return {"examples": [{"output": ""}]}
 
         def evaluate_responses(self, results):
             return {"accuracy": 0.0}
@@ -227,9 +221,7 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
     result = _custom_evaluate(benchmark)
 
     assert result["results"]["contract_task"]["accuracy"] == 0.0
-    assert result["task_outcomes"]["contract_task"]["failure_counts"] == {
-        FailureCategory.MODEL_TRANSPORT: 1
-    }
+    assert result["task_outcomes"]["contract_task"]["failure_counts"] == {FailureCategory.MODEL_TRANSPORT: 1}
     validate_result_document(result)
 
 
@@ -242,9 +234,7 @@ def test_custom_task_with_majority_missing_final_content_has_no_canonical_score(
             record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE, 2)
             return {"examples": [{"output": "reasoning"}, {"output": "reasoning"}, {"output": "answer"}]}
 
-    result = _custom_evaluate(
-        _MalformedResponsesBenchmark({}, scored_result={"accuracy": 1.0 / 3.0})
-    )
+    result = _custom_evaluate(_MalformedResponsesBenchmark({}, scored_result={"accuracy": 1.0 / 3.0}))
 
     outcome = result["task_outcomes"]["contract_task"]
     assert outcome["status"] is TaskStatus.FAILED
@@ -398,9 +388,7 @@ def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatc
     result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses, log_samples=True)
 
     assert result["results"]["arc_easy"]["acc,none"] == 2 / 3
-    assert result["task_outcomes"]["arc_easy"]["failure_counts"] == {
-        FailureCategory.MALFORMED_MODEL_RESPONSE: 1
-    }
+    assert result["task_outcomes"]["arc_easy"]["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 1}
     assert result["task_outcomes"]["arc_easy"]["completion_response_summary"] == {"final": 2, "empty": 1}
     assert result["samples"]["arc_easy"][2]["resps"] == [[""]]
     assert result["samples"]["arc_easy"][2]["failure_category"] == FailureCategory.MALFORMED_MODEL_RESPONSE
@@ -476,6 +464,18 @@ def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monke
     assert result["task_outcomes"]["arc_easy"]["failure"]["exception_type"] == "RuntimeError"
 
 
+def test_lm_eval_timeout_without_message_is_a_valid_agent_timeout(monkeypatch):
+    result = _lm_eval_evaluate(monkeypatch, error=TimeoutError())
+
+    failure = result["task_outcomes"]["arc_easy"]["failure"]
+    assert failure == {
+        "category": FailureCategory.AGENT_TIMEOUT,
+        "message": "TimeoutError",
+        "exception_type": "TimeoutError",
+    }
+    validate_result_document(result)
+
+
 def test_one_task_infrastructure_failure_does_not_stop_other_tasks(monkeypatch):
     def fake_evaluate(*_args, **kwargs):
         if kwargs["tasks"] == ["broken"]:
@@ -496,7 +496,7 @@ def test_one_task_infrastructure_failure_does_not_stop_other_tasks(monkeypatch):
         args=_args(),
     )
 
-    assert result["task_outcomes"]["broken"]["failure"]["category"] is FailureCategory.MODEL_TRANSPORT
+    assert result["task_outcomes"]["broken"]["failure"]["category"] is FailureCategory.AGENT_TIMEOUT
     assert result["results"]["healthy"]["acc,none"] == 0.75
     validate_result_document(result)
 

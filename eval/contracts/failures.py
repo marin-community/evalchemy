@@ -47,12 +47,14 @@ def classify_task_exception(phase: FailurePhase, exception: BaseException) -> Fa
         return FailureCategory.PREPARATION
     if phase is FailurePhase.SERIALIZATION:
         return FailureCategory.SERIALIZATION
+    if isinstance(exception, TimeoutError):
+        return FailureCategory.AGENT_TIMEOUT
     if phase in {FailurePhase.EVALUATION, FailurePhase.GRADING}:
-        if phase is FailurePhase.EVALUATION and isinstance(exception, (ConnectionError, TimeoutError)):
+        if phase is FailurePhase.EVALUATION and isinstance(exception, ConnectionError):
             return FailureCategory.MODEL_TRANSPORT
         return FailureCategory.GRADER_INFRASTRUCTURE
     if isinstance(exception, (ContextWindowExceededError, MissingContextLengthError, ModelRequestValidationError)):
         return FailureCategory.GENERATION_POLICY
-    if isinstance(exception, (ConnectionError, TimeoutError)):
+    if isinstance(exception, ConnectionError):
         return FailureCategory.MODEL_TRANSPORT
     return FailureCategory.GENERATION
