@@ -13,12 +13,7 @@ from lm_eval.api.model import LM
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.task_outcome import TaskFailure
-from eval.graders.answer_extraction import (
-    AnswerExtractionError,
-    ExtractionFailure,
-    extract_boxed_answer,
-    extraction_failure,
-)
+from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.graders.answer_equivalence import (
     EquivalenceMethod,
     EquivalenceRequest,
@@ -26,7 +21,12 @@ from eval.graders.answer_equivalence import (
     JudgeConfig,
     grade_math_equivalence,
 )
-from eval.generation_stops import END_OF_TURN_SEQUENCES
+from eval.graders.answer_extraction import (
+    AnswerExtractionError,
+    ExtractionFailure,
+    extract_boxed_answer,
+    extraction_failure,
+)
 from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
@@ -39,9 +39,7 @@ PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
 # lmms-lab/olympiadbench[test_en], but that export recorded neither an immutable
 # dataset revision nor the selection script. Keep it for historical comparison
 # only; `OlympiadBenchFull` is the reproducible benchmark.
-DEFAULT_DATA_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "data", "olympiadbench.jsonl"
-)
+DEFAULT_DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "olympiadbench.jsonl")
 DEFAULT_DATASET = "lmms-lab/olympiadbench"
 DEFAULT_SPLIT = "test_en"
 
@@ -240,13 +238,10 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         return {"examples": examples}
 
-    def _generate_repeated_responses(
-        self, model: LM, examples: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """Generate one deterministic completion per problem for each seeded repetition."""
-        all_outputs = []
-        for repeat_idx in range(self.n_repeat):
-            seed = [value + repeat_idx for value in self.seed]
+    def _generate_repeated_responses(self, model: LM, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate one sampled completion per problem for each seeded repetition."""
+
+        def build_instances(_repeat_idx: int) -> List[Instance]:
             all_instances = []
             for idx, example in enumerate(examples):
                 messages = [
@@ -259,34 +254,28 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                     (
                         templated_messages,
                         {
-                            "do_sample": False,
                             "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": seed,
                             "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
                 )
-                instance.repeat_idx = repeat_idx
                 all_instances.append(instance)
+            return all_instances
 
-            self.logger.info("Generating repeated responses for OlympiadBench...")
-            all_outputs.append(self.compute(model, all_instances))
-
+        self.logger.info("Generating seeded responses for OlympiadBench...")
+        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
         if model.rank != 0:
             return None
 
-        for example, outputs in zip(examples, zip(*all_outputs)):
-            example["model_outputs"] = list(outputs)
+        for example, outputs in zip(examples, outputs_by_problem):
+            example["model_outputs"] = outputs
             extracted = [self._extract_for_scoring(output) for output in outputs]
             example["model_answers"] = [answer for answer, _ in extracted]
             example["answer_extraction_errors"] = [error for _, error in extracted]
         return {"examples": examples}
 
-    def _generate_pass_at_k(
-        self, model: LM, examples: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _generate_pass_at_k(self, model: LM, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate ``num_samples`` completions per problem via the base scaffold."""
 
         def build_instances(sample_idx: int, seed: List[int]) -> List[Instance]:
@@ -320,12 +309,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 instances.append(instance)
             return instances
 
-        self.logger.info(
-            f"Generating {self.num_samples} samples/problem for OlympiadBench pass@k..."
-        )
-        per_problem = self.generate_n_samples_batched(
-            model, build_instances, self.num_samples
-        )
+        self.logger.info(f"Generating {self.num_samples} samples/problem for OlympiadBench pass@k...")
+        per_problem = self.generate_n_samples_batched(model, build_instances, self.num_samples)
         if model.rank != 0:
             return None
         for example, outputs in zip(examples, per_problem):
@@ -371,8 +356,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             )
             all_results = []
             correct_by_repeat = [
-                [answers[repeat_idx] for answers in correct_by_example]
-                for repeat_idx in range(self.n_repeat)
+                [answers[repeat_idx] for answers in correct_by_example] for repeat_idx in range(self.n_repeat)
             ]
             for repeat_idx in range(self.n_repeat):
                 solved = sum(correct_by_repeat[repeat_idx])
@@ -414,9 +398,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 "num_total": total,
                 "num_solved": solved,
                 "accuracy": solved / total,
-                "accuracy_stderr": np.sqrt((solved / total) * (1 - solved / total) / (total - 1))
-                if total > 1
-                else 0.0,
+                "accuracy_stderr": np.sqrt((solved / total) * (1 - solved / total) / (total - 1)) if total > 1 else 0.0,
                 **grading_summary,
                 **self._dataset_provenance(total),
             }
@@ -534,9 +516,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
 
         if self.debug:
             questions = questions[:2]
-            self.logger.info(
-                f"Debug mode enabled. Using only {len(questions)} questions."
-            )
+            self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
 
         return questions
 
@@ -560,11 +540,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             final_answer = ex.get("final_answer")
             if not final_answer:
                 continue
-            subject = (
-                "mathematics"
-                if "maths" in source
-                else ("physics" if "physics" in source else "unknown")
-            )
+            subject = "mathematics" if "maths" in source else ("physics" if "physics" in source else "unknown")
             context = ex.get("context")
             question = ex.get("question") or ""
             out.append(

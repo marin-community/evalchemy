@@ -30,16 +30,11 @@ except Exception:
 # `_normalize_model_args` resolves regardless of which model registered: `local-completions`
 # imports it as a side effect, `curator` does not. Base lm-eval ([api]); no extra required.
 import lm_eval.models.openai_completions  # noqa: F401,E402
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES, resolve_limit
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from evalchemy_config.limits import MAX_OUTPUT_ALIASES, resolve_limit
 
-from eval.contracts.benchmark_metadata import (
-    BenchmarkMetadata,
-    MetricKind,
-    SourceMetric,
-    resolve_metric_metadata,
-)
+from eval.contracts.benchmark_metadata import BenchmarkMetadata, MetricKind, SourceMetric, resolve_metric_metadata
 from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
 from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
@@ -52,17 +47,16 @@ from eval.contracts.sample_manifest import (
     canonical_json_identity,
 )
 from eval.contracts.sample_results import (
-    SAMPLE_METRICS_ANNOTATION,
     REPEATED_SAMPLE_METRICS_ANNOTATION,
-    record_sample_metrics,
+    SAMPLE_METRICS_ANNOTATION,
     record_repeated_sample_metrics,
+    record_sample_metrics,
     repeated_sample_metric_fields,
     sample_metric_fields,
 )
 from eval.contracts.task_outcome import TaskRoute
-from eval.robust_api import parse_generation_overrides
 from eval.passk import estimate_pass_at_k
-
+from eval.robust_api import parse_generation_overrides
 
 _Sample = TypeVar("_Sample")
 
@@ -290,6 +284,36 @@ class BaseBenchmark(ABC):
         # transpose: all_outputs[sample][problem] -> per_problem[problem][sample]
         return [list(per_problem) for per_problem in zip(*all_outputs)]
 
+    def generate_seeded_repeats(
+        self,
+        model: LM,
+        build_instances: Callable[[int], List[Instance]],
+        num_repeats: int,
+        temperature: float = 0.7,
+    ) -> List[List[str]]:
+        """Generate stochastic repeats with one deterministic seed per repeat.
+
+        ``build_instances(repeat_idx)`` supplies one unseeded generation instance
+        per problem. This method owns the sampling contract: it enables sampling,
+        assigns ``base_seed + repeat_idx`` to every request in a repeat, records
+        ``repeat_idx`` for resume, and returns outputs in problem-major order.
+        """
+
+        def build_seeded_instances(repeat_idx: int, seed: List[int]) -> List[Instance]:
+            instances = build_instances(repeat_idx)
+            for instance in instances:
+                instance.args[1].update(
+                    {
+                        "do_sample": True,
+                        "temperature": temperature,
+                        "seed": seed,
+                    }
+                )
+                instance.repeat_idx = repeat_idx
+            return instances
+
+        return self.generate_n_samples(model, build_seeded_instances, num_repeats)
+
     def generate_n_samples_batched(
         self,
         model: LM,
@@ -368,9 +392,7 @@ class BaseBenchmark(ABC):
         for batch_idx, problem_idxs in enumerate(batches):
             unit = {"task": task_name, "batch_idx": batch_idx}
             batch_entries = [
-                passk_entries[sample_idx][problem_idx]
-                for sample_idx in range(n)
-                for problem_idx in problem_idxs
+                passk_entries[sample_idx][problem_idx] for sample_idx in range(n) for problem_idx in problem_idxs
             ]
             if manager.should_skip(unit):
                 payload = restored[canonical_unit_key(unit)]
@@ -401,10 +423,7 @@ class BaseBenchmark(ABC):
                 manager.record(
                     unit,
                     {
-                        "outputs": {
-                            str(pidx): batch_per_problem[pidx]
-                            for pidx in problem_idxs
-                        },
+                        "outputs": {str(pidx): batch_per_problem[pidx] for pidx in problem_idxs},
                         "samples": [entry.to_dict() for entry in batch_entries],
                     },
                 )
@@ -852,7 +871,11 @@ class BaseBenchmark(ABC):
                     extraction_errors = record.get("answer_extraction_errors")
                     samples.append(
                         {
-                            **{key: value for key, value in record.items() if key not in {"repeat_metrics", "aggregate_metrics"}},
+                            **{
+                                key: value
+                                for key, value in record.items()
+                                if key not in {"repeat_metrics", "aggregate_metrics"}
+                            },
                             "resps": [[responses[repeat_idx]]],
                             "filtered_resps": [filtered[repeat_idx]],
                             **(
@@ -984,9 +1007,7 @@ class TaskManager:
                     continue
 
                 if len(benchmark_classes) > 1:
-                    self.load_failures[item] = LookupError(
-                        f"Multiple BaseBenchmark subclasses found in {item}"
-                    )
+                    self.load_failures[item] = LookupError(f"Multiple BaseBenchmark subclasses found in {item}")
                     self.logger.warning(f"Multiple BaseBenchmark subclasses found in {item}")
                     continue
 
