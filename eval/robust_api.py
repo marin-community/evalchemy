@@ -193,7 +193,7 @@ def apply() -> bool:
         from aiohttp import ClientSession, ClientTimeout, TCPConnector
         from lm_eval.models import api_models as _api
         from lm_eval.models.utils import chunks
-        from tenacity import retry, stop_after_attempt, wait_exponential
+        from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
         from tqdm.asyncio import tqdm_asyncio
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("robust_api: could not import lm-eval async deps (%r); patch skipped.", exc)
@@ -230,6 +230,7 @@ def apply() -> bool:
         sem = asyncio.Semaphore(self._concurrent)
         async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
             retry_ = retry(
+                retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
                 stop=stop_after_attempt(self.max_retries),
                 wait=wait_exponential(multiplier=0.5, min=1, max=10),
                 reraise=True,
