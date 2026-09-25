@@ -187,6 +187,37 @@ def test_one_failed_async_request_returns_an_empty_classified_response(request_e
     assert failures.counts == {expected_category: 1}
 
 
+def test_endpoint_timeout_is_not_retried_within_trial_deadline():
+    adapter = object.__new__(LocalChatCompletion)
+    adapter._concurrent = 1
+    adapter.verify_certificate = True
+    adapter.timeout = 1
+    adapter.max_retries = 2
+    adapter._batch_size = 1
+    adapter.tokenizer = None
+    adapter.max_length = None
+    attempts = 0
+
+    async def fake_model_call(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("endpoint timed out")
+        return ["incorrectly retried"]
+
+    adapter.amodel_call = fake_model_call
+
+    async def fetch():
+        with capture_endpoint_failures() as failures:
+            outputs = await adapter.get_batched_requests(["prompt"], ["cache"], gen_kwargs={})
+        return outputs, failures
+
+    outputs, failures = asyncio.run(fetch())
+
+    assert outputs == [[""]]
+    assert failures.counts == {FailureCategory.AGENT_TIMEOUT: 1}
+
+
 def test_generation_retry_loop_is_bounded_by_one_agent_timeout():
     adapter = object.__new__(LocalChatCompletion)
     adapter._concurrent = 1
