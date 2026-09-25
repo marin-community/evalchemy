@@ -1,4 +1,4 @@
-"""GSM8K answer extraction for OpenAI-compatible model responses."""
+"""GSM8K answer extraction and Minerva-equivalent scoring."""
 
 import re
 
