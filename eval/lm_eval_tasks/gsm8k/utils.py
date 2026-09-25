@@ -3,6 +3,7 @@
 import re
 
 from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
+from eval.graders.minerva_math import is_equiv, normalize_final_answer
 
 _NUMBER = r"-?\$?\d[\d,]*(?:\.\d+)?"
 _BOXED_ANSWER = re.compile(rf"\\boxed\{{\s*({_NUMBER})\s*\}}")
@@ -28,3 +29,15 @@ def gsm8k_flexible_extraction_filter(resps: list[list[str]], docs: list[dict]) -
         [extract_gsm8k_flexible_answer(response) if isinstance(response, str) else _FALLBACK for response in responses]
         for responses in resps
     ]
+
+
+def process_results(doc: dict, results: list[str]) -> dict[str, float]:
+    """Score an extracted GSM8K answer with Minerva math equivalence."""
+    prediction = results[0]
+    if prediction == _FALLBACK:
+        return {"exact_match": 0.0}
+
+    reference = doc["answer"].rsplit("#### ", 1)[-1]
+    candidate = normalize_final_answer(prediction)
+    reference = normalize_final_answer(reference)
+    return {"exact_match": float(is_equiv(candidate, reference))}
