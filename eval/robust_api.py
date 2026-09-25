@@ -29,6 +29,7 @@ Import for side effect (idempotent):
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -174,6 +175,8 @@ def parse_generation_overrides(value: str | dict | None) -> dict:
 def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict | None:
     if value is None:
         return None
+    if isinstance(value, str) and value.startswith("base64:"):
+        value = base64.urlsafe_b64decode(value.removeprefix("base64:")).decode("utf-8")
     parsed = json.loads(value) if isinstance(value, str) else value
     if not isinstance(parsed, Mapping):
         raise ValueError(f"{name} must be a JSON object")
