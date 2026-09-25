@@ -29,6 +29,7 @@ Import for side effect (idempotent):
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -64,6 +65,7 @@ _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
+_ENCODED_MAPPING_PREFIX = "base64:"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
@@ -174,6 +176,8 @@ def parse_generation_overrides(value: str | dict | None) -> dict:
 def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict | None:
     if value is None:
         return None
+    if isinstance(value, str) and value.startswith(_ENCODED_MAPPING_PREFIX):
+        value = base64.urlsafe_b64decode(value.removeprefix(_ENCODED_MAPPING_PREFIX)).decode("utf-8")
     parsed = json.loads(value) if isinstance(value, str) else value
     if not isinstance(parsed, Mapping):
         raise ValueError(f"{name} must be a JSON object")

@@ -1,5 +1,6 @@
 """Generation settings observed at an OpenAI-compatible endpoint."""
 
+import base64
 import json
 import subprocess
 import sys
@@ -93,17 +94,19 @@ def test_served_chat_checkpoint_generates_without_client_tokenizer(endpoint, che
 
 
 def test_served_chat_forwards_template_kwargs_and_extra_body(endpoint):
+    template_kwargs = {"enable_thinking": False, "add_generation_prompt": True}
+    encoded_kwargs = base64.urlsafe_b64encode(json.dumps(template_kwargs).encode()).decode()
     model_args = simple_parse_args_string(
         "model=served,"
         f"base_url=http://127.0.0.1:{endpoint.server_port}/v1/chat/completions,"
         "tokenizer_backend=None,tokenized_requests=False,"
-        'chat_template_kwargs={"enable_thinking":false},extra_body={"priority":7}'
+        f"chat_template_kwargs=base64:{encoded_kwargs},extra_body={{\"priority\":7}}"
     )
     model = LocalChatCompletion(**model_args)
     request = Instance("generate_until", {"question": "Question"}, ([{"role": "user", "content": "Question"}], {}), 0)
 
     assert model.generate_until([request]) == ["\\boxed{42}"]
-    assert endpoint.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert endpoint.requests[0]["chat_template_kwargs"] == template_kwargs
     assert endpoint.requests[0]["priority"] == 7
     assert "extra_body" not in endpoint.requests[0]
 
