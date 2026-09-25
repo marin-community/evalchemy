@@ -11,14 +11,18 @@ from types import SimpleNamespace
 import pytest
 import transformers
 import yaml
-from tokenizers import Tokenizer, models, pre_tokenizers
 from lm_eval import evaluator
-from lm_eval.utils import simple_parse_args_string
 from lm_eval.api.instance import Instance
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
 from lm_eval.tasks import TaskManager
+from lm_eval.utils import simple_parse_args_string
+from tokenizers import Tokenizer, models, pre_tokenizers
 
+from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
+from eval.chat_benchmarks.GPQADiamond import eval_instruct as gpqa_module
+from eval.chat_benchmarks.GPQADiamond.eval_instruct import GPQADiamondBenchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
+from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
 from eval.contracts.sample_manifest import SampleManifest
 from eval.resume.lm_eval_native import resume_simple_evaluate
 from eval.robust_api import configure_generation_overrides
@@ -129,11 +133,13 @@ def test_served_completions_loads_transformers5_tokenizer_config(tmp_path):
     tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
     tokenizer.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "tokenizer_config.json").write_text(
-        json.dumps({
-            "tokenizer_class": "TokenizersBackend",
-            "unk_token": "[UNK]",
-            "extra_special_tokens": ["<|video|>"],
-        })
+        json.dumps(
+            {
+                "tokenizer_class": "TokenizersBackend",
+                "unk_token": "[UNK]",
+                "extra_special_tokens": ["<|video|>"],
+            }
+        )
     )
 
     model = LocalCompletionsAPI(
@@ -212,6 +218,58 @@ def test_math500_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_
         assert payload["top_p"] == overrides["top_p"]
     else:
         assert "top_p" not in payload
+
+
+def _assert_seeded_requests(requests, first_seed, count):
+    assert [request["seed"] for request in requests] == list(range(first_seed, first_seed + count))
+    assert all(request["temperature"] == 0.7 for request in requests)
+
+
+def test_aime24_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):
+    data_file = tmp_path / "aime24.jsonl"
+    data_file.write_text(json.dumps({"id": "one", "problem": "What is 6 times 7?", "expected_answer": "42"}) + "\n")
+    benchmark = AIME24Benchmark(data_file=str(data_file), seed=[42, 42, 42, 42])
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"][0]["model_outputs"]) == 10
+    _assert_seeded_requests(endpoint.requests, 42, 10)
+
+
+def test_gpqa_repeats_use_distinct_sampling_seeds(endpoint, monkeypatch):
+    dataset = {
+        "train": [
+            {
+                "Question": "What is 6 times 7?",
+                "Correct Answer": "42",
+                "Incorrect Answer 1": "40",
+                "Incorrect Answer 2": "41",
+                "Incorrect Answer 3": "43",
+            }
+        ]
+    }
+    monkeypatch.setattr(gpqa_module, "load_dataset", lambda *_args, **_kwargs: dataset)
+    benchmark = GPQADiamondBenchmark(seed=[42, 42, 42, 42])
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"][0]["model_outputs"]) == 3
+    _assert_seeded_requests(endpoint.requests, 42, 3)
+
+
+def test_olympiadbench_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):
+    data_file = tmp_path / "olympiadbench.jsonl"
+    data_file.write_text(json.dumps({"problem": "What is 6 times 7?", "answer": ["42"]}) + "\n")
+    benchmark = OlympiadBenchBenchmark(
+        data_file=str(data_file),
+        seed=[42, 42, 42, 42],
+        judge_api_key="test-key",
+    )
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"][0]["model_outputs"]) == 10
+    _assert_seeded_requests(endpoint.requests, 42, 10)
 
 
 @pytest.mark.parametrize(
@@ -299,11 +357,15 @@ def test_cli_output_cap_wins_over_math_benchmark_defaults(endpoint, tmp_path, ta
 def test_cli_generation_limits_win_over_config_defaults(endpoint, tmp_path):
     root = Path(__file__).parents[2]
     config = tmp_path / "tasks.yaml"
-    config.write_text(yaml.safe_dump({
-        "tasks": [{"task_name": "AIME24", "batch_size": "auto"}],
-        "max_length": 32768,
-        "max_tokens": 8192,
-    }))
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "tasks": [{"task_name": "AIME24", "batch_size": "auto"}],
+                "max_length": 32768,
+                "max_tokens": 8192,
+            }
+        )
+    )
     result = subprocess.run(
         [
             sys.executable,

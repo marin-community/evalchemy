@@ -21,13 +21,11 @@ def test_every_registered_custom_and_lm_eval_name_has_a_complete_contract():
     custom_names = {path.parent.name for path in custom_root.glob("*/eval_instruct.py")}
     contracts = discover_task_contracts(custom_root, Path("eval/lm_eval_tasks"))
 
-    assert custom_names == {
-        contract.task_name for contract in contracts if contract.route is TaskRoute.CUSTOM
-    }
+    assert custom_names == {contract.task_name for contract in contracts if contract.route is TaskRoute.CUSTOM}
     assert any(contract.route is TaskRoute.LM_EVAL for contract in contracts)
 
 
-def test_every_custom_benchmark_uses_the_shared_generation_boundary():
+def test_every_custom_benchmark_uses_a_shared_generation_boundary():
     root = Path("eval/chat_benchmarks")
     for path in root.glob("*/eval_instruct.py"):
         tree = ast.parse(path.read_text())
@@ -37,7 +35,7 @@ def test_every_custom_benchmark_uses_the_shared_generation_boundary():
         calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
         assert any(
             isinstance(call, ast.Attribute)
-            and call.attr == "compute"
+            and call.attr in {"compute", "generate_seeded_repeats"}
             and isinstance(call.value, ast.Name)
             and call.value.id == "self"
             for call in calls

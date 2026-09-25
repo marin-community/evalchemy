@@ -6,10 +6,10 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from eval.graders.answer_equivalence import math_answers_equivalent
-from eval.graders.answer_extraction import extract_final_boxed_answer
 
 from eval.generation_stops import END_OF_TURN_SEQUENCES
+from eval.graders.answer_equivalence import math_answers_equivalent
+from eval.graders.answer_extraction import extract_final_boxed_answer
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -69,13 +69,9 @@ class AIME24Benchmark(BaseBenchmark):
             or None for non-primary ranks
         """
         examples = self.load_questions()
-        # Prepare instances for model
-        all_outputs = []
 
-        for i in range(self.n_repeat):
+        def build_instances(_repeat_idx: int) -> List[Instance]:
             all_instances = []
-            seed = [s + i for s in self.seed]
-
             for idx, example in enumerate(examples):
                 messages = [
                     {"role": "user", "content": PROMPT.format(problem=example["problem"])},
@@ -89,18 +85,13 @@ class AIME24Benchmark(BaseBenchmark):
                     (
                         templated_messages,
                         {
-                            "do_sample": False,
                             "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": seed,
                             "until": list(END_OF_TURN_SEQUENCES),
                         },
                     ),
                     idx,
                 )
 
-                # Add repetition information to instance metadata
-                instance.repeat_idx = i
                 instance.metadata = {
                     "problem_id": str(example["id"]) if "id" in example else str(idx),
                     "expected_answer": str(example["expected_answer"]),
@@ -108,17 +99,15 @@ class AIME24Benchmark(BaseBenchmark):
                 }
 
                 all_instances.append(instance)
+            return all_instances
 
-            # Generate model responses
-            self.logger.info("Generating responses for AIME24...")
-            outputs = self.compute(model, all_instances)
-            all_outputs.append(outputs)
-        # Return None early for non-primary ranks
+        self.logger.info("Generating seeded responses for AIME24...")
+        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
         if model.rank != 0:
             return None
 
-        for example, outputs in zip(examples, zip(*all_outputs)):
-            example["model_outputs"] = list(outputs)
+        for example, outputs in zip(examples, outputs_by_problem):
+            example["model_outputs"] = outputs
             example["model_answers"] = [self.extract_answer(o) for o in outputs]
 
         return {"examples": examples}
@@ -177,11 +166,11 @@ class AIME24Benchmark(BaseBenchmark):
         """Load AIME24 questions from the data file."""
         with open(self.data_file, "r") as f:
             questions = [json.loads(x) for x in f]
-            
+
         if self.debug:
             questions = questions[:2]
             self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
-        
+
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
 

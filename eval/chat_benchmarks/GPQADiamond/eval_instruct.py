@@ -70,12 +70,8 @@ class GPQADiamondBenchmark(BaseBenchmark):
             example["multiple_choice_string"] = multiple_choice_string
             example["answer"] = correct_answer
 
-        all_outputs = []
-
-        for i in range(self.n_repeat):
+        def build_instances(_repeat_idx: int) -> List[Instance]:
             all_instances = []
-            seed = [s + i for s in self.seed]
-
             for idx, example in enumerate(examples):
                 messages = [
                     {
@@ -94,28 +90,21 @@ class GPQADiamondBenchmark(BaseBenchmark):
                     (
                         templated_messages,
                         {
-                            "do_sample": True,
-                            "temperature": 0.7,
                             "max_new_tokens": self.max_new_tokens,
-                            "seed": seed,
                         },
                     ),
                     idx,
                 )
-                instance.repeat_idx = i
                 all_instances.append(instance)
+            return all_instances
 
-            # Generate model responses
-            self.logger.info("Generating responses for GPQADiamond...")
-            outputs = self.compute(model, all_instances)
-            all_outputs.append(outputs)
-
-        # Return None early for non-primary ranks
+        self.logger.info("Generating seeded responses for GPQADiamond...")
+        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
         if model.rank != 0:
             return None
 
-        for example, outputs in zip(examples, zip(*all_outputs)):
-            example["model_outputs"] = list(outputs)
+        for example, outputs in zip(examples, outputs_by_problem):
+            example["model_outputs"] = outputs
             example["model_answers"] = [get_multiple_choice_answer(o) for o in outputs]
 
         return {"examples": examples}
