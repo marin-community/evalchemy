@@ -147,6 +147,11 @@ FinanceBench, OlympiadBench, and SimpleQA use the shared OpenAI-compatible judge
 are separate from the candidate endpoint. Older benchmark-specific judge integrations
 still use their provider's environment variables, such as `OPENAI_API_KEY`.
 
+`OlympiadBenchDeterministic` evaluates the same bundled 30-problem subset once, using only
+Minerva/SymPy answer equivalence. It needs no judge credential. Because unresolved
+answers count as incorrect rather than receiving an LLM ruling, compare its scores
+only with other runs of `OlympiadBenchDeterministic`.
+
 ```bash
 python -m eval.eval \
     --model hf \

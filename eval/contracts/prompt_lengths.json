@@ -165,6 +165,12 @@
       "longest_prompt_tokens": 3392,
       "sha256": "3b7b6c000c1f5fa424ff62782cbac6c7167e4315cba953021c47f723ca08c4b2"
     },
+    "OlympiadBenchDeterministic": {
+      "distinct_prompt_count": 30,
+      "longest_prompt_chars": 11931,
+      "longest_prompt_tokens": 3392,
+      "sha256": "3b7b6c000c1f5fa424ff62782cbac6c7167e4315cba953021c47f723ca08c4b2"
+    },
     "OlympiadBenchFull": {
       "distinct_prompt_count": 911,
       "longest_prompt_chars": 10137,

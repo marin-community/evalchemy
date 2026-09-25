@@ -171,10 +171,14 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         self.seed = seed
         self.max_new_tokens = max_tokens
         self.n_repeat = n_repeat
-        self.judge_config = JudgeConfig.resolve(
-            judge_model=annotator_model,
-            api_key=judge_api_key,
-            base_url=judge_base_url,
+        self.judge_config = (
+            JudgeConfig.resolve(
+                judge_model=annotator_model,
+                api_key=judge_api_key,
+                base_url=judge_base_url,
+            )
+            if self.REQUIRES_JUDGE
+            else None
         )
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
@@ -480,7 +484,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             "num_graded_by_minerva": num_graded_by_minerva,
             "num_judged_by_llm": num_judged_by_llm,
             "num_judge_failed": num_judge_failed,
-            "judge_model": self.judge_config.model,
+            "judge_model": self.judge_config.model if self.judge_config is not None else None,
         }
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
