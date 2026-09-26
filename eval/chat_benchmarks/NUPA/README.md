@@ -67,8 +67,10 @@ S/M/L/XL length bucket, prompt, and target answer. `--num-each` and
 
 ## Metrics
 
-Response extraction and numeric-component alignment follow the public NUPA text
-evaluation protocol. The benchmark reports:
+Numeric-component alignment follows the public NUPA text evaluation protocol.
+Extraction also accepts final numbers in `\boxed{}`, inline math, or a trailing
+equation after a thinking response. Numeric comparison remains representation-sensitive.
+The benchmark reports:
 
 - `exact_match`: representation-sensitive equality after format-specific extraction.
 - `digit_match`: aligned digit accuracy between the extracted answer and target.
