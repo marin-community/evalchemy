@@ -393,7 +393,7 @@ GRADING_CASES: dict[str, GradingCase] = {
     "MMLUPro": GradingCase(
         _examples_case(
             "MMLUPro",
-            lambda _benchmark: [{"question": "q", "category": "math", "pred": "A", "answer": "A"}],
+            lambda _benchmark: [{"question": "q", "category": "math", "model_answer": "A", "answer": "A"}],
         ),
         ("accuracy",),
     ),
