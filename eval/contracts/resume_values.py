@@ -8,6 +8,8 @@ from typing import Any
 from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText, FailedGeneration
 
 _RESUME_VALUE_TYPE = "__evalchemy_resume_value__"
+_COMPLETION_TEXT = "completion_text"
+_FAILED_GENERATION = "failed_generation"
 
 
 def encode_resume_value(value: Any) -> Any:
@@ -15,7 +17,7 @@ def encode_resume_value(value: Any) -> Any:
     if isinstance(value, CompletionText):
         response = value.response
         return {
-            _RESUME_VALUE_TYPE: "completion_text",
+            _RESUME_VALUE_TYPE: _COMPLETION_TEXT,
             "value": str(value),
             "content_policy": value.content_policy.value,
             "response": {
@@ -30,7 +32,7 @@ def encode_resume_value(value: Any) -> Any:
         }
     if isinstance(value, FailedGeneration):
         return {
-            _RESUME_VALUE_TYPE: "failed_generation",
+            _RESUME_VALUE_TYPE: _FAILED_GENERATION,
             "failure_category": value.failure_category,
         }
     if isinstance(value, Mapping):
@@ -44,9 +46,9 @@ def decode_resume_value(value: Any) -> Any:
     """Restore scoring-bearing string subclasses from a resume manifest."""
     if isinstance(value, Mapping):
         value_type = value.get(_RESUME_VALUE_TYPE)
-        if value_type == "failed_generation":
+        if value_type == _FAILED_GENERATION:
             return FailedGeneration(str(value["failure_category"]))
-        if value_type == "completion_text":
+        if value_type == _COMPLETION_TEXT:
             response_value = value["response"]
             if not isinstance(response_value, Mapping):
                 raise ValueError("completion_text resume payload has a non-object response")
