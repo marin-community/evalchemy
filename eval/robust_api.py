@@ -146,6 +146,12 @@ def completion_response_quality_invalid(classifications: Counter[CompletionClass
     return total > 0 and missing_final / total >= 0.5
 
 
+def completion_response_text_unavailable(classifications: Counter[CompletionClassification]) -> bool:
+    """Return whether at least half of responses contain no scorer text."""
+    total = sum(classifications.values())
+    return total > 0 and classifications[CompletionClassification.EMPTY] / total >= 0.5
+
+
 def openai_model_requires_fixed_generation(model: object) -> bool:
     """Return whether an official OpenAI model rejects stops and temperature zero."""
     return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
