@@ -65,6 +65,7 @@ _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
+_INVALID_RESPONSE_FRACTION = 0.5
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
     FailureCategory.AGENT_TIMEOUT,
@@ -143,13 +144,13 @@ def completion_response_quality_invalid(classifications: Counter[CompletionClass
     """Return whether a generation run has too many unusable chat completions."""
     total = sum(classifications.values())
     missing_final = sum(classifications[classification] for classification in MISSING_FINAL_CLASSIFICATIONS)
-    return total > 0 and missing_final / total >= 0.5
+    return total > 0 and missing_final / total >= _INVALID_RESPONSE_FRACTION
 
 
 def completion_response_text_unavailable(classifications: Counter[CompletionClassification]) -> bool:
     """Return whether at least half of responses contain no scorer text."""
     total = sum(classifications.values())
-    return total > 0 and classifications[CompletionClassification.EMPTY] / total >= 0.5
+    return total > 0 and classifications[CompletionClassification.EMPTY] / total >= _INVALID_RESPONSE_FRACTION
 
 
 def openai_model_requires_fixed_generation(model: object) -> bool:
