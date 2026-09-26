@@ -10,12 +10,17 @@ from typing import Any
 
 from eval.completion_response import CompletionText, FailedGeneration
 from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
-from eval.contracts.sample_results import validate_sample_metrics
+from eval.contracts.sample_results import SampleMetricsError, validate_sample_metrics
 from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
 """Version of the stable JSONL record envelope emitted by ``--log_samples``."""
 DEFAULT_FILTER_NAME = "none"
+_IFEVAL_TASKS = frozenset({"ifeval", "ifeval_ca", "ifeval_es", "leaderboard_ifeval"})
+_IFEVAL_INSTRUCTION_METRICS = {
+    "inst_level_strict_acc": "strict_instruction_pass",
+    "inst_level_loose_acc": "loose_instruction_pass",
+}
 
 
 def is_scored_result(result: Any) -> bool:
@@ -59,6 +64,8 @@ def canonicalize_samples(
     canonical: list[dict[str, Any]] = []
     for doc_id, sample in enumerate(samples):
         record = dict(sample)
+        if task_name.lower() in _IFEVAL_TASKS:
+            _normalize_ifeval_instruction_metrics(record)
         record["schema_version"] = SAMPLE_SCHEMA_VERSION
         record["task_name"] = task_name
         record.setdefault("doc_id", doc_id)
@@ -88,6 +95,18 @@ def canonicalize_samples(
         canonical.append(record)
     validate_sample_metrics(task_name, canonical)
     return canonical
+
+
+def _normalize_ifeval_instruction_metrics(record: dict[str, Any]) -> None:
+    """Keep lm-eval's instruction verdicts while making each metric scalar."""
+    for metric, detail in _IFEVAL_INSTRUCTION_METRICS.items():
+        values = record.get(metric)
+        if not isinstance(values, list):
+            continue
+        if not values or any(not isinstance(value, bool) for value in values):
+            raise SampleMetricsError(f"IFEval per-instruction metric {metric!r} must be a non-empty list of booleans")
+        record[detail] = values
+        record[metric] = sum(values) / len(values)
 
 
 def _coalesce_lm_eval_filter_variants(
