@@ -72,6 +72,49 @@ def test_normalized_metrics_exclude_sample_identity_coordinates():
     assert (sample.grading.metric, sample.grading.score) == ("accuracy", 1.0)
 
 
+def test_normalization_marks_transport_failures_as_infrastructure_errors():
+    sample = sample_from_lm_eval(
+        "FinanceBench",
+        {
+            "doc_id": 0,
+            "doc": {"question": "question"},
+            "target": "answer",
+            "arguments": [["question", {}]],
+            "resps": [[""]],
+            "filtered_resps": [""],
+            "filter": "none",
+            "failure_category": "model_transport",
+            "metrics": ["accuracy"],
+            "accuracy": 0.0,
+        },
+    )
+
+    assert sample.output == "[EVALCHEMY_INFRASTRUCTURE_ERROR] model_transport"
+    assert sample.extracted == "[EVALCHEMY_INFRASTRUCTURE_ERROR] model_transport"
+    assert sample.metrics == {"accuracy": 0.0}
+
+
+def test_normalization_does_not_mark_malformed_model_output_as_infrastructure():
+    sample = sample_from_lm_eval(
+        "task",
+        {
+            "doc_id": 0,
+            "doc": {},
+            "target": "answer",
+            "arguments": [["question", {}]],
+            "resps": [[""]],
+            "filtered_resps": [""],
+            "filter": "none",
+            "failure_category": "malformed_model_response",
+            "metrics": ["accuracy"],
+            "accuracy": 0.0,
+        },
+    )
+
+    assert sample.output == ""
+    assert sample.extracted == ""
+
+
 def test_finestore_output_preserves_repeated_trials(tmp_path: Path):
     root = str(tmp_path / "archive")
     records = [

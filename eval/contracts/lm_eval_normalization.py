@@ -7,10 +7,19 @@ from collections.abc import Mapping
 
 from finestore.eval import Choice, EvalSample, Grading, Message, SampleKind
 
+from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import RESERVED_RECORD_FIELDS
 
 _PRIMARY_METRIC_PRIORITY = ("exact_match", "accuracy", "acc_norm", "acc", "pass@1")
 _FILTER_PRIORITY = ("flexible-extract",)
+_INFRASTRUCTURE_ERROR_MARKER = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
+_INFRASTRUCTURE_FAILURE_CATEGORIES = frozenset(
+    {
+        FailureCategory.AGENT_TIMEOUT.value,
+        FailureCategory.MODEL_TRANSPORT.value,
+        FailureCategory.GRADER_INFRASTRUCTURE.value,
+    }
+)
 # Everything a sample record carries that is not one of its metrics. Sample identity
 # coordinates are numeric, so harvesting metrics without this would record a sample's
 # ordinal and repeat index as scores.
@@ -108,9 +117,7 @@ def _sample_metrics(raw: Mapping[str, object]) -> dict[str, float]:
     return {
         key: float(value)
         for key, value in raw.items()
-        if key not in _STRUCTURAL_KEYS
-        and not isinstance(value, bool)
-        and isinstance(value, int | float)
+        if key not in _STRUCTURAL_KEYS and not isinstance(value, bool) and isinstance(value, int | float)
     }
 
 
@@ -147,6 +154,10 @@ def _generation_fields(arguments: object, responses: object, raw: Mapping[str, o
     if isinstance(filtered, list) and filtered:
         filtered = filtered[0]
     messages = _parse_chat_messages(prompt)
+    failure_category = raw.get("failure_category")
+    if isinstance(failure_category, str) and failure_category in _INFRASTRUCTURE_FAILURE_CATEGORIES:
+        output = f"{_INFRASTRUCTURE_ERROR_MARKER} {failure_category}"
+        filtered = output
     return {
         "prompt_text": None if messages else prompt,
         "prompt_messages": messages,

@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Sequence, Tuple
 
+from eval.contracts.resume_values import decode_resume_value, encode_resume_value
+
 # A unit key is a small JSON-serializable dict, e.g. {"task": "MATH500", "problem_idx": 17}
 # or {"task": "MATH500", "batch_idx": 3} for pass@k. We canonicalize it to a hashable tuple
 # for set/dict membership while preserving the original dict in the manifest line.
@@ -68,14 +70,14 @@ class UnitState:
     def to_line(self) -> str:
         # sort_keys for stable, diff-friendly, content-deterministic lines.
         return json.dumps(
-            {"unit": self.unit, "payload": self.payload, "ts": self.ts},
+            {"unit": self.unit, "payload": encode_resume_value(self.payload), "ts": self.ts},
             sort_keys=True,
             separators=(",", ":"),
         )
 
     @classmethod
     def from_obj(cls, obj: Dict[str, Any]) -> "UnitState":
-        return cls(unit=obj["unit"], payload=obj["payload"], ts=obj.get("ts", ""))
+        return cls(unit=obj["unit"], payload=decode_resume_value(obj["payload"]), ts=obj.get("ts", ""))
 
 
 class ManifestWriter:
