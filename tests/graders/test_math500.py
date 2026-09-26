@@ -1,11 +1,7 @@
 import pytest
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
-from eval.completion_response import (
-    CompletionContentPolicy,
-    CompletionResponse,
-    CompletionText,
-)
+from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText
 
 
 @pytest.mark.parametrize(
@@ -38,8 +34,7 @@ def test_math500_scores_reported_equivalent_answer_forms(candidate, reference):
     ("output", "answer"),
     [
         (
-            r"<|start_think|>Mark your solution with \boxed Answer: 63."
-            r"<|end_think|>\boxed{63}",
+            r"<|start_think|>Mark your solution with \boxed Answer: 63." r"<|end_think|>\boxed{63}",
             "63",
         ),
         (r"Reasoning. \boxed{17}", "17"),
@@ -66,6 +61,42 @@ def test_math500_extracts_only_structured_final_content(content, answer):
     )
 
     assert MATH500Benchmark().extract_answer(output) == answer
+
+
+def test_math500_extracts_completed_reasoning_only_answer():
+    response = CompletionResponse(
+        content=None,
+        reasoning_content=r"Solution steps. Final answer: \boxed{63}",
+        finish_reason="stop",
+        usage=None,
+        provider_metadata={},
+        raw_choice={},
+    )
+    output = CompletionText(
+        response.normalized_content(CompletionContentPolicy.COMBINE),
+        response,
+        CompletionContentPolicy.COMBINE,
+    )
+
+    assert MATH500Benchmark().extract_answer(output) == "63"
+
+
+def test_math500_does_not_extract_truncated_reasoning_only_answer():
+    response = CompletionResponse(
+        content=None,
+        reasoning_content=r"I considered \boxed{63}, but have not finished.",
+        finish_reason="length",
+        usage=None,
+        provider_metadata={},
+        raw_choice={},
+    )
+    output = CompletionText(
+        response.normalized_content(CompletionContentPolicy.COMBINE),
+        response,
+        CompletionContentPolicy.COMBINE,
+    )
+
+    assert MATH500Benchmark().extract_answer(output) == ""
 
 
 def test_math500_distinguishes_structural_commas_from_grouping_commas():

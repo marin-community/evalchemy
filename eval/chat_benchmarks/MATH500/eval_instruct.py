@@ -5,13 +5,11 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
 
-from eval.completion_response import CompletionContentPolicy, CompletionText
 from eval.contracts.sample_results import record_sample_metrics
+from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.graders.answer_equivalence import math_answers_equivalent
-from eval.graders.answer_extraction import final_response_text
-from eval.generation_stops import END_OF_TURN_SEQUENCES, truncate_at_stop
+from eval.graders.answer_extraction import extract_final_boxed_answer
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -181,8 +179,7 @@ class MATH500Benchmark(BaseBenchmark):
         # ---- native pass@k aggregation (Stage 2b) ----
         if results.get("pass_at_k"):
             num_correct = [
-                sum(math_answers_equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"])
-                for ex in examples
+                sum(math_answers_equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"]) for ex in examples
             ]
             self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
@@ -233,10 +230,4 @@ class MATH500Benchmark(BaseBenchmark):
         Returns:
             str: Extracted final answer. Returns empty string if no answer found in \boxed.
         """
-        if isinstance(output, CompletionText):
-            output = output.response.normalized_content(CompletionContentPolicy.FINAL_ONLY)
-        try:
-            answer = remove_boxed(last_boxed_only_string(truncate_at_stop(final_response_text(output))))
-            return answer
-        except (AssertionError, TypeError, ValueError):
-            return ""
+        return extract_final_boxed_answer(output)
