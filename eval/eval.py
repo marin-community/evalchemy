@@ -44,6 +44,7 @@ from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 
 # Register the async-batch robustness patch before any model adapter is built.
 from eval import robust_api  # noqa: F401
+from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 
 from eval.robust_api import (
     EndpointFailureCapture,
@@ -992,7 +993,12 @@ def initialize_model(
             if batch_size is not None:
                 model_args += f",batch_size={batch_size}"
 
-        lm = lm_eval.api.registry.get_model(model).create_from_arg_string(
+        endpoint_models = {
+            "local-chat-completions": RetryingLocalChatCompletions,
+            "local-completions": RetryingLocalCompletions,
+        }
+        model_class = endpoint_models.get(model) or lm_eval.api.registry.get_model(model)
+        lm = model_class.create_from_arg_string(
             model_args,
             config,
         )
