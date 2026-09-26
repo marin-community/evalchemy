@@ -1,11 +1,7 @@
 import pytest
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
-from eval.completion_response import (
-    CompletionContentPolicy,
-    CompletionResponse,
-    CompletionText,
-)
+from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText
 
 
 @pytest.mark.parametrize(
@@ -38,8 +34,7 @@ def test_math500_scores_reported_equivalent_answer_forms(candidate, reference):
     ("output", "answer"),
     [
         (
-            r"<|start_think|>Mark your solution with \boxed Answer: 63."
-            r"<|end_think|>\boxed{63}",
+            r"<|start_think|>Mark your solution with \boxed Answer: 63." r"<|end_think|>\boxed{63}",
             "63",
         ),
         (r"Reasoning. \boxed{17}", "17"),
@@ -49,12 +44,20 @@ def test_math500_extracts_final_box_without_reasoning_contamination(output, answ
     assert MATH500Benchmark().extract_answer(output) == answer
 
 
-@pytest.mark.parametrize(("content", "answer"), [(r"\boxed{63}", "63"), (None, "")])
-def test_math500_extracts_only_structured_final_content(content, answer):
+@pytest.mark.parametrize(
+    ("content", "reasoning_content", "finish_reason", "answer"),
+    [
+        (r"\boxed{63}", r"The prompt says \boxed Answer: 17.", "stop", "63"),
+        (None, r"The prompt says \boxed Answer: 17.", "stop", ""),
+        (None, r"Solution steps. Final answer: \boxed{63}", "stop", "63"),
+        (None, r"I considered \boxed{63}, but have not finished.", "length", ""),
+    ],
+)
+def test_math500_extracts_scoreable_completion_content(content, reasoning_content, finish_reason, answer):
     response = CompletionResponse(
         content=content,
-        reasoning_content=r"The prompt says \boxed Answer: 17.",
-        finish_reason="stop",
+        reasoning_content=reasoning_content,
+        finish_reason=finish_reason,
         usage=None,
         provider_metadata={},
         raw_choice={},
