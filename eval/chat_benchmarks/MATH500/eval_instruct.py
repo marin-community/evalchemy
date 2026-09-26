@@ -222,12 +222,12 @@ class MATH500Benchmark(BaseBenchmark):
         return questions
 
     def extract_answer(self, output: str) -> str:
-        """Return the final boxed answer without using reasoning text.
+        """Return the final boxed answer from a completed response.
 
         Args:
             output (str): Model-generated solution text
 
         Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
+            str: Extracted final answer. Returns empty string if no scoreable \boxed answer is found.
         """
         return extract_final_boxed_answer(output)

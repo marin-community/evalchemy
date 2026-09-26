@@ -44,12 +44,20 @@ def test_math500_extracts_final_box_without_reasoning_contamination(output, answ
     assert MATH500Benchmark().extract_answer(output) == answer
 
 
-@pytest.mark.parametrize(("content", "answer"), [(r"\boxed{63}", "63"), (None, "")])
-def test_math500_extracts_only_structured_final_content(content, answer):
+@pytest.mark.parametrize(
+    ("content", "reasoning_content", "finish_reason", "answer"),
+    [
+        (r"\boxed{63}", r"The prompt says \boxed Answer: 17.", "stop", "63"),
+        (None, r"The prompt says \boxed Answer: 17.", "stop", ""),
+        (None, r"Solution steps. Final answer: \boxed{63}", "stop", "63"),
+        (None, r"I considered \boxed{63}, but have not finished.", "length", ""),
+    ],
+)
+def test_math500_extracts_scoreable_completion_content(content, reasoning_content, finish_reason, answer):
     response = CompletionResponse(
         content=content,
-        reasoning_content=r"The prompt says \boxed Answer: 17.",
-        finish_reason="stop",
+        reasoning_content=reasoning_content,
+        finish_reason=finish_reason,
         usage=None,
         provider_metadata={},
         raw_choice={},
@@ -61,42 +69,6 @@ def test_math500_extracts_only_structured_final_content(content, answer):
     )
 
     assert MATH500Benchmark().extract_answer(output) == answer
-
-
-def test_math500_extracts_completed_reasoning_only_answer():
-    response = CompletionResponse(
-        content=None,
-        reasoning_content=r"Solution steps. Final answer: \boxed{63}",
-        finish_reason="stop",
-        usage=None,
-        provider_metadata={},
-        raw_choice={},
-    )
-    output = CompletionText(
-        response.normalized_content(CompletionContentPolicy.COMBINE),
-        response,
-        CompletionContentPolicy.COMBINE,
-    )
-
-    assert MATH500Benchmark().extract_answer(output) == "63"
-
-
-def test_math500_does_not_extract_truncated_reasoning_only_answer():
-    response = CompletionResponse(
-        content=None,
-        reasoning_content=r"I considered \boxed{63}, but have not finished.",
-        finish_reason="length",
-        usage=None,
-        provider_metadata={},
-        raw_choice={},
-    )
-    output = CompletionText(
-        response.normalized_content(CompletionContentPolicy.COMBINE),
-        response,
-        CompletionContentPolicy.COMBINE,
-    )
-
-    assert MATH500Benchmark().extract_answer(output) == ""
 
 
 def test_math500_distinguishes_structural_commas_from_grouping_commas():
