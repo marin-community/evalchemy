@@ -70,6 +70,14 @@ tokenizer code on that path (`trust_remote_code=True`); set
 `extra_model_args.trust_remote_code: false` to disable it. Use
 `extra_model_args.tokenizer_backend: huggingface` to load a local tokenizer for chat.
 
+Both local endpoint adapters retry connection failures, request timeouts, and HTTP
+408/429/502/503/504 for up to 900 seconds per request. Set
+`transport_retry_budget=<seconds>` in `--model_args`, or
+`extra_model_args.transport_retry_budget` in runner config, to change that limit.
+Each attempt still uses `timeout`; other HTTP 4xx errors fail immediately. If the
+budget expires, the item retains its infrastructure-error classification. The
+budget replaces `max_retries` for these adapters' transport failures.
+
 For local chat and completions endpoints, omit `temperature` and `seed` from
 `gen_kwargs` to use the server's generation defaults. Evalchemy leaves those fields
 out of requests even when a benchmark or lm-eval supplies its own defaults. Values
