@@ -107,6 +107,19 @@ def test_a_short_prompt_benchmark_spends_the_remaining_window_on_the_response():
     assert budget == CONTEXT_LENGTH - 3_392 - 256 - 64
 
 
+def test_nupa5k_spends_the_remaining_window_on_the_response():
+    lengths = load_prompt_lengths()
+
+    budget = resolve_task_max_tokens(
+        "NUPA5K",
+        context_length=73_664,
+        requested_max_tokens=None,
+        prompt_lengths=lengths,
+    )
+
+    assert budget == 73_664 - 399 - lengths.prompt_margin_tokens - 64
+
+
 def test_an_explicit_output_cap_is_kept():
     assert (
         resolve_task_max_tokens(
