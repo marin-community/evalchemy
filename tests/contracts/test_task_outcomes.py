@@ -21,6 +21,7 @@ from eval.contracts.task_outcome import (
     TaskStatus,
     classify_task_exception,
     lm_eval_task_outcome,
+    require_transport_success,
     validate_result_document,
 )
 from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
@@ -207,7 +208,7 @@ def test_failed_task_is_saved_in_the_results_package(tmp_path):
     assert saved.results == {}
 
 
-def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
+def test_endpoint_transport_failure_rejects_the_task_score():
     class _TransportFailureBenchmark(_Benchmark):
         def generate_responses(self, model):
             record_endpoint_failure(FailureCategory.MODEL_TRANSPORT)
@@ -220,9 +221,36 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
 
     result = _custom_evaluate(benchmark)
 
-    assert result["results"]["contract_task"]["accuracy"] == 0.0
+    assert result["results"] == {}
+    assert result["canonical_results"] == {}
+    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.FAILED
+    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.MODEL_TRANSPORT
     assert result["task_outcomes"]["contract_task"]["failure_counts"] == {FailureCategory.MODEL_TRANSPORT: 1}
-    validate_result_document(result)
+    with pytest.raises(EvaluationRunError):
+        require_transport_success(result)
+
+
+def test_transport_failed_task_is_saved_before_the_run_fails(tmp_path):
+    result = _custom_evaluate(_Benchmark({}, generation_error=ConnectionError("endpoint unavailable")))
+    result["config"] = {"batch_sizes": [1]}
+    tracker = DCEvaluationTracker(str(tmp_path))
+    tracker.general_config_tracker.model_name_sanitized = "test-model"
+    args = _args(
+        finestore_output_path=None,
+        show_config=False,
+        use_database=False,
+        debug=False,
+        annotator_model=None,
+        batch_size=1,
+    )
+
+    with pytest.raises(EvaluationRunError) as error:
+        handle_evaluation_output(result, args, tracker)
+
+    saved = EvalResults.load(str(next((tmp_path / "test-model").glob("results_*.json"))))
+    assert saved.results == {}
+    assert saved.task_outcomes["contract_task"].failure.category is FailureCategory.MODEL_TRANSPORT
+    assert error.value.outcomes[0].status is TaskStatus.FAILED
 
 
 def test_custom_task_with_majority_reasoning_only_content_keeps_score_and_diagnostics():

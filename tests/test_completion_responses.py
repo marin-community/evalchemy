@@ -150,14 +150,8 @@ def test_failed_completion_is_empty_and_classified_in_sample_artifact():
     assert record["completion_responses"][0][0]["normalized_content"] == ""
 
 
-@pytest.mark.parametrize(
-    ("request_error", "expected_category"),
-    [
-        (TimeoutError("endpoint timed out"), FailureCategory.AGENT_TIMEOUT),
-        (RuntimeError("endpoint failed"), FailureCategory.MODEL_TRANSPORT),
-    ],
-)
-def test_one_failed_async_request_returns_an_empty_classified_response(request_error, expected_category):
+def test_one_timed_out_async_request_returns_an_empty_classified_response():
+    request_error = TimeoutError("endpoint timed out")
     adapter = object.__new__(LocalChatCompletion)
     adapter._concurrent = 2
     adapter.verify_certificate = True
@@ -184,7 +178,7 @@ def test_one_failed_async_request_returns_an_empty_classified_response(request_e
     assert isinstance(outputs[0][0], FailedGeneration)
     assert outputs[0][0] == ""
     assert outputs[1] == ["ok"]
-    assert failures.counts == {expected_category: 1}
+    assert failures.counts == {FailureCategory.AGENT_TIMEOUT: 1}
 
 
 def test_endpoint_timeout_is_not_retried_within_trial_deadline():
@@ -268,24 +262,26 @@ def test_loglikelihood_request_error_keeps_session_open_until_siblings_settle():
     adapter.max_length = None
     session_states = []
 
+    sibling_ready = asyncio.Event()
+
     async def fake_model_call(*, session, messages, **_kwargs):
         if messages[0] == "bad":
+            await sibling_ready.wait()
             raise RuntimeError("serve error")
-        await asyncio.sleep(0.01)
         session_states.append(session.closed)
+        sibling_ready.set()
         return [(-1.0, False)]
 
     adapter.amodel_call = fake_model_call
 
     async def fetch():
-        with pytest.raises(RuntimeError, match="serve error"):
+        with pytest.raises(ConnectionError) as error:
             await adapter.get_batched_requests(
                 ["bad", "good"],
                 ["a", "b"],
                 generate=False,
             )
-        # The old gather path left the sibling alive after closing its session.
-        await asyncio.sleep(0.02)
+        assert isinstance(error.value.__cause__, RuntimeError)
 
     asyncio.run(fetch())
 

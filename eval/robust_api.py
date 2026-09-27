@@ -13,8 +13,8 @@ entire eval batch** -- a single bad/slow/5xx request nukes the whole run. (In lm
 but the batch-abort itself remains.)
 
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
-prevents one exhausted generation request from cancelling its siblings. It supplies
-an empty response with a classified failure, then lets scoring finish. Evalchemy's
+waits for sibling requests before propagating exhausted transport retries. Transport
+failures invalidate the evaluation; agent timeouts remain scored outcomes. Evalchemy's
 local endpoint adapters retry transport failures within a separate wall-clock budget;
 other API models retain the request-timeout deadline. Loglikelihood requests still
 propagate errors because an empty logprob cannot be scored.
@@ -106,6 +106,7 @@ class EndpointFailureCapture:
 @dataclass(frozen=True)
 class _DeferredRequestError:
     error: Exception
+    category: FailureCategory | None = None
 
 
 class _AdmittedSemaphore:
@@ -265,9 +266,8 @@ def apply() -> bool:
     ):
         """Resilient mirror of lm-eval v0.4.12 ``TemplateAPI.get_batched_requests``.
 
-        Identical to upstream except each per-request task is wrapped in a guard: a
-        request that exhausts its retries returns an empty classified generation
-        rather than propagating out of ``gather`` and aborting the batch.
+        Settle sibling requests before raising transport failures. Only agent
+        timeouts produce classified empty generations for scoring.
         """
         ctxlens = ctxlens if ctxlens else [None] * len(requests)
         local_endpoint = isinstance(self, (RetryingLocalChatCompletions, RetryingLocalCompletions))
@@ -329,16 +329,18 @@ def apply() -> bool:
                     return _DeferredRequestError(request_error)
                 category = (
                     FailureCategory.AGENT_TIMEOUT
-                    if isinstance(request_error, TimeoutError)
+                    if retry_budget is None and isinstance(request_error, TimeoutError)
                     else FailureCategory.MODEL_TRANSPORT
                 )
+                n = len(message) if hasattr(message, "__len__") else 1
+                record_endpoint_failure(category, n)
+                if category is FailureCategory.MODEL_TRANSPORT:
+                    return _DeferredRequestError(request_error, category)
                 if not generate:
                     # Keep the shared session alive until sibling requests settle.
                     # Raising here lets tqdm's gather exit without awaiting them;
                     # the session context then closes beneath their retries.
                     return _DeferredRequestError(request_error)
-                n = len(message) if hasattr(message, "__len__") else 1
-                record_endpoint_failure(category, n)
                 logger.error(
                     "Request ended as %s; recording an empty generation for %d prompt(s). Cause: %r",
                     category.value,
@@ -394,14 +396,14 @@ def apply() -> bool:
             outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
             for output in outputs:
                 if isinstance(output, _DeferredRequestError):
-                    # Loglikelihood has no valid placeholder, so preserve fail-fast
-                    # scoring after all requests have released the shared session.
+                    if output.category is FailureCategory.MODEL_TRANSPORT:
+                        raise ConnectionError("endpoint transport retries exhausted") from output.error
                     raise output.error
             return outputs
 
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
-    logger.info("robust_api: patched TemplateAPI.get_batched_requests (failed requests yield classified empty text).")
+    logger.info("robust_api: patched TemplateAPI.get_batched_requests (transport exhaustion fails the batch).")
     return True
 
 

@@ -1,21 +1,15 @@
 """Resume coverage for typed endpoint responses."""
 
-import pytest
+from lm_eval.api.instance import Instance
 
-pytest.importorskip("torch")
-pytest.importorskip("lm_eval")
-
-from lm_eval.api.instance import Instance  # noqa: E402
-
-from eval.completion_response import (  # noqa: E402
+from eval.completion_response import (
     CompletionContentPolicy,
     CompletionResponse,
     CompletionText,
     FailedGeneration,
 )
-from eval.resume import ManifestWriter, ResumeManager, RunFingerprint, read_manifest  # noqa: E402
-from eval.sample_logging import canonicalize_samples  # noqa: E402
-from eval.task import BaseBenchmark  # noqa: E402
+from eval.resume import ManifestWriter, ResumeManager, RunFingerprint, read_manifest
+from eval.task import BaseBenchmark
 
 
 class _Model:
@@ -70,20 +64,16 @@ def test_resume_manifest_round_trips_typed_completion_metadata(tmp_path):
     assert restored[1].failure_category == "model_transport"
 
 
-def test_resumed_transport_failure_remains_classified_in_sample_artifact(tmp_path):
+def test_resumed_transport_failure_is_regenerated(tmp_path):
     first = _Benchmark()
     first.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=_fingerprint(), mode="auto"))
     first.compute(_Model([FailedGeneration("model_transport")]), [_instance()])
 
     resumed = _Benchmark()
     resumed.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=_fingerprint(), mode="auto"))
-    restored = resumed.compute(_Model([]), [_instance()])[0]
-    samples = resumed.to_samples(
-        {"examples": [{"question": "question", "answer": "answer", "model_output": restored}]},
-        {},
-    )
-    record = canonicalize_samples("FinanceBench", samples)[0]
+    regenerated = resumed.compute(_Model(["answer"]), [_instance()])
+    assert regenerated == ["answer"]
 
-    assert isinstance(restored, FailedGeneration)
-    assert record["failure_category"] == "model_transport"
-    assert record["completion_responses"][0][0]["failure_category"] == "model_transport"
+    again = _Benchmark()
+    again.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=_fingerprint(), mode="auto"))
+    assert again.compute(_Model([]), [_instance()]) == ["answer"]

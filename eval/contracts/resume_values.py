@@ -6,10 +6,24 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText, FailedGeneration
+from eval.contracts.failures import FailureCategory
 
 _RESUME_VALUE_TYPE = "__evalchemy_resume_value__"
 _COMPLETION_TEXT = "completion_text"
 _FAILED_GENERATION = "failed_generation"
+
+
+def contains_transport_failure(value: Any) -> bool:
+    """Whether a cached unit contains an unsuccessful endpoint request."""
+    if isinstance(value, FailedGeneration):
+        return value.failure_category == FailureCategory.MODEL_TRANSPORT
+    if isinstance(value, CompletionText):
+        return value.response.failure_category == FailureCategory.MODEL_TRANSPORT
+    if isinstance(value, Mapping):
+        return any(contains_transport_failure(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return any(contains_transport_failure(item) for item in value)
+    return False
 
 
 def encode_resume_value(value: Any) -> Any:

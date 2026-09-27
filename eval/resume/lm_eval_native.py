@@ -34,6 +34,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from eval.robust_api import configure_generation_overrides, parse_generation_overrides
+from eval.contracts.resume_values import contains_transport_failure
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
@@ -300,7 +301,7 @@ def _impl_interop_lookup(self, req: Any) -> Optional[Any]:
     # Inconsistent / partially-written legacy entries (None, or a not-yet-resolved
     # placeholder) must NOT be adopted as a completed unit — treat them as a miss so the
     # request is regenerated rather than recorded as a corrupt "done" payload.
-    if cached is None:
+    if cached is None or contains_transport_failure(cached):
         return None
     # CachingLM stores the generate_until response, which is a plain completion string.
     # Anything else (a stray list/dict from a different cache schema) is not a trustworthy

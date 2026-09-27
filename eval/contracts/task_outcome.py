@@ -308,6 +308,21 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
         raise EvaluationRunError(failed)
 
 
+def require_transport_success(result: Mapping[str, Any]) -> None:
+    """Fail the run after its transport-failure evidence has been persisted."""
+    outcomes = [
+        _task_outcome_from_mapping(str(task_name), value)
+        for task_name, value in result["task_outcomes"].items()
+    ]
+    failures = [
+        outcome
+        for outcome in outcomes
+        if outcome.failure is not None and outcome.failure.category is FailureCategory.MODEL_TRANSPORT
+    ]
+    if failures:
+        raise EvaluationRunError(failures)
+
+
 def _task_outcome_from_mapping(task_name: str, value: Any) -> TaskOutcome:
     if not isinstance(value, Mapping):
         raise TypeError("task outcome must be a mapping")

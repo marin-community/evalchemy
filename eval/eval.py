@@ -78,6 +78,7 @@ from eval.contracts.task_outcome import (
     custom_task_outcome,
     exported_task_outcome,
     lm_eval_task_outcome,
+    require_transport_success,
     validate_requested_outcomes,
     validate_result_document,
 )
@@ -142,7 +143,14 @@ def _cleanup_generation_result(generation_result: Any) -> None:
 
 
 def _outcome_with_response_quality(outcome: TaskOutcome, capture: EndpointFailureCapture) -> TaskOutcome:
-    """Fail a scored task when most chat completions contain no scorer text."""
+    """Reject transport loss and tasks with mostly empty chat completions."""
+    if outcome.status is TaskStatus.SUCCEEDED and capture.counts[FailureCategory.MODEL_TRANSPORT]:
+        return replace(
+            outcome,
+            status=TaskStatus.FAILED,
+            metrics={},
+            failure=TaskFailure(FailureCategory.MODEL_TRANSPORT, "endpoint transport retries exhausted"),
+        )
     if outcome.status is not TaskStatus.SUCCEEDED or not completion_response_text_unavailable(
         capture.response_summary
     ):
@@ -1168,6 +1176,8 @@ def handle_evaluation_output(
 
     if wandb_logger:
         wandb_logger.run.finish()
+
+    require_transport_success(results)
 
 
 if __name__ == "__main__":

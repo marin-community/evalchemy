@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Set
 
+from eval.contracts.resume_values import contains_transport_failure
+
 from .fingerprint import RunFingerprint
 from .manifest import (
     ManifestWriter,
@@ -38,6 +40,11 @@ from .manifest import (
 
 ResumeMode = Literal["auto", "force-fresh", "off"]
 Decision = Literal["fresh", "resume", "refuse"]
+
+
+def _completed_payloads(path: Path) -> Dict[UnitKey, Dict[str, Any]]:
+    latest = {state.key: state.payload for state in read_manifest(path)}
+    return {key: payload for key, payload in latest.items() if not contains_transport_failure(payload)}
 
 
 class ResumeRefused(RuntimeError):
@@ -206,8 +213,7 @@ class ResumeManager:
         if self._decision != "resume":
             self._done = set()
             return self._done
-        states = read_manifest(_manifest_path(self.run_dir, self.world_size, self.rank))
-        self._done = {s.key for s in states}
+        self._done = set(_completed_payloads(_manifest_path(self.run_dir, self.world_size, self.rank)))
         return self._done
 
     def restore(self) -> Dict[UnitKey, Dict[str, Any]]:
@@ -216,8 +222,7 @@ class ResumeManager:
             self.decide()
         if self._decision != "resume":
             return {}
-        states = read_manifest(_manifest_path(self.run_dir, self.world_size, self.rank))
-        return {s.key: s.payload for s in states}
+        return _completed_payloads(_manifest_path(self.run_dir, self.world_size, self.rank))
 
     def should_skip(self, unit: Dict[str, Any]) -> bool:
         """True if this unit is already recorded as done (so the path skips regenerating it)."""

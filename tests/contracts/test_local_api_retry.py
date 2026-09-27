@@ -10,9 +10,7 @@ from lm_eval.models.api_models import JsonChatStr
 
 from eval import robust_api
 from eval.contracts.failures import FailureCategory
-from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.robust_api import capture_endpoint_failures
-from eval.sample_logging import canonicalize_samples
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 
 
@@ -148,7 +146,8 @@ def test_local_api_bad_request_fails_after_one_attempt(kind):
     assert attempts == 1
 
 
-def test_local_api_budget_exhaustion_remains_infrastructure_error(monkeypatch):
+@pytest.mark.parametrize("kind", ["completions", "chat/completions"])
+def test_local_api_budget_exhaustion_fails_generation(monkeypatch, kind):
     clock = _Clock()
     monkeypatch.setattr(robust_api, "monotonic", lambda: clock.now)
     monkeypatch.setattr(robust_api, "_transport_retry_sleep", clock.sleep)
@@ -160,29 +159,17 @@ def test_local_api_budget_exhaustion_remains_infrastructure_error(monkeypatch):
     async def run():
         runner, base_url = await _endpoint(handler)
         try:
-            adapter = _adapter("completions", base_url, 20)
+            adapter = _adapter(kind, base_url, 20)
             with capture_endpoint_failures() as failures:
-                output = await _generate(adapter, "question")
-            return output, failures
+                with pytest.raises(ConnectionError) as error:
+                    await _generate(adapter, _prompt(kind))
+            assert isinstance(error.value.__cause__, ClientResponseError)
+            assert error.value.__cause__.status == 502
+            return failures
         finally:
             await runner.cleanup()
 
-    output, failures = asyncio.run(run())
-    record = canonicalize_samples("task", [{"resps": [output], "metrics": ["accuracy"], "accuracy": 0.0}])[0]
-    sample = sample_from_lm_eval(
-        "task",
-        {
-            **record,
-            "doc_id": 0,
-            "doc": {"question": "question"},
-            "target": "answer",
-            "arguments": [["question", {}]],
-            "filtered_resps": [output[0]],
-            "filter": "none",
-        },
-    )
+    failures = asyncio.run(run())
 
     assert clock.now == 20
     assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
-    assert record["failure_category"] == "model_transport"
-    assert sample.output == "[EVALCHEMY_INFRASTRUCTURE_ERROR] model_transport"
