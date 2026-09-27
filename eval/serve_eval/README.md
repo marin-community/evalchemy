@@ -74,9 +74,11 @@ Both local endpoint adapters retry connection failures, request timeouts, and HT
 408/429/502/503/504 for up to 900 seconds per request. Set
 `transport_retry_budget=<seconds>` in `--model_args`, or
 `extra_model_args.transport_retry_budget` in runner config, to change that limit.
-Each attempt still uses `timeout`; other HTTP 4xx errors fail immediately. If the
-budget expires, the item retains its infrastructure-error classification. The
-budget replaces `max_retries` for these adapters' transport failures.
+Each attempt uses `timeout` unless `transport_attempt_timeout=<seconds>` sets a
+shorter bound. A shorter attempt bound leaves time to retry a stalled request inside
+the total budget. Other HTTP 4xx errors fail immediately. If the budget expires, the
+item retains its infrastructure-error classification. The budget replaces
+`max_retries` for these adapters' transport failures.
 
 For local chat and completions endpoints, omit `temperature` and `seed` from
 `gen_kwargs` to use the server's generation defaults. Evalchemy leaves those fields

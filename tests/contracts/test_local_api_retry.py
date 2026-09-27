@@ -37,10 +37,12 @@ async def _endpoint(handler):
     return runner, f"http://127.0.0.1:{port}/v1"
 
 
-def _adapter(kind, base_url, budget):
+def _adapter(kind, base_url, budget, *, timeout=5, attempt_timeout=None):
+    attempt_timeout_arg = "" if attempt_timeout is None else f",transport_attempt_timeout={attempt_timeout}"
     model_args = (
         f"model=served,base_url={base_url}/{kind},tokenizer_backend=none,"
-        f"tokenized_requests=False,max_length=4096,timeout=5,transport_retry_budget={budget}"
+        f"tokenized_requests=False,max_length=4096,timeout={timeout},transport_retry_budget={budget}"
+        f"{attempt_timeout_arg}"
     )
     if kind == "chat/completions":
         return RetryingLocalChatCompletions.create_from_arg_string(model_args)
@@ -117,6 +119,33 @@ def test_local_api_retries_other_transient_http_statuses(monkeypatch, status):
         try:
             adapter = _adapter("completions", base_url, 20)
             return await _generate(adapter, "question")
+        finally:
+            await runner.cleanup()
+
+    assert asyncio.run(run()) == ["answer"]
+    assert attempts == 2
+
+
+@pytest.mark.parametrize("kind", ["completions", "chat/completions"])
+def test_local_api_retries_a_stalled_attempt_within_the_total_budget(monkeypatch, kind):
+    attempts = 0
+    release_stalled_handler = asyncio.Event()
+    monkeypatch.setattr(robust_api.random, "uniform", lambda _low, _high: 0)
+
+    async def handler(_request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            await release_stalled_handler.wait()
+        else:
+            release_stalled_handler.set()
+        return web.json_response(_response(kind))
+
+    async def run():
+        runner, base_url = await _endpoint(handler)
+        try:
+            adapter = _adapter(kind, base_url, 1, timeout=1, attempt_timeout=0.05)
+            return await _generate(adapter, _prompt(kind))
         finally:
             await runner.cleanup()
 

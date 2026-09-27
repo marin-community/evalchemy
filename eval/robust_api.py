@@ -34,13 +34,13 @@ import json
 import logging
 import random
 import re
-from time import monotonic
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Lock
+from time import monotonic
 from typing import Iterator
 
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES
@@ -273,6 +273,7 @@ def apply() -> bool:
         local_endpoint = isinstance(self, (RetryingLocalChatCompletions, RetryingLocalCompletions))
         concurrent = self.endpoint_concurrency if local_endpoint else self._concurrent
         retry_budget = self.transport_retry_budget if local_endpoint else None
+        attempt_timeout = self.transport_attempt_timeout if local_endpoint else self.timeout
         conn = TCPConnector(limit=concurrent, ssl=self.verify_certificate)
         sem = asyncio.Semaphore(concurrent)
         async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
@@ -292,8 +293,8 @@ def apply() -> bool:
                         if retry_budget is not None:
 
                             async def call():
-                                async with asyncio.timeout(self.timeout):
-                                    return await self.amodel_call(
+                                return await asyncio.wait_for(
+                                    self.amodel_call(
                                         session=session,
                                         sem=_ADMITTED_SEMAPHORE,
                                         messages=message,
@@ -301,7 +302,9 @@ def apply() -> bool:
                                         generate=generate,
                                         ctxlens=ctxlen,
                                         **call_kwargs,
-                                    )
+                                    ),
+                                    timeout=attempt_timeout,
+                                )
 
                             return await _retry_transport_call(call, budget=retry_budget)
                         async with asyncio.timeout(self.timeout):
