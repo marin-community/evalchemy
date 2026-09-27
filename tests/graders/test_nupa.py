@@ -24,6 +24,46 @@ def test_extract_answer_follows_direct_answer_protocol(prediction, answer_format
     assert extract_answer(prediction, answer_format) == expected
 
 
+def test_stored_step92_answers_are_extracted_without_changing_exact_match():
+    fraction_output = (
+        "First, I need to calculate the result of dividing 56 by 84616. This can be written as the fraction "
+        "\\(\\frac{56}{84616}\\).\n\n"
+        "Next, I'll simplify this fraction by finding the greatest common divisor (GCD) of 56 and 84616.\n\n"
+        "The GCD of 56 and 84616 is 56.\n\n"
+        "Now, I'll divide both the numerator and the denominator by 56:\n\n"
+        "\\(\\frac{56 \\div 56}{84616 \\div 56} = \\frac{1}{1511}\\)\n\n"
+        "The simplified fraction is \\(\\boxed{1/1511}\\). "
+    )
+    rounded_float_output = (
+        "The result is calculated as follows:  \n"
+        "426105174.011715486 + 19.07129229308 = 426105193.08300778 "
+    )
+
+    assert extract_answer(fraction_output, FRACTION) == "1/1511"
+    assert score_prediction(fraction_output, "1/1511", FRACTION).exact_match == 1.0
+    assert extract_answer(rounded_float_output, FLOAT) == "426105193.08300778"
+    assert score_prediction(rounded_float_output, "426105193.08300777908", FLOAT).exact_match == 0.0
+
+
+@pytest.mark.parametrize(
+    ("prediction", "answer_format", "expected"),
+    [
+        (r"<|start_think|>Maybe \boxed{9}<|end_think|>\(\boxed{1/1511}\).", FRACTION, "1/1511"),
+        (r"<|start_think|>Maybe 9<|end_think|>\(1/1511\).", FRACTION, "1/1511"),
+        ("<|start_think|>Maybe 9<|end_think|>42", INTEGER, "42"),
+        (r"<|start_think|>\boxed{9}", INTEGER, None),
+        (r"The answer is \boxed{9.90}.", FLOAT, "9.90"),
+        ("So the answer is: 83564549", INTEGER, "83564549"),
+        ("Therefore, the final answer is 2.547762432164e18.", SCIENTIFIC, "2.547762432164e18"),
+        (r"\boxed{1,234}", INTEGER, None),
+        (r"\boxed{9.90}", INTEGER, None),
+        ("Result: 9.9\nI need to check that", FLOAT, None),
+    ],
+)
+def test_extract_answer_uses_final_content(prediction, answer_format, expected):
+    assert extract_answer(prediction, answer_format) == expected
+
+
 def test_score_prediction_preserves_numeric_representation():
     exact = score_prediction("9.9", "9.9", FLOAT)
     wrong_digits = score_prediction("9.11", "9.9", FLOAT)
