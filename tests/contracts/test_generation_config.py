@@ -312,6 +312,27 @@ def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint,
         assert "max_gen_toks" not in payload
 
 
+def test_context_preflight_caps_the_final_caller_generation_override(endpoint):
+    class Tokenizer:
+        def apply_chat_template(self, _messages, **_kwargs):
+            return list(range(900))
+
+    model = _model(endpoint, LocalChatCompletion)
+    model._concurrent = 2
+    model.tokenizer = Tokenizer()
+    model.max_length = 999
+    configure_generation_overrides(model, {"max_gen_toks": 4096})
+    request = Instance(
+        "generate_until",
+        {"question": "Question"},
+        ([{"role": "user", "content": "Question"}], {"max_gen_toks": 4096}),
+        0,
+    )
+
+    assert model.generate_until([request]) == ["\\boxed{42}"]
+    assert endpoint.requests[0]["max_tokens"] == 36
+
+
 @pytest.mark.parametrize("task", ["AIME24", "MATH500"])
 def test_cli_output_cap_wins_over_math_benchmark_defaults(endpoint, tmp_path, task):
     root = Path(__file__).parents[2]
