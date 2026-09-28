@@ -3,28 +3,25 @@
 from __future__ import annotations
 
 import argparse
+from importlib import import_module
 from pathlib import Path
 
-from eval.chat_benchmarks.NUPA5K.panel import MANIFEST_PATH, NUPA5K_SIZE, build_nupa5k_identities, write_manifest
-from eval.chat_benchmarks.NUPA.eval_instruct import (
-    DEFAULT_SPLIT,
-    SOURCE_DATASET_NAME,
-    SOURCE_DATASET_REVISION,
-    download_nupa_source,
-)
+from ..panel import MANIFEST_PATH, NUPA5K_SIZE, build_nupa5k_identities, write_manifest
+
+nupa = import_module("eval.chat_benchmarks.NUPA-Loose.eval_instruct")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-name", default=SOURCE_DATASET_NAME)
-    parser.add_argument("--revision", default=SOURCE_DATASET_REVISION)
-    parser.add_argument("--split", default=DEFAULT_SPLIT)
+    parser.add_argument("--dataset-name", default=nupa.SOURCE_DATASET_NAME)
+    parser.add_argument("--revision", default=nupa.SOURCE_DATASET_REVISION)
+    parser.add_argument("--split", default=nupa.DEFAULT_SPLIT)
     parser.add_argument("--source-file", type=Path)
     parser.add_argument("--output", type=Path, default=MANIFEST_PATH)
     parser.add_argument("--panel-size", type=int, default=NUPA5K_SIZE)
     args = parser.parse_args()
 
-    source = args.source_file or download_nupa_source(
+    source = args.source_file or nupa.download_nupa_source(
         dataset_name=args.dataset_name,
         dataset_revision=args.revision,
         split=args.split,

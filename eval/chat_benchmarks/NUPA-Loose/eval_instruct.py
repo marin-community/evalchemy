@@ -1,7 +1,7 @@
-"""NUPA direct number-understanding and processing benchmark.
+"""NUPA-Loose numerical benchmark with permissive answer extraction.
 
 The source dataset is nested by task and digit length. This integration reads
-that canonical JSON directly and reproduces the authors' text-model protocol:
+that canonical JSON directly and reproduces the authors' text-model sampling:
 100 deterministic examples from every task/digit group.
 """
 
@@ -37,8 +37,8 @@ DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 SMOKE_DATA = os.path.join(DATA_DIR, "nupa_smoke.jsonl")
 
 
-class NUPABenchmark(BaseBenchmark):
-    """Evaluate direct numeric answers using the NUPA text protocol."""
+class NUPALooseBenchmark(BaseBenchmark):
+    """Evaluate NUPA tasks with permissive final answer extraction."""
 
     METRICS = ("exact_match", "digit_match", "format_valid_rate")
     PRIMARY_METRIC = "exact_match"
@@ -125,7 +125,7 @@ class NUPABenchmark(BaseBenchmark):
 
     def generate_responses(self, model: LM) -> Optional[Dict[str, Any]]:
         records = self._load_records()
-        self.logger.info("Generating responses for NUPA (%d examples)...", len(records))
+        self.logger.info("Generating responses for NUPA-Loose (%d examples)...", len(records))
         outputs = self.compute(model, self._build_instances(model, records))
         if model.rank != 0:
             return None

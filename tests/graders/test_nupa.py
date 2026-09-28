@@ -1,27 +1,21 @@
+from importlib import import_module
+
 import pytest
 
-from eval.chat_benchmarks.NUPA.scorer import (
-    FLOAT,
-    FRACTION,
-    INTEGER,
-    SCIENTIFIC,
-    extract_answer,
-    length_bucket,
-    score_prediction,
-)
+scorer = import_module("eval.chat_benchmarks.NUPA-Loose.scorer")
 
 
 @pytest.mark.parametrize(
     ("prediction", "answer_format", "expected"),
     [
-        ("The answer is 9.9, because 9.9 is larger.", FLOAT, "9.9"),
-        ("I think the answer is 9.9", FLOAT, None),
-        ("So the answer is 123", INTEGER, "123"),
-        ("5.04E+04", SCIENTIFIC, "5.04e04"),
+        ("The answer is 9.9, because 9.9 is larger.", scorer.FLOAT, "9.9"),
+        ("I think the answer is 9.9", scorer.FLOAT, None),
+        ("So the answer is 123", scorer.INTEGER, "123"),
+        ("5.04E+04", scorer.SCIENTIFIC, "5.04e04"),
     ],
 )
 def test_extract_answer_follows_direct_answer_protocol(prediction, answer_format, expected):
-    assert extract_answer(prediction, answer_format) == expected
+    assert scorer.extract_answer(prediction, answer_format) == expected
 
 
 def test_stored_step92_answers_are_extracted_without_changing_exact_match():
@@ -35,40 +29,39 @@ def test_stored_step92_answers_are_extracted_without_changing_exact_match():
         "The simplified fraction is \\(\\boxed{1/1511}\\). "
     )
     rounded_float_output = (
-        "The result is calculated as follows:  \n"
-        "426105174.011715486 + 19.07129229308 = 426105193.08300778 "
+        "The result is calculated as follows:  \n" "426105174.011715486 + 19.07129229308 = 426105193.08300778 "
     )
 
-    assert extract_answer(fraction_output, FRACTION) == "1/1511"
-    assert score_prediction(fraction_output, "1/1511", FRACTION).exact_match == 1.0
-    assert extract_answer(rounded_float_output, FLOAT) == "426105193.08300778"
-    assert score_prediction(rounded_float_output, "426105193.08300777908", FLOAT).exact_match == 0.0
+    assert scorer.extract_answer(fraction_output, scorer.FRACTION) == "1/1511"
+    assert scorer.score_prediction(fraction_output, "1/1511", scorer.FRACTION).exact_match == 1.0
+    assert scorer.extract_answer(rounded_float_output, scorer.FLOAT) == "426105193.08300778"
+    assert scorer.score_prediction(rounded_float_output, "426105193.08300777908", scorer.FLOAT).exact_match == 0.0
 
 
 @pytest.mark.parametrize(
     ("prediction", "answer_format", "expected"),
     [
-        (r"<|start_think|>Maybe \boxed{9}<|end_think|>\(\boxed{1/1511}\).", FRACTION, "1/1511"),
-        (r"<|start_think|>Maybe 9<|end_think|>\(1/1511\).", FRACTION, "1/1511"),
-        ("<|start_think|>Maybe 9<|end_think|>42", INTEGER, "42"),
-        (r"<|start_think|>\boxed{9}", INTEGER, None),
-        (r"The answer is \boxed{9.90}.", FLOAT, "9.90"),
-        ("So the answer is: 83564549", INTEGER, "83564549"),
-        ("Therefore, the final answer is 2.547762432164e18.", SCIENTIFIC, "2.547762432164e18"),
-        (r"\boxed{1,234}", INTEGER, None),
-        (r"\boxed{9.90}", INTEGER, None),
-        ("Result: 9.9\nI need to check that", FLOAT, None),
+        (r"<|start_think|>Maybe \boxed{9}<|end_think|>\(\boxed{1/1511}\).", scorer.FRACTION, "1/1511"),
+        (r"<|start_think|>Maybe 9<|end_think|>\(1/1511\).", scorer.FRACTION, "1/1511"),
+        ("<|start_think|>Maybe 9<|end_think|>42", scorer.INTEGER, "42"),
+        (r"<|start_think|>\boxed{9}", scorer.INTEGER, None),
+        (r"The answer is \boxed{9.90}.", scorer.FLOAT, "9.90"),
+        ("So the answer is: 83564549", scorer.INTEGER, "83564549"),
+        ("Therefore, the final answer is 2.547762432164e18.", scorer.SCIENTIFIC, "2.547762432164e18"),
+        (r"\boxed{1,234}", scorer.INTEGER, None),
+        (r"\boxed{9.90}", scorer.INTEGER, None),
+        ("Result: 9.9\nI need to check that", scorer.FLOAT, None),
     ],
 )
 def test_extract_answer_uses_final_content(prediction, answer_format, expected):
-    assert extract_answer(prediction, answer_format) == expected
+    assert scorer.extract_answer(prediction, answer_format) == expected
 
 
 def test_score_prediction_preserves_numeric_representation():
-    exact = score_prediction("9.9", "9.9", FLOAT)
-    wrong_digits = score_prediction("9.11", "9.9", FLOAT)
-    extra_zero = score_prediction("9.90", "9.9", FLOAT)
-    comma = score_prediction("1,234", "1234", INTEGER)
+    exact = scorer.score_prediction("9.9", "9.9", scorer.FLOAT)
+    wrong_digits = scorer.score_prediction("9.11", "9.9", scorer.FLOAT)
+    extra_zero = scorer.score_prediction("9.90", "9.9", scorer.FLOAT)
+    comma = scorer.score_prediction("1,234", "1234", scorer.INTEGER)
 
     assert exact.exact_match == 1.0
     assert exact.digit_match == 1.0
@@ -81,15 +74,15 @@ def test_score_prediction_preserves_numeric_representation():
 
 
 def test_fraction_and_scientific_components_are_scored_independently():
-    fraction = score_prediction("123/456", "12/3456", FRACTION)
-    scientific = score_prediction("5.04e4", "5.04e4", SCIENTIFIC)
+    fraction = scorer.score_prediction("123/456", "12/3456", scorer.FRACTION)
+    scientific = scorer.score_prediction("5.04e4", "5.04e4", scorer.SCIENTIFIC)
 
     assert fraction.dlength == 0.0
     assert scientific.exact_match == 1.0
 
 
 def test_invalid_format_records_no_answer():
-    score = score_prediction("one half", "1/2", FRACTION)
+    score = scorer.score_prediction("one half", "1/2", scorer.FRACTION)
 
     assert score.exact_match == 0.0
     assert score.digit_match == 0.0
@@ -111,4 +104,4 @@ def test_invalid_format_records_no_answer():
     ],
 )
 def test_length_bucket_matches_the_paper_intervals(digit, max_digit, expected):
-    assert length_bucket(digit, max_digit=max_digit) == expected
+    assert scorer.length_bucket(digit, max_digit=max_digit) == expected

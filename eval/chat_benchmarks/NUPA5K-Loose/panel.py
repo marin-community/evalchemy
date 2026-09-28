@@ -7,12 +7,14 @@ import json
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 import ijson
 
-from eval.chat_benchmarks.NUPA.eval_instruct import flatten_nupa_tasks, validate_nupa_digit_groups
+nupa = import_module("eval.chat_benchmarks.NUPA-Loose.eval_instruct")
+
 
 NUPA5K_SIZE = 5_000
 NUPA5K_TASK_COUNT = 44
@@ -154,7 +156,7 @@ def load_panel_records(
             selected_texts[digit_key] = [matches[identity.sha256] for identity in ordered if identity.sha256 in matches]
             selected_identities.extend(identity for identity in ordered if identity.sha256 in matches)
 
-        records = flatten_nupa_tasks({task_name: selected_texts}, split=split)
+        records = nupa.flatten_nupa_tasks({task_name: selected_texts}, split=split)
         for identity, record in zip(selected_identities, records, strict=True):
             record["id"] = identity.as_record_id(split)
             record["source_sha256"] = identity.sha256
@@ -173,7 +175,7 @@ def iter_source_tasks(source: Path) -> Iterator[tuple[str, dict[str, list[str]]]
     """Yield validated NUPA tasks from nested source JSON."""
     with source.open("rb") as source_file:
         for task_name, value in ijson.kvitems(source_file, ""):
-            yield task_name, validate_nupa_digit_groups(task_name, value)
+            yield task_name, nupa.validate_nupa_digit_groups(task_name, value)
 
 
 def iter_source_strata(source: Path) -> Iterator[SourceStratum]:
