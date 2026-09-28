@@ -7,26 +7,22 @@ the taxonomy's job is to point the debugging finger at the right component. A
 builtin ``ConnectionError`` mapped to ``model_transport``.
 """
 
+import aiohttp
 import pytest
+import requests
 
 from eval.contracts.failures import FailureCategory, FailurePhase, classify_task_exception
 
 
 def _http_error():
-    import requests
-
     return requests.exceptions.HTTPError("500 Server Error: Internal Server Error")
 
 
 def _requests_connection_error():
-    import requests
-
     return requests.exceptions.ConnectionError("connection refused")
 
 
 def _aiohttp_response_error(status=502):
-    import aiohttp
-
     return aiohttp.ClientResponseError(
         request_info=None,
         history=(),
