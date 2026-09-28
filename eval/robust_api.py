@@ -369,6 +369,7 @@ def apply() -> bool:
                             payloads=message,
                             gen_kwargs=kwargs.get("gen_kwargs"),
                             context_length=self.max_length + 1 if self.max_length is not None else None,
+                            chat_template_kwargs=getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None),
                         )
                     except ContextWindowExceededError:
                         raise

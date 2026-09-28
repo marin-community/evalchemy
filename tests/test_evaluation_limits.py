@@ -184,7 +184,7 @@ class _Tokenizer:
         assert add_special_tokens is False
         return list(range(len(text.split())))
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, **kwargs):
         assert tokenize is True
         assert add_generation_prompt is True
         return list(range(sum(len(message["content"].split()) for message in messages) + 3))
@@ -244,6 +244,29 @@ def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context
     assert kwargs == {"max_tokens": 128}
     assert prompt_tokens is None
     assert cap is None
+
+
+def test_endpoint_preflight_uses_the_endpoint_chat_template_controls():
+    class ReasoningTokenizer(_Tokenizer):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, reasoning_effort="high"):
+            base = super().apply_chat_template(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+            )
+            return {"input_ids": base + ([0] * 20 if reasoning_effort == "high" else [])}
+
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=ReasoningTokenizer(),
+        payloads=[[{"role": "user", "content": "one two"}]],
+        gen_kwargs={"max_tokens": 20},
+        context_length=100,
+        chat_template_kwargs={"reasoning_effort": "low"},
+    )
+
+    assert prompt_tokens == 5
+    assert cap == 20
+    assert kwargs == {"max_tokens": 20}
 
 
 def test_endpoint_preflight_skips_chat_count_without_a_client_tokenizer():
