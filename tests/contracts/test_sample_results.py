@@ -404,9 +404,9 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy", "prefix_hit"),
     ),
-    "NUPA": GradingCase(
+    "NUPA-Loose": GradingCase(
         _examples_case(
-            "NUPA",
+            "NUPA-Loose",
             lambda _benchmark: [
                 {
                     "task_name": "max_Float_Float_Float",
@@ -419,9 +419,9 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("exact_match", "digit_match", "dlength", "format_valid_rate", "no_answer_rate"),
     ),
-    "NUPA5K": GradingCase(
+    "NUPA5K-Loose": GradingCase(
         _examples_case(
-            "NUPA5K",
+            "NUPA5K-Loose",
             lambda _benchmark: [
                 {
                     "task_name": "max_Float_Float_Float",
@@ -549,9 +549,11 @@ def test_ifeval_native_instruction_metrics_preserve_flattened_accuracy(task_name
     assert [record["inst_level_loose_acc"] for record in records] == [1.0, 1.0]
     assert [record["strict_instruction_pass"] for record in records] == [[True, False, False], [True]]
     assert [record["loose_instruction_pass"] for record in records] == [[True, True, True], [True]]
-    assert sum(map(sum, (record["strict_instruction_pass"] for record in records))) / sum(
-        len(record["strict_instruction_pass"]) for record in records
-    ) == 0.5
+    assert (
+        sum(map(sum, (record["strict_instruction_pass"] for record in records)))
+        / sum(len(record["strict_instruction_pass"]) for record in records)
+        == 0.5
+    )
 
 
 def test_other_tasks_reject_list_valued_metrics():

@@ -1,7 +1,7 @@
 """Materialize Evalchemy's pinned NUPA sample as row-oriented JSONL.
 
 Example:
-    uv run --extra nupa python -m eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset \
+    uv run --extra nupa-loose python -m eval.chat_benchmarks.NUPA-Loose.data_prep.flatten_hf_dataset \
         --output /tmp/nupa_test.jsonl
 """
 
@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-from eval.chat_benchmarks.NUPA.eval_instruct import (
+from ..eval_instruct import (
     DEFAULT_NUM_EACH,
     DEFAULT_RANDOM_SEED,
     DEFAULT_SPLIT,

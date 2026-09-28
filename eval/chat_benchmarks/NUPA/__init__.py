@@ -1,1 +1,0 @@
-"""NUPA benchmark package."""

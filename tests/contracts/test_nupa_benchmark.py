@@ -1,25 +1,17 @@
 import json
 from collections import Counter
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 
-from eval.chat_benchmarks.NUPA5K.eval_instruct import NUPA5KBenchmark
-from eval.chat_benchmarks.NUPA5K.panel import (
-    NUPA5K_SIZE,
-    build_nupa5k_identities,
-    load_nupa5k_manifest,
-    load_panel_records,
-)
-from eval.chat_benchmarks.NUPA.data_prep.flatten_hf_dataset import convert_file
-from eval.chat_benchmarks.NUPA.eval_instruct import (
-    BENCHMARK_SIZE,
-    NUPABenchmark,
-    flatten_nupa_tasks,
-    iter_nupa_source_records,
-    split_prompt_answer,
-)
 from eval.contracts.sample_results import sample_metric_fields
+from eval.task import TaskManager
+
+nupa5k = import_module("eval.chat_benchmarks.NUPA5K-Loose.eval_instruct")
+panel = import_module("eval.chat_benchmarks.NUPA5K-Loose.panel")
+data_prep = import_module("eval.chat_benchmarks.NUPA-Loose.data_prep.flatten_hf_dataset")
+nupa = import_module("eval.chat_benchmarks.NUPA-Loose.eval_instruct")
 
 
 class _AnsweringModel:
@@ -52,7 +44,7 @@ def _source_file(path: Path) -> Path:
 def test_source_loader_reproduces_seeded_per_group_sampling(tmp_path):
     source = _source_file(tmp_path / "test.json")
 
-    records = list(iter_nupa_source_records(source, split="test", num_each=2, random_seed=7))
+    records = list(nupa.iter_nupa_source_records(source, split="test", num_each=2, random_seed=7))
 
     assert [(record["digit"], record["answer"]) for record in records] == [
         (3, "2"),
@@ -66,7 +58,7 @@ def test_converter_materializes_the_same_selected_rows(tmp_path):
     source = _source_file(tmp_path / "test.json")
     output = tmp_path / "flattened.jsonl"
 
-    count = convert_file(source, output, split="test", num_each=2, random_seed=7)
+    count = data_prep.convert_file(source, output, split="test", num_each=2, random_seed=7)
 
     records = [json.loads(line) for line in output.read_text().splitlines()]
     assert count == 4
@@ -74,7 +66,7 @@ def test_converter_materializes_the_same_selected_rows(tmp_path):
 
 
 def test_flattening_preserves_metadata_and_uses_short_range_for_digit_21_bug():
-    records = flatten_nupa_tasks(
+    records = nupa.flatten_nupa_tasks(
         {
             "to_float_Fraction_none_Float": {
                 "1": ["Convert the number to float: 1/1 = 1.0"],
@@ -110,11 +102,14 @@ def test_flattening_preserves_metadata_and_uses_short_range_for_digit_21_bug():
 
 def test_split_prompt_answer_rejects_missing_delimiter():
     with pytest.raises(ValueError, match="no answer delimiter"):
-        split_prompt_answer("No answer delimiter")
+        nupa.split_prompt_answer("No answer delimiter")
 
 
-def test_benchmark_honors_limit_and_reports_reconcilable_scores():
-    benchmark = NUPABenchmark(debug=True)
+@pytest.mark.parametrize("task_name", ["NUPA-Loose", "NUPA5K-Loose"])
+def test_benchmark_honors_limit_and_reports_reconcilable_scores(task_name):
+    manager = TaskManager(task_list=[task_name], debug=True)
+    assert not manager.load_failures, manager.load_failures
+    benchmark = manager.get_benchmark(task_name)
     benchmark.set_evaluation_limits(limit=2)
 
     generation = benchmark.generate_responses(_AnsweringModel())
@@ -135,13 +130,13 @@ def test_benchmark_honors_limit_and_reports_reconcilable_scores():
     }
 
 
-def test_benchmark_metadata_describes_the_published_protocol():
-    description = NUPABenchmark().describe("NUPA")
+def test_benchmark_metadata_describes_full_source_sample():
+    description = nupa.NUPALooseBenchmark().describe("NUPA-Loose")
 
     assert description is not None
     assert description.primary_metric == "accuracy"
-    assert description.n_benchmark == BENCHMARK_SIZE
-    assert description.n_attempted == BENCHMARK_SIZE
+    assert description.n_benchmark == nupa.BENCHMARK_SIZE
+    assert description.n_attempted == nupa.BENCHMARK_SIZE
 
 
 def test_stratified_selection_is_stable_unique_and_round_robin(tmp_path):
@@ -164,9 +159,9 @@ def test_stratified_selection_is_stable_unique_and_round_robin(tmp_path):
         )
     )
 
-    selected = build_nupa5k_identities(first, panel_size=6)
+    selected = panel.build_nupa5k_identities(first, panel_size=6)
 
-    assert selected == build_nupa5k_identities(reordered, panel_size=6)
+    assert selected == panel.build_nupa5k_identities(reordered, panel_size=6)
     assert [(identity.task_name, identity.digit) for identity in selected] == [
         ("task_a", 1),
         ("task_a", 2),
@@ -186,7 +181,7 @@ def test_stratified_selection_rejects_a_panel_larger_than_unique_source_records(
     source.write_text(json.dumps({"task": {"1": ["same", "same"]}}))
 
     with pytest.raises(ValueError, match="unique source records"):
-        build_nupa5k_identities(source, panel_size=2)
+        panel.build_nupa5k_identities(source, panel_size=2)
 
 
 def test_panel_loader_follows_manifest_order_and_skips_duplicate_identities(tmp_path):
@@ -201,16 +196,16 @@ def test_panel_loader_follows_manifest_order_and_skips_duplicate_identities(tmp_
             }
         )
     )
-    identities = build_nupa5k_identities(source, panel_size=2)
+    identities = panel.build_nupa5k_identities(source, panel_size=2)
 
-    records = load_panel_records(source, split="test", identities=identities)
+    records = panel.load_panel_records(source, split="test", identities=identities)
 
     assert [record["source_sha256"] for record in records] == [identity.sha256 for identity in identities]
     assert len({record["id"] for record in records}) == 2
 
 
 def test_checked_in_nupa5k_manifest_pins_complete_stratified_panel():
-    manifest = load_nupa5k_manifest()
+    manifest = panel.load_nupa5k_manifest()
     strata_counts = Counter((identity.task_name, identity.digit) for identity in manifest)
     expected_stratum_order = tuple(
         stratum
@@ -219,8 +214,8 @@ def test_checked_in_nupa5k_manifest_pins_complete_stratified_panel():
         if strata_counts[stratum] > round_index
     )
 
-    assert len(manifest) == NUPA5K_SIZE
-    assert len(set(manifest)) == NUPA5K_SIZE
+    assert len(manifest) == panel.NUPA5K_SIZE
+    assert len(set(manifest)) == panel.NUPA5K_SIZE
     assert len({identity.task_name for identity in manifest}) == 44
     assert len(strata_counts) == 2_391
     assert Counter(strata_counts.values()) == {1: 1, 2: 2_171, 3: 219}
@@ -231,8 +226,8 @@ def test_checked_in_nupa5k_manifest_pins_complete_stratified_panel():
 
 
 def test_nupa5k_metadata_describes_fixed_panel():
-    description = NUPA5KBenchmark().describe("NUPA5K")
+    description = nupa5k.NUPA5KLooseBenchmark().describe("NUPA5K-Loose")
 
     assert description is not None
-    assert description.n_benchmark == NUPA5K_SIZE
-    assert description.n_attempted == NUPA5K_SIZE
+    assert description.n_benchmark == panel.NUPA5K_SIZE
+    assert description.n_attempted == panel.NUPA5K_SIZE

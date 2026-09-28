@@ -1,7 +1,8 @@
-"""Clean-room implementation of the official NUPA text metrics.
+"""NUPA-Loose answer extraction and representation-sensitive text metrics.
 
-The implementation reproduces the observable behavior of Number Cookbook's
-text evaluator without copying its GPL-licensed source.
+Numeric comparison follows Number Cookbook's text evaluator. Permissive final
+answer extraction also accepts reasoning responses; see README.md for the
+protocol differences. This implementation does not copy GPL-licensed source.
 """
 
 from __future__ import annotations
@@ -91,7 +92,7 @@ def _normalize_answer(answer: str) -> str:
 
 
 def score_prediction(prediction: str | None, gold: str, answer_format: str) -> ExampleScore:
-    """Score a completion with the official text-evaluator semantics."""
+    """Score a completion with permissive extraction and exact numeric components."""
     extracted = extract_answer(prediction, answer_format)
     gold_parts = _digit_parts(gold, answer_format)
     prediction_parts = _digit_parts(extracted or "", answer_format)
