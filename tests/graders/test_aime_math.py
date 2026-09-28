@@ -2,11 +2,7 @@ import pytest
 
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.AIME25.eval_instruct import AIME25Benchmark
-from eval.completion_response import (
-    CompletionContentPolicy,
-    CompletionResponse,
-    CompletionText,
-)
+from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText
 
 
 @pytest.mark.parametrize(
@@ -60,3 +56,22 @@ def test_aime_reasoning_only_response_has_no_scoreable_answer(benchmark_type):
     )
 
     assert benchmark_type.extract_answer(None, output) == ""
+
+
+@pytest.mark.parametrize("benchmark_type", [AIME24Benchmark, AIME25Benchmark])
+def test_aime_completed_reasoning_only_response_is_scoreable(benchmark_type):
+    response = CompletionResponse(
+        content=None,
+        reasoning_content=r"I finished the solution. \boxed{25}",
+        finish_reason="stop",
+        usage=None,
+        provider_metadata={},
+        raw_choice={},
+    )
+    output = CompletionText(
+        response.normalized_content(CompletionContentPolicy.COMBINE),
+        response,
+        CompletionContentPolicy.COMBINE,
+    )
+
+    assert benchmark_type.extract_answer(None, output) == "25"

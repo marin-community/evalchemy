@@ -225,7 +225,7 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
     validate_result_document(result)
 
 
-def test_custom_task_with_majority_missing_final_content_has_no_canonical_score():
+def test_custom_task_with_majority_reasoning_only_content_keeps_score_and_diagnostics():
     class _MalformedResponsesBenchmark(_Benchmark):
         def generate_responses(self, model):
             record_completion_responses(
@@ -237,14 +237,14 @@ def test_custom_task_with_majority_missing_final_content_has_no_canonical_score(
     result = _custom_evaluate(_MalformedResponsesBenchmark({}, scored_result={"accuracy": 1.0 / 3.0}))
 
     outcome = result["task_outcomes"]["contract_task"]
-    assert outcome["status"] is TaskStatus.FAILED
-    assert outcome["failure"]["category"] is FailureCategory.MALFORMED_MODEL_RESPONSE
+    assert outcome["status"] is TaskStatus.SUCCEEDED
+    assert outcome["failure"] is None
     assert outcome["generated_count"] == 3
     assert outcome["scored_count"] == 3
     assert outcome["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 2}
     assert outcome["completion_response_summary"] == {"reasoning_only": 2, "final": 1}
-    assert result["results"] == {}
-    assert result["canonical_results"] == {}
+    assert result["results"]["contract_task"]["accuracy"] == 1.0 / 3.0
+    assert result["canonical_results"]["contract_task"]["accuracy"] == 1.0 / 3.0
     validate_result_document(result)
 
 
@@ -395,7 +395,7 @@ def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatc
     validate_result_document(result)
 
 
-def test_lm_eval_task_with_half_missing_final_content_has_no_canonical_score(monkeypatch):
+def test_lm_eval_task_with_half_reasoning_only_content_keeps_score_and_diagnostics(monkeypatch):
     def evaluate_responses(*_args, **_kwargs):
         record_completion_responses(
             Counter({CompletionClassification.REASONING_ONLY: 1, CompletionClassification.FINAL: 1})
@@ -408,9 +408,29 @@ def test_lm_eval_task_with_half_missing_final_content_has_no_canonical_score(mon
     result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
 
     outcome = result["task_outcomes"]["arc_easy"]
+    assert outcome["status"] is TaskStatus.SUCCEEDED
+    assert outcome["failure"] is None
+    assert outcome["completion_response_summary"] == {"reasoning_only": 1, "final": 1}
+    assert result["results"]["arc_easy"]["acc,none"] == 0.5
+    validate_result_document(result)
+
+
+def test_lm_eval_task_with_half_empty_content_has_no_score(monkeypatch):
+    def evaluate_responses(*_args, **_kwargs):
+        record_completion_responses(
+            Counter({CompletionClassification.EMPTY: 1, CompletionClassification.FINAL: 1})
+        )
+        return {
+            "results": {"arc_easy": {"acc,none": 0.5}},
+            "n-samples": {"arc_easy": {"original": 2, "effective": 2}},
+        }
+
+    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
+
+    outcome = result["task_outcomes"]["arc_easy"]
     assert outcome["status"] is TaskStatus.FAILED
     assert outcome["failure"]["category"] is FailureCategory.MALFORMED_MODEL_RESPONSE
-    assert outcome["completion_response_summary"] == {"reasoning_only": 1, "final": 1}
+    assert outcome["completion_response_summary"] == {"empty": 1, "final": 1}
     assert result["results"] == {}
     assert result["canonical_results"] == {}
     validate_result_document(result)

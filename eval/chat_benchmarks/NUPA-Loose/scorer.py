@@ -1,7 +1,8 @@
-"""Clean-room implementation of the official NUPA text metrics.
+"""NUPA-Loose answer extraction and representation-sensitive text metrics.
 
-The implementation reproduces the observable behavior of Number Cookbook's
-text evaluator without copying its GPL-licensed source.
+Numeric comparison follows Number Cookbook's text evaluator. Permissive final
+answer extraction also accepts reasoning responses; see README.md for the
+protocol differences. This implementation does not copy GPL-licensed source.
 """
 
 from __future__ import annotations
@@ -16,6 +17,13 @@ FRACTION = "Fraction"
 SCIENTIFIC = "ScientificNotation"
 
 _ANSWER_MARKER_RE = re.compile(r"(?i)^(?:the\s+answer\s+is|so\s+the\s+answer\s+is)\s+")
+_BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
+_INLINE_MATH_RE = re.compile(r"\\\(([^()]*)\\\)")
+_EQUATION_TAIL_RE = re.compile(r"=\s*([^\s=]+)\s*$")
+_ANSWER_TAIL_RE = re.compile(
+    r"(?i)(?:^|\n)\s*(?:(?:so|therefore|thus)[, ]+)?(?:the\s+)?(?:final\s+)?"
+    r"(?:answer|result|output)\s*(?:is\s*)?[:=]?\s*([^\s]+)\s*\Z"
+)
 _ANSWER_PATTERNS = {
     INTEGER: re.compile(r"^\d+"),
     FLOAT: re.compile(r"^\d+\.\d+"),
@@ -40,21 +48,51 @@ class ExampleScore:
 
 
 def extract_answer(text: str | None, answer_format: str) -> str | None:
-    """Extract an answer at the start of a direct-answer completion."""
+    """Extract a direct or clearly marked final numeric answer."""
     if answer_format not in _ANSWER_PATTERNS:
         raise ValueError(f"Unsupported NUPA answer format: {answer_format}")
     if text is None:
         return None
-    stripped = text.strip()
-    stripped = _ANSWER_MARKER_RE.sub("", stripped, count=1)
-    match = _ANSWER_PATTERNS[answer_format].match(stripped)
-    if match is None:
+    if "<|end_think|>" in text:
+        text = text.rsplit("<|end_think|>", 1)[1]
+    if "<|start_think|>" in text:
         return None
-    return match.group().replace("+", "").replace("-", "").replace("E", "e")
+    stripped = text.strip()
+    tail = stripped.rstrip(" \t\r\n.,;:!?$")
+
+    for pattern in (_BOXED_RE, _INLINE_MATH_RE):
+        match = list(pattern.finditer(tail))
+        if match and not tail[match[-1].end() :].strip(" \t\r\n.,;:!?$\\)"):
+            answer = _full_answer(match[-1].group(1).strip(), answer_format)
+            if answer is not None:
+                return answer
+
+    for pattern in (_EQUATION_TAIL_RE, _ANSWER_TAIL_RE):
+        match = pattern.search(tail)
+        if match is not None:
+            answer = _full_answer(match.group(1), answer_format)
+            if answer is not None:
+                return answer
+
+    direct = _ANSWER_MARKER_RE.sub("", stripped, count=1)
+    match = _ANSWER_PATTERNS[answer_format].match(direct)
+    if match is None:
+        return _full_answer(tail.splitlines()[-1].strip() if tail else "", answer_format)
+    return _normalize_answer(match.group())
+
+
+def _full_answer(candidate: str, answer_format: str) -> str | None:
+    if _ANSWER_PATTERNS[answer_format].fullmatch(candidate) is None:
+        return None
+    return _normalize_answer(candidate)
+
+
+def _normalize_answer(answer: str) -> str:
+    return answer.replace("+", "").replace("-", "").replace("E", "e")
 
 
 def score_prediction(prediction: str | None, gold: str, answer_format: str) -> ExampleScore:
-    """Score a completion with the official text-evaluator semantics."""
+    """Score a completion with permissive extraction and exact numeric components."""
     extracted = extract_answer(prediction, answer_format)
     gold_parts = _digit_parts(gold, answer_format)
     prediction_parts = _digit_parts(extracted or "", answer_format)

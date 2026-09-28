@@ -14,10 +14,10 @@ but the batch-abort itself remains.)
 
 The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
 prevents one exhausted generation request from cancelling its siblings. It supplies
-an empty response with a classified failure, then lets scoring finish. Retries share
-the request timeout as one wall-clock deadline instead of resetting that window for
-each attempt. Loglikelihood requests still propagate errors because an empty logprob
-cannot be scored.
+an empty response with a classified failure, then lets scoring finish. Evalchemy's
+local endpoint adapters retry transport failures within a separate wall-clock budget;
+other API models retain the request-timeout deadline. Loglikelihood requests still
+propagate errors because an empty logprob cannot be scored.
 
 Import for side effect (idempotent):
 
@@ -30,9 +30,12 @@ Import for side effect (idempotent):
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 import logging
+import random
 import re
+from time import monotonic
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import contextmanager
@@ -67,7 +70,10 @@ _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _ENCODED_MAPPING_PREFIX = "base64:"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
+_INVALID_RESPONSE_FRACTION = 0.5
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
+_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 502, 503, 504})
+_MAX_TRANSPORT_BACKOFF = 10
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
     FailureCategory.AGENT_TIMEOUT,
     FailureCategory.MODEL_TRANSPORT,
@@ -145,7 +151,13 @@ def completion_response_quality_invalid(classifications: Counter[CompletionClass
     """Return whether a generation run has too many unusable chat completions."""
     total = sum(classifications.values())
     missing_final = sum(classifications[classification] for classification in MISSING_FINAL_CLASSIFICATIONS)
-    return total > 0 and missing_final / total >= 0.5
+    return total > 0 and missing_final / total >= _INVALID_RESPONSE_FRACTION
+
+
+def completion_response_text_unavailable(classifications: Counter[CompletionClassification]) -> bool:
+    """Return whether at least half of responses contain no scorer text."""
+    total = sum(classifications.values())
+    return total > 0 and classifications[CompletionClassification.EMPTY] / total >= _INVALID_RESPONSE_FRACTION
 
 
 def openai_model_requires_fixed_generation(model: object) -> bool:
@@ -184,6 +196,38 @@ def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict 
     return dict(parsed)
 
 
+def _retryable_transport_error(error: Exception) -> bool:
+    from aiohttp import ClientConnectionError, ClientPayloadError, ClientResponseError
+
+    if isinstance(error, ClientResponseError):
+        return error.status in _RETRYABLE_HTTP_STATUSES
+    return isinstance(error, (ClientConnectionError, ClientPayloadError, ConnectionError, TimeoutError))
+
+
+async def _transport_retry_sleep(delay: float) -> None:
+    await asyncio.sleep(delay)
+
+
+async def _retry_transport_call(call, *, budget: float):
+    """Retry one request within a wall-clock budget while preserving attempt timeouts."""
+    deadline = monotonic() + budget
+    backoff = 1.0
+    async with asyncio.timeout(budget):
+        while True:
+            try:
+                return await call()
+            except Exception as exc:
+                if not _retryable_transport_error(exc):
+                    raise
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise
+                pause = min(random.uniform(0, backoff), remaining)
+                logger.info("Retrying transport failure in %.1f seconds: %r", pause, exc)
+                await _transport_retry_sleep(pause)
+                backoff = min(backoff * 2, _MAX_TRANSPORT_BACKOFF)
+
+
 def apply() -> bool:
     """Patch ``TemplateAPI.get_batched_requests`` to be resilient. Idempotent.
 
@@ -192,13 +236,13 @@ def apply() -> bool:
     unpatched upstream behavior is left untouched and a warning is logged.
     """
     try:
-        import asyncio
-
-        from aiohttp import ClientSession, ClientTimeout, TCPConnector
+        from aiohttp import ClientResponseError, ClientSession, ClientTimeout, TCPConnector
         from lm_eval.models import api_models as _api
         from lm_eval.models.utils import chunks
         from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
         from tqdm.asyncio import tqdm_asyncio
+
+        from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("robust_api: could not import lm-eval async deps (%r); patch skipped.", exc)
         return False
@@ -230,38 +274,63 @@ def apply() -> bool:
         rather than propagating out of ``gather`` and aborting the batch.
         """
         ctxlens = ctxlens if ctxlens else [None] * len(requests)
-        conn = TCPConnector(limit=self._concurrent, ssl=self.verify_certificate)
-        sem = asyncio.Semaphore(self._concurrent)
+        local_endpoint = isinstance(self, (RetryingLocalChatCompletions, RetryingLocalCompletions))
+        concurrent = self.endpoint_concurrency if local_endpoint else self._concurrent
+        retry_budget = self.transport_retry_budget if local_endpoint else None
+        conn = TCPConnector(limit=concurrent, ssl=self.verify_certificate)
+        sem = asyncio.Semaphore(concurrent)
         async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
-            retry_ = retry(
-                retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
-                stop=stop_after_attempt(self.max_retries),
-                wait=wait_exponential(multiplier=0.5, min=1, max=10),
-                reraise=True,
-                before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
-            )(self.amodel_call)
+            if retry_budget is None:
+                retry_ = retry(
+                    retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
+                    stop=stop_after_attempt(self.max_retries),
+                    wait=wait_exponential(multiplier=0.5, min=1, max=10),
+                    reraise=True,
+                    before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
+                )(self.amodel_call)
 
             async def _guarded(message, cache_key, ctxlen, call_kwargs):
                 request_error = None
                 async with sem:
                     try:
+                        if retry_budget is not None:
+
+                            async def call():
+                                async with asyncio.timeout(self.timeout):
+                                    return await self.amodel_call(
+                                        session=session,
+                                        sem=_ADMITTED_SEMAPHORE,
+                                        messages=message,
+                                        cache_keys=cache_key,
+                                        generate=generate,
+                                        ctxlens=ctxlen,
+                                        **call_kwargs,
+                                    )
+
+                            return await _retry_transport_call(call, budget=retry_budget)
                         async with asyncio.timeout(self.timeout):
-                            try:
-                                return await retry_(
-                                    session=session,
-                                    sem=_ADMITTED_SEMAPHORE,
-                                    messages=message,
-                                    cache_keys=cache_key,
-                                    generate=generate,
-                                    ctxlens=ctxlen,
-                                    **call_kwargs,
-                                )
-                            except Exception as exc:  # noqa: BLE001 - distinguish retry exhaustion from the deadline
-                                request_error = exc
-                    except TimeoutError as exc:
+                            return await retry_(
+                                session=session,
+                                sem=_ADMITTED_SEMAPHORE,
+                                messages=message,
+                                cache_keys=cache_key,
+                                generate=generate,
+                                ctxlens=ctxlen,
+                                **call_kwargs,
+                            )
+                    except Exception as exc:  # noqa: BLE001 - classify the failed generation
                         request_error = exc
 
                 assert request_error is not None
+                if (
+                    retry_budget is not None
+                    and isinstance(request_error, ClientResponseError)
+                    and 400 <= request_error.status < 500
+                    and request_error.status not in _RETRYABLE_HTTP_STATUSES
+                ):
+                    # A permanent request error applies to the whole evaluation;
+                    # wait for sibling requests before closing their shared session.
+                    return _DeferredRequestError(request_error)
                 category = (
                     FailureCategory.AGENT_TIMEOUT
                     if isinstance(request_error, TimeoutError)

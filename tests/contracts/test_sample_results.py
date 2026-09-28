@@ -393,7 +393,7 @@ GRADING_CASES: dict[str, GradingCase] = {
     "MMLUPro": GradingCase(
         _examples_case(
             "MMLUPro",
-            lambda _benchmark: [{"question": "q", "category": "math", "pred": "A", "answer": "A"}],
+            lambda _benchmark: [{"question": "q", "category": "math", "model_answer": "A", "answer": "A"}],
         ),
         ("accuracy",),
     ),
@@ -404,9 +404,9 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy", "prefix_hit"),
     ),
-    "NUPA": GradingCase(
+    "NUPA-Loose": GradingCase(
         _examples_case(
-            "NUPA",
+            "NUPA-Loose",
             lambda _benchmark: [
                 {
                     "task_name": "max_Float_Float_Float",
@@ -419,9 +419,9 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("exact_match", "digit_match", "dlength", "format_valid_rate", "no_answer_rate"),
     ),
-    "NUPA5K": GradingCase(
+    "NUPA5K-Loose": GradingCase(
         _examples_case(
-            "NUPA5K",
+            "NUPA5K-Loose",
             lambda _benchmark: [
                 {
                     "task_name": "max_Float_Float_Float",
@@ -512,6 +512,53 @@ def test_ifbench_sample_contains_per_instruction_results(monkeypatch, tmp_path):
     assert [record["strict_instruction_accuracy"] for record in records] == [1.0, 0.0]
     assert [record["resps"] for record in records] == [[["NoWhitespace"]], [["two words"]]]
     assert all("strict_instruction_pass" not in record["doc"] for record in records)
+
+
+@pytest.mark.parametrize("task_name", ["ifeval", "ifeval_ca", "ifeval_es", "leaderboard_ifeval"])
+def test_ifeval_native_instruction_metrics_preserve_flattened_accuracy(task_name):
+    samples = [
+        {
+            "metrics": [
+                "prompt_level_strict_acc",
+                "prompt_level_loose_acc",
+                "inst_level_strict_acc",
+                "inst_level_loose_acc",
+            ],
+            "prompt_level_strict_acc": False,
+            "prompt_level_loose_acc": True,
+            "inst_level_strict_acc": [True, False, False],
+            "inst_level_loose_acc": [True, True, True],
+        },
+        {
+            "metrics": [
+                "prompt_level_strict_acc",
+                "prompt_level_loose_acc",
+                "inst_level_strict_acc",
+                "inst_level_loose_acc",
+            ],
+            "prompt_level_strict_acc": True,
+            "prompt_level_loose_acc": True,
+            "inst_level_strict_acc": [True],
+            "inst_level_loose_acc": [True],
+        },
+    ]
+
+    records = canonicalize_samples(task_name, samples)
+
+    assert [record["inst_level_strict_acc"] for record in records] == [1 / 3, 1.0]
+    assert [record["inst_level_loose_acc"] for record in records] == [1.0, 1.0]
+    assert [record["strict_instruction_pass"] for record in records] == [[True, False, False], [True]]
+    assert [record["loose_instruction_pass"] for record in records] == [[True, True, True], [True]]
+    assert (
+        sum(map(sum, (record["strict_instruction_pass"] for record in records)))
+        / sum(len(record["strict_instruction_pass"]) for record in records)
+        == 0.5
+    )
+
+
+def test_other_tasks_reject_list_valued_metrics():
+    with pytest.raises(SampleMetricsError, match="must be a finite number"):
+        canonicalize_samples("other_task", [{"metrics": ["accuracy"], "accuracy": [True, False]}])
 
 
 def test_repeated_accuracy_serializes_one_sample_per_trial():

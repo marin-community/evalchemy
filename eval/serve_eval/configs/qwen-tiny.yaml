@@ -27,7 +27,7 @@ extra_model_args:
   timeout: 120
   # A preempted Iris worker can take several minutes to replace and re-register.
   # Keep the in-flight request alive across that recovery window.
-  max_retries: 100
+  transport_retry_budget: 900
 
 # marin-serve provider
 cluster: marin
