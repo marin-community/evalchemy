@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from eval.contracts.sample_manifest import SampleRequest
 from eval.contracts.sample_results import sample_metric_fields
+from eval.sample_logging import canonicalize_samples
 from eval.task import TaskManager
 
 nupa5k = import_module("eval.chat_benchmarks.NUPA5K-Loose.eval_instruct")
@@ -231,3 +233,19 @@ def test_nupa5k_metadata_describes_fixed_panel():
     assert description is not None
     assert description.n_benchmark == panel.NUPA5K_SIZE
     assert description.n_attempted == panel.NUPA5K_SIZE
+
+
+def test_nupa5k_registered_name_serializes_planned_samples():
+    manager = TaskManager(task_list=["NUPA5K-Loose"])
+    benchmark = manager.get_benchmark("NUPA5K-Loose")
+
+    assert benchmark is not None
+    entries = benchmark.sample_manifest.plan_batch([SampleRequest(source_id="example", ordinal=0)])
+    benchmark.sample_manifest.mark_generated(entries, ["answer"])
+    records = canonicalize_samples(
+        "NUPA5K-Loose",
+        [{"metrics": ["accuracy"], "accuracy": 1.0}],
+        benchmark.sample_manifest,
+    )
+
+    assert records[0]["sample_id"] == entries[0].sample_id
