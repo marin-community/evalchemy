@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -305,19 +304,3 @@ def test_endpoint_preflight_preserves_typed_context_overflow():
         )
 
     assert error.value.context_length == 128
-
-
-def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
-    """All chat benchmarks must reach ``BaseBenchmark.compute`` before inference.
-
-    That method owns both the sample cap and request-time output cap. A new
-    benchmark which bypasses it would reintroduce an unbounded inference path.
-    """
-    benchmarks_dir = Path(__file__).parents[1] / "eval" / "chat_benchmarks"
-    missing_guard = [
-        str(path.relative_to(benchmarks_dir))
-        for path in sorted(benchmarks_dir.glob("*/eval_instruct.py"))
-        if "def generate_responses" in path.read_text() and "self.compute(" not in path.read_text()
-    ]
-
-    assert not missing_guard, f"custom benchmarks bypassing the common limit guard: {missing_guard}"

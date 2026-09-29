@@ -59,7 +59,10 @@ def test_task_routing_rejects_unknown_tasks_before_evaluation():
 
 
 def test_cli_rejects_unknown_tasks_before_model_initialization(monkeypatch):
-    monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: SimpleNamespace(tasks={}))
+    monkeypatch.setattr(
+        "eval.eval.InstructTaskManager",
+        lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}),
+    )
     monkeypatch.setattr("eval.eval.PretrainTaskManager", lambda *_args, **_kwargs: SimpleNamespace(all_tasks={}))
 
     def fail_if_model_initialization_is_reached(*_args, **_kwargs):
@@ -73,6 +76,7 @@ def test_cli_rejects_unknown_tasks_before_model_initialization(monkeypatch):
 def test_cli_reports_task_construction_failure_before_model_initialization(monkeypatch):
     custom_manager = SimpleNamespace(
         tasks={},
+        benchmark_instances={},
         load_failures={"Broken": RuntimeError("broken import")},
     )
     monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: custom_manager)

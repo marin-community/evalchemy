@@ -111,7 +111,7 @@ def test_nupa5k_spends_the_remaining_window_on_the_response():
     lengths = load_prompt_lengths()
 
     budget = resolve_task_max_tokens(
-        "NUPA5K",
+        "NUPA5K-Loose",
         context_length=73_664,
         requested_max_tokens=None,
         prompt_lengths=lengths,
