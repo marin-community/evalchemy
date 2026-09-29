@@ -5,6 +5,7 @@ import json
 from collections import Counter
 
 import pytest
+import requests
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
 
 from eval import robust_api  # noqa: F401 - installs the lm-eval adapter patch
@@ -17,7 +18,7 @@ from eval.completion_response import (
 )
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
-from eval.robust_api import capture_endpoint_failures
+from eval.robust_api import TRANSPORT_FAILURE_MARKER, capture_endpoint_failures
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
 
@@ -466,3 +467,75 @@ def test_reasoning_responses_are_scored_and_audited_in_every_task_path(
     assert record["completion_responses"][0][0]["raw_choice"] == choice
     assert record["completion_responses"][0][0]["usage"] == {"completion_tokens": 4}
     assert record["completion_responses"][0][0]["content_policy"] == policy
+
+
+def _sync_adapter(max_retries: int = 2) -> LocalCompletionsAPI:
+    return LocalCompletionsAPI(
+        model="stub",
+        base_url="http://127.0.0.1:1/v1/completions",
+        tokenizer_backend="none",
+        tokenized_requests=False,
+        max_retries=max_retries,
+    )
+
+
+def _failing_post(error: Exception):
+    """Build a ``requests.post`` stub whose endpoint always fails, plus its attempt log."""
+    attempts = []
+
+    def post(*_args, **_kwargs):
+        attempts.append(1)
+        raise error
+
+    return attempts, post
+
+
+def test_sync_transport_exhaustion_yields_classified_empty_generations(monkeypatch):
+    attempts, post = _failing_post(requests.exceptions.HTTPError("500 Server Error"))
+    monkeypatch.setattr("lm_eval.models.api_models.requests.post", post)
+
+    with capture_endpoint_failures() as capture:
+        payload = _sync_adapter(max_retries=2).model_call(
+            messages=["Question 1", "Question 2"], generate=True, gen_kwargs={}
+        )
+
+    assert len(attempts) == 2  # the upstream attempt-count retry policy still runs
+    assert payload[TRANSPORT_FAILURE_MARKER] == "model_transport"
+    assert [choice["text"].failure_category for choice in payload["choices"]] == [
+        "model_transport",
+        "model_transport",
+    ]
+    assert capture.counts == {FailureCategory.MODEL_TRANSPORT: 2}
+
+
+def _transport_failure_payload(prompts: int = 2) -> dict:
+    """The synthetic payload the sync guard returns for an exhausted request."""
+    return {
+        TRANSPORT_FAILURE_MARKER: "model_transport",
+        "choices": [{"index": index, "text": FailedGeneration("model_transport")} for index in range(prompts)],
+    }
+
+
+def test_sync_transport_exhaustion_parses_to_empty_scorer_text():
+    generated = LocalCompletionsAPI.parse_generations(_transport_failure_payload())
+
+    assert [text.failure_category for text in generated] == ["model_transport", "model_transport"]
+    assert [str(text) for text in generated] == ["", ""]
+
+
+def test_chat_parse_passes_transport_failure_marker_through():
+    with capture_endpoint_failures() as capture:
+        generated = _adapter().parse_generations([_transport_failure_payload()])
+
+    # The marker path must not double-count the failures as malformed responses.
+    assert capture.counts == {}
+    assert [text.failure_category for text in generated] == ["model_transport", "model_transport"]
+
+
+def test_sync_loglikelihood_keeps_upstream_fail_fast(monkeypatch):
+    attempts, post = _failing_post(requests.exceptions.HTTPError("500 Server Error"))
+    monkeypatch.setattr("lm_eval.models.api_models.requests.post", post)
+
+    with pytest.raises(requests.exceptions.HTTPError):
+        _sync_adapter().model_call(messages=["Question 1"], generate=False)
+    assert len(attempts) == 1

@@ -30,12 +30,13 @@ Import for side effect (idempotent):
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import random
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sized
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -64,15 +65,18 @@ _PATCH_FLAG = "_marin_resilient_batch_patched"
 _ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
+_SYNC_GUARD_PATCH_FLAG = "_marin_resilient_sync_call_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _CONTEXT_OUTPUT_CAP_KWARG = "_evalchemy_context_output_cap"
+_ENCODED_MAPPING_PREFIX = "base64:"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _INVALID_RESPONSE_FRACTION = 0.5
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
 _RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 502, 503, 504})
 _MAX_TRANSPORT_BACKOFF = 10
+TRANSPORT_FAILURE_MARKER = "_evalchemy_transport_failure"
 ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
     FailureCategory.AGENT_TIMEOUT,
     FailureCategory.MODEL_TRANSPORT,
@@ -187,6 +191,8 @@ def parse_generation_overrides(value: str | dict | None) -> dict:
 def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict | None:
     if value is None:
         return None
+    if isinstance(value, str) and value.startswith(_ENCODED_MAPPING_PREFIX):
+        value = base64.urlsafe_b64decode(value.removeprefix(_ENCODED_MAPPING_PREFIX)).decode("utf-8")
     parsed = json.loads(value) if isinstance(value, str) else value
     if not isinstance(parsed, Mapping):
         raise ValueError(f"{name} must be a JSON object")
@@ -225,6 +231,55 @@ async def _retry_transport_call(call, *, budget: float):
                 backoff = min(backoff * 2, _MAX_TRANSPORT_BACKOFF)
 
 
+def _upstream_attempt_retry(max_retries: int):
+    """lm-eval's attempt-count retry policy, shared by the async and sync guards.
+
+    Imported lazily like the ``apply_*`` patches because this module must import in
+    a dependency-free install (the e2e harness); where it runs, importing lm-eval's
+    api models has already guaranteed tenacity.
+    """
+    from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
+
+    return retry(
+        retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
+        stop=stop_after_attempt(max_retries),
+        wait=wait_exponential(multiplier=0.5, min=1, max=10),
+        reraise=True,
+        before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
+    )
+
+
+def _exhausted_request_category(error: BaseException) -> FailureCategory:
+    """Classify one request whose transport retries were exhausted."""
+    if isinstance(error, TimeoutError):
+        return FailureCategory.AGENT_TIMEOUT
+    return FailureCategory.MODEL_TRANSPORT
+
+
+def _exhausted_prompt_count(messages) -> int:
+    """Count the prompts a failed request carried; non-sized payloads count as one."""
+    return len(messages) if isinstance(messages, Sized) else 1
+
+
+def _record_exhausted_request(label: str, category: FailureCategory, count: int, error: BaseException) -> None:
+    record_endpoint_failure(category, count)
+    logger.error(
+        "%s ended as %s; recording an empty generation for %d prompt(s). Cause: %r",
+        label,
+        category.value,
+        count,
+        error,
+    )
+
+
+def _empty_generation_payload(category: FailureCategory, count: int) -> dict:
+    """Synthetic wire payload that ``parse_generations`` turns into classified empty text."""
+    return {
+        TRANSPORT_FAILURE_MARKER: category.value,
+        "choices": [{"index": index, "text": FailedGeneration(category.value)} for index in range(count)],
+    }
+
+
 def apply() -> bool:
     """Patch ``TemplateAPI.get_batched_requests`` to be resilient. Idempotent.
 
@@ -236,7 +291,6 @@ def apply() -> bool:
         from aiohttp import ClientResponseError, ClientSession, ClientTimeout, TCPConnector
         from lm_eval.models import api_models as _api
         from lm_eval.models.utils import chunks
-        from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
         from tqdm.asyncio import tqdm_asyncio
 
         from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
@@ -279,13 +333,7 @@ def apply() -> bool:
         sem = asyncio.Semaphore(concurrent)
         async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
             if retry_budget is None:
-                retry_ = retry(
-                    retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
-                    stop=stop_after_attempt(self.max_retries),
-                    wait=wait_exponential(multiplier=0.5, min=1, max=10),
-                    reraise=True,
-                    before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
-                )(self.amodel_call)
+                retry_ = _upstream_attempt_retry(self.max_retries)(self.amodel_call)
 
             async def _guarded(message, cache_key, ctxlen, call_kwargs):
                 request_error = None
@@ -331,24 +379,14 @@ def apply() -> bool:
                     # A permanent request error applies to the whole evaluation;
                     # wait for sibling requests before closing their shared session.
                     return _DeferredRequestError(request_error)
-                category = (
-                    FailureCategory.AGENT_TIMEOUT
-                    if isinstance(request_error, TimeoutError)
-                    else FailureCategory.MODEL_TRANSPORT
-                )
+                category = _exhausted_request_category(request_error)
                 if not generate:
                     # Keep the shared session alive until sibling requests settle.
                     # Raising here lets tqdm's gather exit without awaiting them;
                     # the session context then closes beneath their retries.
                     return _DeferredRequestError(request_error)
-                n = len(message) if hasattr(message, "__len__") else 1
-                record_endpoint_failure(category, n)
-                logger.error(
-                    "Request ended as %s; recording an empty generation for %d prompt(s). Cause: %r",
-                    category.value,
-                    n,
-                    request_error,
-                )
+                n = _exhausted_prompt_count(message)
+                _record_exhausted_request("Request", category, n, request_error)
                 return [FailedGeneration(category.value) for _ in range(n)]
 
             tasks = []
@@ -409,6 +447,56 @@ def apply() -> bool:
     template_api.get_batched_requests = get_batched_requests
     setattr(template_api, _PATCH_FLAG, True)
     logger.info("robust_api: patched TemplateAPI.get_batched_requests (failed requests yield classified empty text).")
+    return True
+
+
+def apply_sync_generation_guard() -> bool:
+    """Patch ``TemplateAPI.model_call`` so the sync generate route cannot abort a batch.
+
+    ``TemplateAPI.generate_until`` selects a synchronous ``requests``-based path at
+    ``_concurrent <= 1`` (the lm-eval default), which ``get_batched_requests`` never
+    sees: the evalchemy remap only dodges it for the two ``local-*`` model names, so
+    other ``TemplateAPI`` users still abort the whole task when ONE request exhausts
+    its retries. The guard mirrors the async one -- upstream attempt-count retries,
+    then a classified empty generation per prompt. Loglikelihood (``generate=False``)
+    keeps upstream fail-fast: an empty logprob cannot be scored.
+    """
+    try:
+        from lm_eval.models import api_models as _api
+    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
+        logger.warning("robust_api: could not import lm-eval sync deps (%r); sync guard skipped.", exc)
+        return False
+
+    template_api = getattr(_api, "TemplateAPI", None)
+    if template_api is None or not hasattr(template_api, "model_call"):
+        logger.warning(
+            "robust_api: lm_eval.models.api_models.TemplateAPI.model_call not found "
+            "(lm-eval drifted from v0.4.12?); leaving the sync path unpatched."
+        )
+        return False
+
+    if getattr(template_api, _SYNC_GUARD_PATCH_FLAG, False):
+        return True
+
+    original_model_call = template_api.model_call
+
+    def model_call(self, messages, *, generate: bool = True, gen_kwargs=None, **kwargs):
+        if not generate:
+            return original_model_call(self, messages, generate=generate, gen_kwargs=gen_kwargs, **kwargs)
+        retry_ = _upstream_attempt_retry(self.max_retries)(
+            lambda *args, **call_kwargs: original_model_call(self, *args, generate=True, **call_kwargs)
+        )
+        try:
+            return retry_(messages, gen_kwargs=gen_kwargs, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - one failed request must not nuke the batch
+            category = _exhausted_request_category(exc)
+            n = _exhausted_prompt_count(messages)
+            _record_exhausted_request("Sync request", category, n, exc)
+            return _empty_generation_payload(category, n)
+
+    template_api.model_call = model_call
+    setattr(template_api, _SYNC_GUARD_PATCH_FLAG, True)
+    logger.info("robust_api: patched TemplateAPI.model_call (exhausted sync retries yield classified empty text).")
     return True
 
 
@@ -503,6 +591,13 @@ def apply_completion_normalization() -> bool:
         response_start = len(self.completion_responses)
         generated = []
         for output in outputs:
+            marker = output.get(TRANSPORT_FAILURE_MARKER) if isinstance(output, Mapping) else None
+            if marker:
+                # A sync request that exhausted its retries (apply_sync_generation_guard)
+                # already recorded the endpoint failure; pass the classified empty
+                # generations through instead of scoring them as malformed responses.
+                generated.extend(FailedGeneration(marker) for _ in output["choices"])
+                continue
             try:
                 choices = output["choices"]
                 parsed = [None] * len(choices)
@@ -759,6 +854,7 @@ def apply_openai_payload_controls() -> bool:
 
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
 _APPLIED = apply()
+_SYNC_GENERATION_GUARD_APPLIED = apply_sync_generation_guard()
 _ROLLING_LOGLIKELIHOOD_BATCHING_APPLIED = apply_rolling_loglikelihood_batching()
 _COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
 _OPENAI_PAYLOAD_CONTROLS_APPLIED = apply_openai_payload_controls()
