@@ -743,6 +743,10 @@ def apply_openai_payload_controls() -> bool:
         payload[token_key] = min(payload.get(token_key, context_output_cap), context_output_cap)
         return payload
 
+    def _finalize_generation_payload(self, payload, context_output_cap):
+        payload = _caller_generation_payload(self, payload)
+        return _apply_context_output_cap(payload, context_output_cap)
+
     def _generation_kwargs_and_context_cap(gen_kwargs):
         request_kwargs = dict(gen_kwargs or {})
         return request_kwargs, request_kwargs.pop(_CONTEXT_OUTPUT_CAP_KWARG, None)
@@ -773,8 +777,7 @@ def apply_openai_payload_controls() -> bool:
         chat_template_kwargs = getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None)
         if chat_template_kwargs is not None:
             payload["chat_template_kwargs"] = chat_template_kwargs
-        payload = _caller_generation_payload(self, payload)
-        return _apply_context_output_cap(payload, context_output_cap)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     def _create_completions_payload(
         self,
@@ -796,8 +799,7 @@ def apply_openai_payload_controls() -> bool:
                 eos=eos,
                 **kwargs,
             )
-            payload = _caller_generation_payload(self, payload)
-            return _apply_context_output_cap(payload, context_output_cap)
+            return _finalize_generation_payload(self, payload, context_output_cap)
         payload = original_completions_payload(
             self,
             messages,
@@ -807,8 +809,7 @@ def apply_openai_payload_controls() -> bool:
             eos=None,
             **kwargs,
         )
-        payload = _caller_generation_payload(self, payload)
-        return _apply_context_output_cap(payload, context_output_cap)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     def _create_openai_payload(
         self,
@@ -838,8 +839,7 @@ def apply_openai_payload_controls() -> bool:
         else:
             payload["stop"] = selected_stops
             payload["temperature"] = temperature
-        payload = _caller_generation_payload(self, payload)
-        return _apply_context_output_cap(payload, context_output_cap)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     LocalCompletionsAPI._create_payload = _create_completions_payload
     LocalChatCompletion.__init__ = _local_chat_init
