@@ -4,11 +4,16 @@ from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompleti
 
 
 class _TransportRetryBudget:
-    def __init__(self, *args, transport_retry_budget=900, **kwargs):
+    def __init__(self, *args, transport_retry_budget=900, transport_attempt_timeout=None, **kwargs):
         self.transport_retry_budget = float(transport_retry_budget)
         if self.transport_retry_budget <= 0:
             raise ValueError("transport_retry_budget must be positive")
         super().__init__(*args, **kwargs)
+        self.transport_attempt_timeout = float(
+            self.timeout if transport_attempt_timeout is None else transport_attempt_timeout
+        )
+        if self.transport_attempt_timeout <= 0:
+            raise ValueError("transport_attempt_timeout must be positive")
         self.endpoint_concurrency = self._concurrent
         # lm-eval selects an unbounded synchronous retry path at _concurrent=1.
         # Select its async path and keep the HTTP limit at the requested value.

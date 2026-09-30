@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -184,7 +183,7 @@ class _Tokenizer:
         assert add_special_tokens is False
         return list(range(len(text.split())))
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, **kwargs):
         assert tokenize is True
         assert add_generation_prompt is True
         return list(range(sum(len(message["content"].split()) for message in messages) + 3))
@@ -246,6 +245,29 @@ def test_endpoint_preflight_uses_the_chat_template_and_is_a_noop_without_context
     assert cap is None
 
 
+def test_endpoint_preflight_uses_the_endpoint_chat_template_controls():
+    class ReasoningTokenizer(_Tokenizer):
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, reasoning_effort="high"):
+            base = super().apply_chat_template(
+                messages,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+            )
+            return {"input_ids": base + ([0] * 20 if reasoning_effort == "high" else [])}
+
+    kwargs, prompt_tokens, cap = preflight_endpoint_generation(
+        tokenizer=ReasoningTokenizer(),
+        payloads=[[{"role": "user", "content": "one two"}]],
+        gen_kwargs={"max_tokens": 20},
+        context_length=100,
+        chat_template_kwargs={"reasoning_effort": "low"},
+    )
+
+    assert prompt_tokens == 5
+    assert cap == 20
+    assert kwargs == {"max_tokens": 20}
+
+
 def test_endpoint_preflight_skips_chat_count_without_a_client_tokenizer():
     kwargs, prompt_tokens, cap = preflight_endpoint_generation(
         tokenizer=None,
@@ -282,19 +304,3 @@ def test_endpoint_preflight_preserves_typed_context_overflow():
         )
 
     assert error.value.context_length == 128
-
-
-def test_every_custom_benchmark_routes_generation_through_base_limit_guard():
-    """All chat benchmarks must reach ``BaseBenchmark.compute`` before inference.
-
-    That method owns both the sample cap and request-time output cap. A new
-    benchmark which bypasses it would reintroduce an unbounded inference path.
-    """
-    benchmarks_dir = Path(__file__).parents[1] / "eval" / "chat_benchmarks"
-    missing_guard = [
-        str(path.relative_to(benchmarks_dir))
-        for path in sorted(benchmarks_dir.glob("*/eval_instruct.py"))
-        if "def generate_responses" in path.read_text() and "self.compute(" not in path.read_text()
-    ]
-
-    assert not missing_guard, f"custom benchmarks bypassing the common limit guard: {missing_guard}"

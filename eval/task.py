@@ -106,12 +106,20 @@ class BaseBenchmark(ABC):
         self._evaluation_gen_kwargs: Dict[str, Any] = {}
         self._evaluation_limit: Optional[int] = None
         self._limited_sample_ids: Dict[str, set[str]] = {}
+        self._registered_task_name: str | None = None
         self._sample_manifest = SampleManifest(self.benchmark_name)
 
     @property
     def benchmark_name(self) -> str:
-        """Return the canonical task name derived from the benchmark class."""
-        return self.__class__.__name__.replace("Benchmark", "")
+        """Return the registered task name, or the class-derived name before registration."""
+        return self._registered_task_name or self.__class__.__name__.replace("Benchmark", "")
+
+    def bind_task_name(self, task_name: str) -> None:
+        """Bind registry identity before the benchmark plans any samples."""
+        if self.sample_manifest.expected_sample_count:
+            raise SampleIdentityError(f"{self.benchmark_name}: cannot change task identity after planning samples")
+        self._registered_task_name = task_name
+        self._sample_manifest = SampleManifest(task_name)
 
     @property
     def sample_manifest(self) -> SampleManifest:
@@ -1070,6 +1078,7 @@ class TaskManager:
                 valid_kwargs["system_instruction"] = self.benchmark_kwargs["system_instruction"]
 
             instance = benchmark_class(**valid_kwargs)
+            instance.bind_task_name(name)
             context_length = self.benchmark_kwargs.get("max_length")
             instance.set_evaluation_limits(
                 max_length=context_length,

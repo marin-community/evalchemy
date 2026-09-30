@@ -143,7 +143,12 @@ def safe_generation_cap(
     return min(requested_max_tokens, available)
 
 
-def endpoint_prompt_token_count(tokenizer: Any, payload: Any) -> int:
+def endpoint_prompt_token_count(
+    tokenizer: Any,
+    payload: Any,
+    *,
+    chat_template_kwargs: Mapping[str, Any] | None = None,
+) -> int:
     """Count one final endpoint payload with the tokenizer/template it will use.
 
     Text completions are encoded directly. Chat payloads are rendered with the
@@ -158,12 +163,27 @@ def endpoint_prompt_token_count(tokenizer: Any, payload: Any) -> int:
     if isinstance(payload, str):
         return len(tokenizer.encode(payload, add_special_tokens=False))
     if isinstance(payload, Sequence) and all(isinstance(message, Mapping) for message in payload):
-        return len(tokenizer.apply_chat_template(payload, tokenize=True, add_generation_prompt=True))
+        encoded = tokenizer.apply_chat_template(
+            payload,
+            tokenize=True,
+            add_generation_prompt=True,
+            **(chat_template_kwargs or {}),
+        )
+        if isinstance(encoded, Mapping):
+            encoded = encoded["input_ids"]
+        if encoded and isinstance(encoded[0], Sequence):
+            encoded = encoded[0]
+        return len(encoded)
     raise TypeError(f"unsupported endpoint payload for preflight tokenization: {type(payload).__name__}")
 
 
 def preflight_endpoint_generation(
-    *, tokenizer: Any, payloads: Sequence[Any], gen_kwargs: Mapping[str, Any] | None, context_length: int | None
+    *,
+    tokenizer: Any,
+    payloads: Sequence[Any],
+    gen_kwargs: Mapping[str, Any] | None,
+    context_length: int | None,
+    chat_template_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, int | None, int | None]:
     """Tokenize a transport batch and lower its output cap if necessary.
 
@@ -186,7 +206,10 @@ def preflight_endpoint_generation(
         for payload in payloads
     ):
         return dict(gen_kwargs), None, None
-    largest_prompt = max(endpoint_prompt_token_count(tokenizer, payload) for payload in payloads)
+    largest_prompt = max(
+        endpoint_prompt_token_count(tokenizer, payload, chat_template_kwargs=chat_template_kwargs)
+        for payload in payloads
+    )
     cap = safe_generation_cap(
         context_length=context_length,
         prompt_tokens=largest_prompt,

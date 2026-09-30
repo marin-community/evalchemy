@@ -69,6 +69,7 @@ _SYNC_GUARD_PATCH_FLAG = "_marin_resilient_sync_call_patched"
 _GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
+_CONTEXT_OUTPUT_CAP_KWARG = "_evalchemy_context_output_cap"
 _ENCODED_MAPPING_PREFIX = "base64:"
 _ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _INVALID_RESPONSE_FRACTION = 0.5
@@ -327,6 +328,7 @@ def apply() -> bool:
         local_endpoint = isinstance(self, (RetryingLocalChatCompletions, RetryingLocalCompletions))
         concurrent = self.endpoint_concurrency if local_endpoint else self._concurrent
         retry_budget = self.transport_retry_budget if local_endpoint else None
+        attempt_timeout = self.transport_attempt_timeout if local_endpoint else self.timeout
         conn = TCPConnector(limit=concurrent, ssl=self.verify_certificate)
         sem = asyncio.Semaphore(concurrent)
         async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
@@ -340,8 +342,8 @@ def apply() -> bool:
                         if retry_budget is not None:
 
                             async def call():
-                                async with asyncio.timeout(self.timeout):
-                                    return await self.amodel_call(
+                                return await asyncio.wait_for(
+                                    self.amodel_call(
                                         session=session,
                                         sem=_ADMITTED_SEMAPHORE,
                                         messages=message,
@@ -349,7 +351,9 @@ def apply() -> bool:
                                         generate=generate,
                                         ctxlens=ctxlen,
                                         **call_kwargs,
-                                    )
+                                    ),
+                                    timeout=attempt_timeout,
+                                )
 
                             return await _retry_transport_call(call, budget=retry_budget)
                         async with asyncio.timeout(self.timeout):
@@ -404,12 +408,15 @@ def apply() -> bool:
                             payloads=message,
                             gen_kwargs=kwargs.get("gen_kwargs"),
                             context_length=self.max_length + 1 if self.max_length is not None else None,
+                            chat_template_kwargs=getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None),
                         )
                     except ContextWindowExceededError:
                         raise
                     except Exception as exc:  # noqa: BLE001 - add request-preflight context
                         raise ValueError(f"endpoint context preflight failed: {exc}") from exc
                     if bounded is not None:
+                        if effective_cap is not None:
+                            bounded[_CONTEXT_OUTPUT_CAP_KWARG] = effective_cap
                         request_kwargs["gen_kwargs"] = bounded
                     if (
                         self.tokenizer is None
@@ -729,6 +736,21 @@ def apply_openai_payload_controls() -> bool:
             payload["temperature"] = 0
         return payload
 
+    def _apply_context_output_cap(payload, context_output_cap):
+        if context_output_cap is None:
+            return payload
+        token_key = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+        payload[token_key] = min(payload.get(token_key, context_output_cap), context_output_cap)
+        return payload
+
+    def _finalize_generation_payload(self, payload, context_output_cap):
+        payload = _caller_generation_payload(self, payload)
+        return _apply_context_output_cap(payload, context_output_cap)
+
+    def _generation_kwargs_and_context_cap(gen_kwargs):
+        request_kwargs = dict(gen_kwargs or {})
+        return request_kwargs, request_kwargs.pop(_CONTEXT_OUTPUT_CAP_KWARG, None)
+
     def _create_local_payload(
         self,
         messages,
@@ -738,6 +760,7 @@ def apply_openai_payload_controls() -> bool:
         eos=None,
         **kwargs,
     ):
+        gen_kwargs, context_output_cap = _generation_kwargs_and_context_cap(gen_kwargs)
         payload = original_local_chat_payload(
             self,
             messages,
@@ -754,7 +777,7 @@ def apply_openai_payload_controls() -> bool:
         chat_template_kwargs = getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None)
         if chat_template_kwargs is not None:
             payload["chat_template_kwargs"] = chat_template_kwargs
-        return _caller_generation_payload(self, payload)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     def _create_completions_payload(
         self,
@@ -765,6 +788,7 @@ def apply_openai_payload_controls() -> bool:
         eos=None,
         **kwargs,
     ):
+        gen_kwargs, context_output_cap = _generation_kwargs_and_context_cap(gen_kwargs)
         if not generate:
             payload = original_completions_payload(
                 self,
@@ -775,7 +799,7 @@ def apply_openai_payload_controls() -> bool:
                 eos=eos,
                 **kwargs,
             )
-            return _caller_generation_payload(self, payload)
+            return _finalize_generation_payload(self, payload, context_output_cap)
         payload = original_completions_payload(
             self,
             messages,
@@ -785,7 +809,7 @@ def apply_openai_payload_controls() -> bool:
             eos=None,
             **kwargs,
         )
-        return _caller_generation_payload(self, payload)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     def _create_openai_payload(
         self,
@@ -796,6 +820,7 @@ def apply_openai_payload_controls() -> bool:
         eos="<|endoftext|>",
         **kwargs,
     ):
+        gen_kwargs, context_output_cap = _generation_kwargs_and_context_cap(gen_kwargs)
         request_kwargs = _bounded_generation_kwargs(gen_kwargs, eos, ["<|endoftext|>"])
         selected_stops = list(request_kwargs["until"])
         temperature = request_kwargs.get("temperature", 0)
@@ -814,7 +839,7 @@ def apply_openai_payload_controls() -> bool:
         else:
             payload["stop"] = selected_stops
             payload["temperature"] = temperature
-        return _caller_generation_payload(self, payload)
+        return _finalize_generation_payload(self, payload, context_output_cap)
 
     LocalCompletionsAPI._create_payload = _create_completions_payload
     LocalChatCompletion.__init__ = _local_chat_init
