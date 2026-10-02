@@ -40,12 +40,11 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-
 from eval.contracts.sample_results import record_sample_metrics
 from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
 from eval.task import BaseBenchmark
+from lm_eval.api.instance import Instance
+from lm_eval.api.model import LM
 
 # lm-eval-harness's gsm8k prompt, sent zero-shot through the chat template --
 # the protocol of the prior Marin chat-mode GSM8K measurement
@@ -87,10 +86,27 @@ def sanitize_numeric(answer: str) -> str:
     return answer.replace("$", "").replace(",", "").strip()
 
 
-def numeric_match(model_answer: str, gold: str) -> bool:
-    got = NUMBER_RE.search(sanitize_numeric(model_answer))
+def numeric_match(model_answer: str, gold: str, *, verifyit_enabled: bool = False) -> bool:
+    if not verifyit_enabled:
+        got = NUMBER_RE.search(sanitize_numeric(model_answer))
+        want = NUMBER_RE.search(sanitize_numeric(gold))
+        return got is not None and want is not None and float(got.group()) == float(want.group())
+    from verifyit.grade import InvalidTask
+    from verifyit.modes.grade_math import grade_numeric_candidate
+    from verifyit.spec import NumericSpec
+
+    if not isinstance(gold, str):
+        raise InvalidTask("GSM8KPerturbed requires a numeric reference string")
     want = NUMBER_RE.search(sanitize_numeric(gold))
-    return got is not None and want is not None and float(got.group()) == float(want.group())
+    if want is None:
+        raise InvalidTask("GSM8KPerturbed requires a numeric reference")
+    got = NUMBER_RE.search(sanitize_numeric(model_answer)) if isinstance(model_answer, str) else None
+    return bool(
+        grade_numeric_candidate(
+            NumericSpec(float(want.group()), tolerance_abs=0, tolerance_rel=0),
+            float(got.group()) if got is not None else float("nan"),
+        ).reward
+    )
 
 
 class GSM8KPerturbedBenchmark(BaseBenchmark):
@@ -100,10 +116,12 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         debug: bool = False,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.max_new_tokens = max_tokens
         self.debug = debug
+        self.verifyit_enabled = verifyit_enabled
 
     def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
         """Key resume units by record id plus a hash of the rendered prompt.
@@ -117,7 +135,11 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         replays outputs generated from different prompts.
         """
         prompt_sha = hashlib.sha256(json.dumps(instance.args[0], sort_keys=True, default=str).encode()).hexdigest()[:12]
-        return {"task": task_name, "problem_id": str(instance.doc["id"]), "prompt_sha": prompt_sha}
+        return {
+            "task": task_name,
+            "problem_id": str(instance.doc["id"]),
+            "prompt_sha": prompt_sha,
+        }
 
     def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
         instances = []
@@ -172,11 +194,18 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         if results is None:  # non-primary ranks
             return None
         eval_results: Dict[str, float] = {}
+        if self.verifyit_enabled:
+            for record in results["examples"]:
+                numeric_match("", record["answer"], verifyit_enabled=True)
         for record in results["examples"]:
             answer = extract_flexible_answer(record["output"])
             record["model_answer"] = answer
             record["no_answer"] = answer is None
-            record["correct"] = answer is not None and numeric_match(answer, record["answer"])
+            record["correct"] = (
+                numeric_match(answer or "", record["answer"], verifyit_enabled=True)
+                if self.verifyit_enabled
+                else answer is not None and numeric_match(answer, record["answer"])
+            )
             record_sample_metrics(record, accuracy=record["correct"], no_answer=record["no_answer"])
         clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
         for task in TASK_FILES:

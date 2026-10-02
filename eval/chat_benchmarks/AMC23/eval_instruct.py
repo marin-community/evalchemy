@@ -6,7 +6,12 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
+from lm_eval.tasks.hendrycks_math.utils import (
+    is_equiv,
+    last_boxed_only_string,
+    remove_boxed,
+    strip_string,
+)
 
 from eval.task import BaseBenchmark
 
@@ -32,6 +37,7 @@ class AMC23Benchmark(BaseBenchmark):
         max_tokens: int = 32768,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize AMC23 benchmark.
@@ -49,6 +55,7 @@ class AMC23Benchmark(BaseBenchmark):
         self.seed = seed
         self.max_new_tokens = max_tokens
         self.n_repeat = 10
+        self.verifyit_enabled = verifyit_enabled
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -72,7 +79,10 @@ class AMC23Benchmark(BaseBenchmark):
             all_instances = []
             for idx, example in enumerate(examples):
                 messages = [
-                    {"role": "user", "content": PROMPT.format(problem=example["question"])},
+                    {
+                        "role": "user",
+                        "content": PROMPT.format(problem=example["question"]),
+                    },
                 ]
 
                 templated_messages = self._prepare_messages(messages, model)
@@ -97,7 +107,7 @@ class AMC23Benchmark(BaseBenchmark):
                 instance.metadata = {
                     "problem_id": str(example["id"]) if "id" in example else str(idx),
                     "expected_answer": str(example["answer"]),
-                    "reference_solution": str(example["solution"]) if "solution" in example else "",
+                    "reference_solution": (str(example["solution"]) if "solution" in example else ""),
                 }
 
                 all_instances.append(instance)
@@ -131,7 +141,24 @@ class AMC23Benchmark(BaseBenchmark):
         all_results = []
         correct_by_repeat = []
         for i in range(self.n_repeat):
-            correct = [is_equiv(str(example["answer"]), example["model_answers"][i]) for example in examples]
+            if self.verifyit_enabled:
+                from verifyit.adapters.harness_math_literal import (
+                    grade_normalized_math,
+                    validate_hendrycks_normalizer,
+                )
+                from verifyit.grade import InvalidTask, Status
+
+                if not validate_hendrycks_normalizer(strip_string):
+                    raise InvalidTask("AMC23 source normalizer differs from the pinned contract")
+                verdicts = [
+                    grade_normalized_math(example["answer"], example["model_answers"][i], strip_string)
+                    for example in examples
+                ]
+                if not verdicts or any(verdict.status is not Status.SCORED for verdict in verdicts):
+                    raise InvalidTask("AMC23 has an invalid or unscored reference batch")
+                correct = [verdict.reward == 1 for verdict in verdicts]
+            else:
+                correct = [is_equiv(str(example["answer"]), example["model_answers"][i]) for example in examples]
             correct_by_repeat.append(correct)
             solved = sum(correct)
             all_results.append(
@@ -171,7 +198,7 @@ class AMC23Benchmark(BaseBenchmark):
         if self.debug:
             questions = questions[:2]
             self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
- 
+
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
 

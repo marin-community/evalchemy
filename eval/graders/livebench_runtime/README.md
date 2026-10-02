@@ -117,3 +117,12 @@ punctuation. The equal-length sentence task also requires unique lowercase Unico
 word tokens (`\w+`), preventing repeated sentences from earning credit. Sub-bullets
 require line-start `*` groups with a line-start `-` item in each group; inline marker
 characters and prose without bullets do not satisfy this format.
+
+AIW, AMC23 and GSM8K-Perturbed also accept `verifyit_enabled=True` in their benchmark
+constructors (or `verifyit_enabled=true` in `--benchmark_args`). Install the same
+`verifyit` extra shown above; these three routes need no additional runtime image.
+AIW and AMC23 use the pinned Hendrycks answer normalization followed by strict Exact
+comparison. GSM8K-Perturbed keeps its answer extraction and compares parsed numbers
+through Numeric with zero tolerance. Missing candidate answers score zero. Invalid
+trusted references raise `InvalidTask` before per-sample metrics are updated; source
+scoring remains the default.
