@@ -10,6 +10,7 @@ import re
 
 from verifyit.grade import Aggregation, InvalidTask, aggregate_rewards
 from verifyit.json_objects import unique_object
+from verifyit.modes.grade_exact import grade_collection_precision_interval
 from verifyit.modes.grade_ifeval import grade_ifeval_candidate
 from verifyit.modes.grade_json_schema import grade_json_schema_candidate
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
@@ -44,6 +45,7 @@ MAPPED_IDS = {
 
 
 IFBENCH_IDS = {
+    "ratio:overlap",
     "repeat:repeat_change",
     "repeat:repeat_simple",
     "count:numbers",
@@ -245,6 +247,18 @@ def _grade_ifbench_instruction(identifier, instruction, original, text):
     punctuation = string.punctuation
     schema = {"type": "string"}
     instance = text
+    if identifier == "ratio:overlap":
+        reference, percentage = args["reference_text"], args["percentage"]
+        if not isinstance(reference, str) or type(percentage) not in (int, float):
+            raise InvalidTask("Trigram reference must be text and percentage numeric")
+        return grade_collection_precision_interval(
+            {reference[index : index + 3] for index in range(len(reference) - 2)},
+            {text[index : index + 3] for index in range(len(text) - 2)},
+            minimum_percent=percentage - 2,
+            maximum_percent=percentage + 2,
+            multiplicity="set",
+            empty_reference="zero",
+        )
     if identifier == "count:word_count_range":
         low, high = args["min_words"], args["max_words"]
         _count_schema(low)

@@ -161,10 +161,12 @@ def _validate_result(result, family, rows):
 
 
 def _arguments(name, arguments):
+    if name == "ratio:overlap" and not isinstance(arguments.get("reference_text"), str):
+        raise InvalidTask("Trigram reference must be text")
     for key, value in arguments.items():
         if value is None:
             continue
-        if isinstance(value, str) and not value.strip():
+        if isinstance(value, str) and not value.strip() and not (name == "ratio:overlap" and key == "reference_text"):
             raise InvalidTask("Empty trusted instruction argument: " + key)
         if isinstance(value, list) and (
             not value or any(not isinstance(item, str) or not item.strip() for item in value)
@@ -290,7 +292,10 @@ def main():
         rows = [
             json.loads(line, object_pairs_hook=unique_object) for line in payload["rows"].splitlines() if line.strip()
         ]
-        json.dumps(rows, allow_nan=False)
+        try:
+            json.dumps(rows, allow_nan=False)
+        except ValueError as error:
+            raise InvalidTask("Instruction metadata must contain finite JSON values") from error
         _validate(rows, registry)
         if family == "IFEval":
             import langdetect

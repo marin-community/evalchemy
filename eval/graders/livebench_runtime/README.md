@@ -101,3 +101,10 @@ evaluation as the default and the existing explicit `verifyit_enabled` opt-in.
 
 Blank responses score zero in both IFEval and IFBench, including batches containing
 other valid answers. Invalid trusted instruction arguments remain task errors.
+
+IFBench `ratio:overlap` prepares literal character trigrams and delegates set
+precision to Exact, bringing the shared coverage to 20 of 58 instruction contracts.
+The requested percentage uses an inclusive ±2 interval; whitespace and case remain
+significant. Empty references define zero precision for nonempty candidates. Empty
+candidates score zero, while missing references and nonfinite metadata are invalid
+tasks. Prepared collections retain verifyit's 10,000-item/1,000,000-character limits.

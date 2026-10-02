@@ -229,3 +229,47 @@ def test_blank_candidate_is_zero_without_invalidating_instruction_task(tmp_path,
     path.write_text(json.dumps(row("invalid", "", [invalid_name], [invalid_args])) + "\n")
     with pytest.raises(InvalidTask):
         evaluate_accuracy(path, family)
+
+
+def test_ifbench_precision_zero_reference_and_invalid_metadata_precedence(tmp_path):
+    path = tmp_path / "precision.jsonl"
+    path.write_text(
+        "\n".join(
+            json.dumps(
+                row(
+                    str(index),
+                    candidate,
+                    ["ratio:overlap"],
+                    [
+                        {
+                            "reference_text": reference,
+                            "percentage": 0,
+                        }
+                    ],
+                )
+            )
+            for index, (reference, candidate) in enumerate([("abc", "xyz"), ("", "xyz"), ("abc", "")])
+        )
+        + "\n"
+    )
+    result = evaluate_accuracy(path, "IFBench")
+    assert [item["strict_instruction_pass"] for item in result["per_prompt_outcomes"]] == [[True], [True], [False]]
+    for reference, percentage in [(None, 0), ("abc", float("nan"))]:
+        path.write_text(
+            json.dumps(
+                row(
+                    "invalid",
+                    "",
+                    ["ratio:overlap"],
+                    [
+                        {
+                            "reference_text": reference,
+                            "percentage": percentage,
+                        }
+                    ],
+                )
+            )
+            + "\n"
+        )
+        with pytest.raises(InvalidTask):
+            evaluate_accuracy(path, "IFBench")
