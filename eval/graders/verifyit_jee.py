@@ -65,7 +65,10 @@ def prepare_batch(captured, repeats, policy, boxed_policy):
 
 
 def _grade_batch(examples, repeats, policy, boxed_policy, timeout):
-    """Grade a complete prepared cohort, retaining raw inputs and core verdicts."""
+    """Return rewards, statuses, policies, effective options, and input hashes.
+
+    Raw and prepared inputs remain private to external audit instrumentation.
+    """
     try:
         policy = JEEPolicy(policy)
     except ValueError as error:
