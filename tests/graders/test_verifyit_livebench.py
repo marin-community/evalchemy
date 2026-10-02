@@ -69,15 +69,24 @@ def test_instruction_prompt_and_fractional_scores_use_actual_predicates(text, ex
     assert all(item["verdict"]["status"] == "scored" for item in verdict.detail["instruction_verdicts"])
 
 
-def test_undetectable_language_is_not_an_instruction_success():
+@pytest.mark.parametrize(
+    "identifier,kwargs,text,expected",
+    [
+        ("language:response_language", {"language": "en"}, "12345", 0),
+        ("change_case:english_capital", {}, "THIS IS A COMPLETE ENGLISH SENTENCE ABOUT A BEAUTIFUL GARDEN.", 1),
+        ("change_case:english_capital", {}, "This is a complete English sentence about a beautiful garden.", 0),
+        ("change_case:english_lowercase", {}, "this is a complete english sentence about a beautiful garden.", 1),
+    ],
+)
+def test_language_observations_require_detectable_language_and_case(identifier, kwargs, text, expected):
     row = question(
         category="instruction_following",
         task="summarize",
         ground_truth=None,
-        instruction_id_list=["language:response_language"],
-        kwargs=[{"language": "en"}],
+        instruction_id_list=[identifier],
+        kwargs=[kwargs],
     )
-    assert grade_retained(row, "12345").reward == 0
+    assert grade_retained(row, text).reward == expected
 
 
 def test_coding_without_trusted_tests_is_invalid_task():

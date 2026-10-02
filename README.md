@@ -98,6 +98,22 @@ uv run huggingface-cli login
 > Prefer conda/pip? `pip install -e .` still works from an activated environment,
 > but `uv sync` is the supported path and is what CI uses.
 
+### Opt-in instruction grading with verifyit
+
+Install the pinned core and instruction dependencies with
+`uv sync --python 3.12 --extra verifyit --extra ifeval --extra ifbench`.
+Pass `verifyit_enabled=True` when constructing the IFEval or IFBench evaluator;
+leaving it unset preserves the source grading path. Existing response files can
+also be graded with
+`eval.graders.verifyit_instructions.evaluate_accuracy(path, "IFEval")` (or
+`"IFBench"`). This returns the same strict/loose protocol metrics.
+
+IFEval observations use shared core preparation and Schema/IFEval comparisons;
+IFBench retains its 58 observation mappings and delegates comparisons to core
+primitives. Language detection failure and malformed candidate JSON cannot earn
+credit. The `verifyit` extra pins core revision
+`2ec1f2472ce8ff961343c6b1364cac1774870ed8`.
+
 ## 📚 Available Tasks
 
 ### Built-in Benchmarks

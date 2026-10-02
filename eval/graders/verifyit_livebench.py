@@ -119,24 +119,6 @@ def instruction_score(question, response, root):
     }
     _validate([row], registry)
     langdetect.DetectorFactory.seed = 0
-    for identifier in ("language:response_language", "change_case:english_capital", "change_case:english_lowercase"):
-        original = registry[identifier]
-
-        def corrected(original=original, identifier=identifier):
-            class LanguageInstruction(original):
-                def check_following(self, value):
-                    try:
-                        if identifier == "change_case:english_capital":
-                            return value.isupper() and langdetect.detect(value) == "en"
-                        if identifier == "change_case:english_lowercase":
-                            return value.islower() and langdetect.detect(value) == "en"
-                        return langdetect.detect(value) == self._language
-                    except langdetect.LangDetectException:
-                        return False
-
-            return LanguageInstruction
-
-        registry[identifier] = corrected()
     observations = []
     _install("LiveBench", registry, observations)
     inputs = evaluation_main.read_prompt_list([question])
