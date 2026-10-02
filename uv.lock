@@ -1045,6 +1045,7 @@ benchmarks = [
     { name = "absl-py" },
     { name = "alpaca-eval" },
     { name = "anthropic" },
+    { name = "beautifulsoup4" },
     { name = "codebleu" },
     { name = "cohere" },
     { name = "emoji" },
@@ -1052,11 +1053,13 @@ benchmarks = [
     { name = "fschat" },
     { name = "fuzzywuzzy" },
     { name = "google-generativeai" },
+    { name = "html5lib" },
     { name = "ijson" },
     { name = "immutabledict" },
     { name = "jsonlines" },
     { name = "langdetect" },
     { name = "lark" },
+    { name = "lxml" },
     { name = "nltk" },
     { name = "patsy" },
     { name = "pqdm" },
@@ -1108,10 +1111,13 @@ ifeval = [
     { name = "nltk" },
 ]
 livebench = [
+    { name = "beautifulsoup4" },
     { name = "fschat" },
+    { name = "html5lib" },
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "lark" },
+    { name = "lxml" },
     { name = "nltk" },
     { name = "prettytable" },
     { name = "psutil" },
@@ -1163,6 +1169,9 @@ serve-eval = [
 swebench = [
     { name = "swebench" },
 ]
+verifyit = [
+    { name = "verifyit", extra = ["answer", "schema"] },
+]
 vllm = [
     { name = "accelerate" },
     { name = "lm-eval", extra = ["vllm"] },
@@ -1190,6 +1199,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'mtbench'" },
     { name = "anthropic", marker = "extra == 'wildbench'" },
     { name = "anthropic", marker = "extra == 'zeroeval'" },
+    { name = "beautifulsoup4", marker = "extra == 'livebench'" },
     { name = "bespokelabs-curator", specifier = ">=0.1.16.0" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "click", marker = "extra == 'serve-eval'", specifier = ">=8" },
@@ -1210,6 +1220,7 @@ requires-dist = [
     { name = "fschat", marker = "extra == 'mtbench'", directory = "eval/chat_benchmarks/MTBench" },
     { name = "fuzzywuzzy", marker = "extra == 'repobench'" },
     { name = "google-generativeai", marker = "extra == 'zeroeval'" },
+    { name = "html5lib", marker = "extra == 'livebench'" },
     { name = "huggingface-hub" },
     { name = "ijson", marker = "extra == 'nupa-loose'" },
     { name = "ijson", marker = "extra == 'nupa5k-loose'" },
@@ -1220,9 +1231,10 @@ requires-dist = [
     { name = "langdetect", marker = "extra == 'ifeval'" },
     { name = "langdetect", marker = "extra == 'livebench'" },
     { name = "lark", marker = "extra == 'livebench'" },
-    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12" },
-    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12" },
+    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=05db78ecf26d45a37be0cca989ac9cc94836f716" },
+    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=05db78ecf26d45a37be0cca989ac9cc94836f716" },
     { name = "loguru" },
+    { name = "lxml", marker = "extra == 'livebench'" },
     { name = "marin-finestore", marker = "extra == 'serve-eval'", specifier = ">=0.2.113.dev35019671596" },
     { name = "marin-rigging", marker = "extra == 'serve-eval'", specifier = ">=0.2.67.dev30673006835" },
     { name = "nltk", marker = "extra == 'ifbench'" },
@@ -1266,8 +1278,9 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'bigcodebench'" },
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
+    { name = "verifyit", extras = ["answer", "schema"], marker = "extra == 'verifyit'", git = "https://github.com/marin-community/verifyit?rev=0af87fba3c4156d85076d9c09643af88e4467655" },
 ]
-provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa-loose", "nupa5k-loose", "olympiadbench", "olympiadbenchdeterministic", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
+provides-extras = ["verifyit", "dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa-loose", "nupa5k-loose", "olympiadbench", "olympiadbenchdeterministic", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
 
 [[package]]
 name = "evaluate"
@@ -2086,6 +2099,19 @@ wheels = [
 ]
 
 [[package]]
+name = "html5lib"
+version = "1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+    { name = "webencodings" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/b6/b55c3f49042f1df3dcd422b7f224f939892ee94f22abcf503a9b7339eaf2/html5lib-1.1.tar.gz", hash = "sha256:b2e5b40261e20f354d198eae92afc10d750afb487ed5e50f9c4eaf07c184146f", size = 272215, upload-time = "2020-06-22T23:32:38.834Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl", hash = "sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d", size = 112173, upload-time = "2020-06-22T23:32:36.781Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -2542,7 +2568,7 @@ wheels = [
 [[package]]
 name = "lm-eval"
 version = "0.4.12"
-source = { git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12#6d642546f4688648fced259eb3302efd36ece5af" }
+source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=05db78ecf26d45a37be0cca989ac9cc94836f716#05db78ecf26d45a37be0cca989ac9cc94836f716" }
 dependencies = [
     { name = "datasets" },
     { name = "dill" },
@@ -5122,6 +5148,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tomlkit"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/96/e07752635b98536177fa1f37671c8f3cdde2e724c6bcf6034b2cfb571565/tomlkit-0.15.1.tar.gz", hash = "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97", size = 180129, upload-time = "2026-07-17T01:48:04.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl", hash = "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304", size = 49449, upload-time = "2026-07-17T01:48:05.728Z" },
+]
+
+[[package]]
 name = "torch"
 version = "2.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5451,6 +5486,24 @@ wheels = [
 ]
 
 [[package]]
+name = "verifyit"
+version = "0.1.0"
+source = { git = "https://github.com/marin-community/verifyit?rev=0af87fba3c4156d85076d9c09643af88e4467655#0af87fba3c4156d85076d9c09643af88e4467655" }
+dependencies = [
+    { name = "tomlkit" },
+]
+
+[package.optional-dependencies]
+answer = [
+    { name = "math-verify" },
+    { name = "sympy" },
+]
+schema = [
+    { name = "jsonschema" },
+    { name = "pyyaml" },
+]
+
+[[package]]
 name = "vertexai"
 version = "1.71.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5605,6 +5658,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/34/74/c6428f875774288bec1396f5bfcbc2d925700a4dad61727fd5f2b12f249d/wcwidth-0.8.2.tar.gz", hash = "sha256:91fbef97204b96a3d4d421609b80340b760cf33e26da123ff243d76b1fda8dda", size = 1466253, upload-time = "2026-06-29T18:11:11.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/42/3e5985a0a7e57de470b320c6d6a1a67c844f6737a587f3d44dd13d1819e7/wcwidth-0.8.2-py3-none-any.whl", hash = "sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85", size = 323166, upload-time = "2026-06-29T18:11:09.888Z" },
+]
+
+[[package]]
+name = "webencodings"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/a0/8fd707bcb776a7be556bad06a2ea5fb9bd519df78ef8e26f70ccf0f38bff/webencodings-0.6.1.tar.gz", hash = "sha256:565f9ad031c702dae404e27a099e3e09186a3ab1b9520f06d215502b651fd910", size = 15001, upload-time = "2026-08-15T14:22:57.549Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/c6/040cbc72480d789a5f40d63fb484d3106554c4dfa2d2b70ad5022057750f/webencodings-0.6.1-py3-none-any.whl", hash = "sha256:7fab6269c8bf237c657876b52058ccb182e861518d1c695c1a9aaa8c1c105d5b", size = 8745, upload-time = "2026-08-15T14:22:56.31Z" },
 ]
 
 [[package]]

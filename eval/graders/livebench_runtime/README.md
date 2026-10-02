@@ -11,18 +11,43 @@ commit matches the source evaluation environment and supports Python 3.12; the
 source contract module requires Python 3.11 or later. `VERIFYIT_LIVEBENCH_IMAGE`
 can select another prebuilt image with the same dependencies.
 
-The default LiveBench path remains unchanged. Enable the cutover explicitly with
-`LiveBenchBenchmark(verifyit_enabled=True, ...)` or the equivalent benchmark
-configuration. The opt-in client requires verifyit with its schema extra and the
-companion harness modules `lm_eval.verifyit_humaneval` and
-`lm_eval.verifyit_function_worker`; an upstream-only harness installation does
-not provide these modules. Client dependency publication is separate from the
-verifyit package release.
+Install the pinned client dependencies from the Evalchemy checkout:
 
-Add `eval/chat_benchmarks/LiveBench` to `PYTHONPATH` alongside the Evalchemy root:
-source preprocessing imports the vendored `livebench` package by its top-level
-name. Host callbacks retain the source optional dependencies, including
-Levenshtein for branches that still use their source grading contract.
+```sh
+uv sync --locked --extra livebench --extra verifyit --no-dev --no-editable
+```
+
+The lock pins verifyit and the companion harness by immutable Git commit. The
+harness companion has the same upstream v0.4.12 base as the default evaluator and
+adds the isolated candidate worker. No `PYTHONPATH` setting is needed. Docker is
+required for coding and AMPS; build the image above before evaluating those tasks.
+
+The source grader remains the default. Use the normal task loader to enable the
+cutover for an existing LiveBench response JSONL:
+
+```python
+import json
+from pathlib import Path
+from eval.task import TaskManager
+
+manager = TaskManager(
+    task_list=["LiveBench"],
+    dataset_name="live_bench",
+    release_date="2024-08-31",
+    verifyit_enabled=True,
+)
+benchmark = manager.get_benchmark("LiveBench")
+if benchmark is None:
+    raise RuntimeError(manager.load_failures)
+responses = [json.loads(line) for line in Path("responses.jsonl").read_text().splitlines() if line.strip()]
+results = benchmark.evaluate_responses(responses)
+```
+
+Run this with `.venv/bin/python`; response rows retain the source `question_id`,
+`model_id`, and `choices` fields. Use the same dataset and release as generation.
+Omit `verifyit_enabled` or set it to false to use the source grader. The task
+loader resolves vendored source imports; bounded workers validate and register
+the same installed package, rejecting a conflicting `livebench` namespace.
 
 Coding uses this image as an isolated candidate worker. Its only bind mount is
 the read-only RPC worker; candidate source and inputs travel through stdin.
@@ -37,7 +62,9 @@ ALL combines test outcomes. Source singleton-list and approximate floating-point
 fallbacks are not used. Undefined/nonfinite references abort; candidate exceptions,
 malformed output and timeouts receive zero. AMPS remains in the source runtime.
 Zebra, web-of-lies and spatial routes prepare answers for core Exact/JSONSchema
-and core aggregation; other retained branches remain documented coverage gaps.
+and core aggregation. Table reformatting uses core JSONSchema for structure and
+nulls, Numeric for finite numeric tolerance, and ALL/MAX for results. Other
+retained branches remain documented coverage gaps.
 
 The source callback manifest guards the vendored implementation and shared code
 it imports. Instruction detection is deterministically seeded, and an undetectable

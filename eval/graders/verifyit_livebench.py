@@ -9,6 +9,7 @@ from pathlib import Path
 import random
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -409,6 +410,13 @@ class JudgmentBatch:
 
 
 def _grade_payload(payload, root):
+    from eval.chat_benchmarks.LiveBench import livebench
+
+    # Bounded workers import independently of TaskManager's temporary search path.
+    existing = sys.modules.get("livebench")
+    if existing is not None and getattr(existing, "__file__", None) != livebench.__file__:
+        raise InvalidTask("LiveBench import namespace belongs to another package")
+    sys.modules["livebench"] = livebench
     from eval.graders.verifyit_instructions import _state
 
     validate_sources()

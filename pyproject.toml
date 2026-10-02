@@ -25,22 +25,10 @@ dependencies = [
     # below; nothing here pulls torch (its imports on the core path are guarded, so the
     # endpoint flow runs torch-free -- see eval/eval.py, eval/task.py, eval/eval_tracker.py).
 
-    # LM Eval -- pinned to the latest stable upstream EleutherAI release (v0.4.12).
-    # Previously a fork (EtashGuha/lm-evaluation-harness@etashg/tokenize_fix); verified
-    # the fork carried no grader/metric patch missing upstream (boxed-answer math grader
-    # lm_eval/tasks/hendrycks_math/utils.py is byte-identical; the fork's sole code delta
-    # -- a one-line EOS-token truncation in models/huggingface.py -- is superseded upstream
-    # by postprocess_generated_text + stop-sequence handling). The removed lm_eval CLI/logging
-    # symbols are reprovided via eval/lm_eval_compat.py.
-    #
-    # [api]  -- the OpenAI-compatible / local-completions client (requests, aiohttp,
-    #           tenacity, tiktoken). [math] -- the boxed-answer math grader that AIME/AMC/
-    #           MATH500 grade against (sympy, antlr4-python3-runtime, math_verify).
-    # NB: the local-vLLM engine is an OPTIONAL extra (`.[vllm]`), not a base dep. It is a
-    # large, GPU/accelerator-oriented package and is unnecessary when evaluating against a
-    # *served* endpoint (the marin-serve / e2e path) -- the server owns inference. Keeping
-    # it out of the base install lets evalchemy install on a CPU box for endpoint-dispatch eval.
-    "lm-eval[api,math] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+    # The companion adds isolated candidate transport to the exact upstream v0.4.12
+    # base. Source grading stays unchanged unless a benchmark enables verifyit.
+    # API/math remain CPU endpoint dependencies; local vLLM is optional below.
+    "lm-eval[api,math] @ git+https://github.com/marin-community/lm-evaluation-harness@05db78ecf26d45a37be0cca989ac9cc94836f716",
 
     # curator registers the `curator` model at eval.eval import; also brings
     # litellm / instructor / nest-asyncio / openai / pandas transitively.
@@ -90,6 +78,7 @@ eval = "eval.serve_eval.cli:main"
 evalchemy = "eval.serve_eval.cli:main"
 
 [project.optional-dependencies]
+verifyit = ["verifyit[answer,schema] @ git+https://github.com/marin-community/verifyit@0af87fba3c4156d85076d9c09643af88e4467655"]
 dev = [
     "pytest",
     "black",
@@ -157,6 +146,9 @@ ifbench = ["nltk", "emoji", "syllapy"]
 # langdetect/immutabledict/nltk, and the lcb_runner code-exec grader imports pyext at
 # module load; the penfever py3 fork is the only pyext that imports under Python 3.
 livebench = [
+    "lxml",
+    "html5lib",
+    "beautifulsoup4",
     "psutil",
     "fschat",
     "shortuuid",
@@ -252,7 +244,7 @@ benchmarks = [
 # torch is installed. Split these out of the base deps so a CPU-only install stays lean.
 vllm = [
     "accelerate",
-    "lm-eval[vllm] @ git+https://github.com/EleutherAI/lm-evaluation-harness@v0.4.12",
+    "lm-eval[vllm] @ git+https://github.com/marin-community/lm-evaluation-harness@05db78ecf26d45a37be0cca989ac9cc94836f716",
 ]
 
 [tool.uv.sources]
