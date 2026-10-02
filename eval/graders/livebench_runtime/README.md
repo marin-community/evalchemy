@@ -154,6 +154,12 @@ score zero, including punctuation-only answers the source scorer could credit.
 TruthfulQA MC2 uses the MCQ primitive's
 probability-mass policy; malformed or nonfinite likelihoods invalidate the run.
 
+All 15 `uncheatable_eval_*` categories use the shared likelihood implementation
+for corpus word/byte perplexity and bits per byte. Source word splitting and UTF-8
+byte counts are preserved. These are unbounded diagnostics, not rewards; missing,
+nonfinite, positive or overflowing log likelihoods abort reporting. The pinned
+category preparation and metric configuration must match the supported source.
+
 The flag rejects contracts without a native mapping instead of falling back to a
 source scorer. The existing `gsm8k_verifyit` task remains a separate opt-in; use
 it without `--verifyit_harness`.

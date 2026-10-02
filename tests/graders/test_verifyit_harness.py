@@ -1,6 +1,8 @@
 """Exercise the native harness boundary through its real response filters."""
 
+import math
 from pathlib import Path
+from types import FunctionType
 
 import pytest
 from datasets import Dataset, DatasetDict
@@ -125,3 +127,55 @@ def test_missing_and_punctuation_only_answers_cannot_match_normalized_empty_alia
         for filter_name in ["strict_answer", "extract_answer"]:
             scores = [sample["exact_match"] for sample in result["samples"]["case"] if sample["filter"] == filter_name]
             assert scores == ([0, 0] if enabled else [0, 1])
+
+
+class RollingLikelihoods(Responses):
+    def loglikelihood_rolling(self, requests, **kwargs):
+        return [self.responses[request.doc_id] for request in requests]
+
+
+def rolling_task(contents):
+    path = Path(__file__).parents[2] / "eval/lm_eval_tasks/uncheatable_eval/wikipedia_english.yaml"
+    config = load_yaml(path, resolve_func=True)
+    docs = [{"category": "wikipedia_english", "content": text} for text in contents]
+    config.update(num_fewshot=0, custom_dataset=lambda **kwargs: DatasetDict(test=Dataset.from_list(docs)))
+    return ConfigurableTask(config=config)
+
+
+def test_rolling_diagnostics_preserve_corpus_weighting_and_default_reporting():
+    contents = ["  café\t猫\n", "a b c d e"]
+    results = [
+        evaluate(
+            RollingLikelihoods([-1.25, -17.5]),
+            {"case": rolling_task(contents)},
+            log_samples=True,
+            verifyit_enabled=enabled,
+        )
+        for enabled in [False, True]
+    ]
+    assert results[0]["results"] == results[1]["results"]
+    assert results[0]["samples"] == results[1]["samples"]
+    metrics = results[1]["results"]["case"]
+    assert metrics["word_perplexity,none"] == pytest.approx(math.exp(18.75 / 9))
+    assert metrics["byte_perplexity,none"] == pytest.approx(math.exp(18.75 / 21))
+    assert metrics["word_perplexity_stderr,none"] == "N/A"
+
+
+@pytest.mark.parametrize("observation", [None, float("nan"), 1.0, -1000.0])
+def test_invalid_rolling_observation_aborts_reporting_instead_of_emitting_favorable_metrics(observation):
+    with pytest.raises(InvalidTask):
+        evaluate(
+            RollingLikelihoods([observation]),
+            {"case": rolling_task(["text"])},
+            verifyit_enabled=True,
+        )
+
+
+def test_rolling_category_callable_cannot_borrow_a_valid_source_namespace():
+    task = rolling_task(["text"])
+    original = task.config.process_docs
+    alternate = original.__globals__["github_python"]
+    task.config.process_docs = FunctionType(alternate.__code__, original.__globals__, original.__name__)
+    task.dataset = DatasetDict(test=Dataset.from_list([{"category": "github_python", "content": "text"}]))
+    with pytest.raises(InvalidTask, match="category"):
+        evaluate(RollingLikelihoods([-1.0]), {"case": task}, verifyit_enabled=True)
