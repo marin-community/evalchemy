@@ -63,8 +63,11 @@ fallbacks are not used. Undefined/nonfinite references abort; candidate exceptio
 malformed output and timeouts receive zero. AMPS remains in the source runtime.
 Zebra, web-of-lies and spatial routes prepare answers for core Exact/JSONSchema
 and core aggregation. Table reformatting uses core JSONSchema for structure and
-nulls, Numeric for finite numeric tolerance, and ALL/MAX for results. Other
-retained branches remain documented coverage gaps.
+nulls, Numeric for finite numeric tolerance, and ALL/MAX for results. Table joins
+prepare canonical key/value labels for Exact set-overlap F1, rounded to two decimal
+places. Empty candidate values or nonstring labels conservatively score zero; empty or
+malformed reference mappings are invalid tasks. Other retained branches remain
+documented coverage gaps.
 
 The source callback manifest guards the vendored implementation and shared code
 it imports. Instruction detection is deterministically seeded, and an undetectable

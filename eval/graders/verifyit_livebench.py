@@ -1,6 +1,5 @@
 """LiveBench opt-in grading, preserving its client aggregation and loaders."""
 
-import ast
 import hashlib
 import json
 import math
@@ -235,13 +234,9 @@ def retained_score(question, response):
 
         return grade_table(question, response).reward
     if task == "tablejoin":
-        try:
-            mapping = ast.literal_eval(reference)
-            if not isinstance(mapping, dict) or not mapping:
-                raise ValueError("Empty join reference")
-        except (ValueError, TypeError, SyntaxError) as error:
-            raise InvalidTask("Table join reference must be a nonempty mapping") from error
-        return source.joinmap_process_results(question["turns"][0], reference, response, False)
+        from eval.graders.verifyit_livebench_tables import grade_join
+
+        return grade_join(question, response).reward
     if task in ("zebra_puzzle", "web_of_lies_v2", "spatial"):
         from eval.graders import verifyit_livebench_reasoning as reasoning
 

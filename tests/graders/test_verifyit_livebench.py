@@ -260,3 +260,29 @@ def test_tsv_successful_wrong_parse_does_not_retry_embedded_table():
     assert utils.read_df_func("tsv", candidate) is not None
     assert utils.table_process_results(prompt, reference, candidate) == 0
     assert grade_retained(question(task="tablereformat", ground_truth=reference, turns=[prompt]), candidate).reward == 0
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [
+        ("{'a': 'x', 'b': 'y'}", 1.0),
+        ("{'a': 'x'}", 0.67),
+        ("{'a': 'x', 'b': 'wrong'}", 0.5),
+        ("{'a': 'x', 'b': None}", 0.67),
+        ("{'a': 'x', 'b': ''}", 0.0),
+    ],
+)
+def test_table_join_core_overlap_and_conservative_malformed_labels(candidate, expected):
+    from eval.graders.verifyit_livebench_tables import grade_join
+    from livebench.process_results.data_analysis.tablejoin.utils import joinmap_process_results
+
+    row = question(task="tablejoin", ground_truth="{'a': 'x', 'b': 'y'}")
+    assert grade_join(row, candidate).reward == expected
+    if "''" not in candidate:
+        assert joinmap_process_results(None, row["ground_truth"], candidate) == expected
+
+
+def test_table_join_invalid_reference_precedes_unparseable_candidate():
+    from eval.graders.verifyit_livebench_tables import grade_join
+
+    with pytest.raises(InvalidTask):
+        grade_join(question(task="tablejoin", ground_truth="{'a': None}"), "not a mapping")

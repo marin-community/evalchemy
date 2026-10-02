@@ -1,5 +1,7 @@
 """Parse LiveBench tables for core structural and numeric comparison."""
 
+import ast
+import json
 import math
 
 from verifyit.grade import Aggregation, InvalidTask, aggregate_rewards
@@ -88,3 +90,29 @@ def grade_table(question, response):
     if not verdicts:
         verdicts.append(grade_json_schema_candidate(schema, None))
     return aggregate_rewards(verdicts, expected_total=len(verdicts), policy=Aggregation.MAX)
+
+
+def _join_labels(mapping):
+    if not isinstance(mapping, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str) or not value for key, value in mapping.items()
+    ):
+        raise ValueError("Join labels must map strings to nonempty strings")
+    return [json.dumps([key, value], ensure_ascii=False) for key, value in mapping.items()]
+
+
+def grade_join(question, response):
+    from livebench.process_results.data_analysis.tablejoin.utils import clean_llm_output
+    from verifyit.modes.grade_exact import grade_collection_f1
+
+    try:
+        reference = _join_labels(ast.literal_eval(question["ground_truth"]))
+    except (ValueError, TypeError, SyntaxError) as error:
+        raise InvalidTask("Table join reference must be a mapping of nonempty string labels") from error
+    # Validate trusted labels before parsing candidate data.
+    policy = dict(multiplicity="set", empty_reference="invalid", round_digits=2)
+    grade_collection_f1(reference, [], **policy)
+    try:
+        candidate = _join_labels(clean_llm_output(response))
+    except (ValueError, TypeError):
+        candidate = None
+    return grade_collection_f1(reference, candidate, **policy)
