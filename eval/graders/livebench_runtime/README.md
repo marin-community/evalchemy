@@ -136,3 +136,24 @@ fallback may accept; the default source grader is unchanged.
 Absent or nontext extracted Math candidates are treated as empty answers and score
 zero. Trusted references are still validated first, so a missing candidate cannot
 hide a malformed reference.
+
+### Harness task opt-in
+
+With the `verifyit` extra installed, `python -m eval.eval --verifyit_harness ...`
+selects native verifyit grading for lm-eval-harness tasks. The Python entry points
+`lm_eval.simple_evaluate` and `lm_eval.evaluator.evaluate` accept
+`verifyit_enabled=True`. Enabled results record this choice in
+`config.verifyit_enabled`; omitting the flag preserves source grading.
+
+NQ-Open and TriviaQA retain their configured strict and extracted answer filters,
+then use Exact and MAX for aliases. Their reserved invalid-extraction marker maps
+to empty text, so a missing answer cannot receive credit against the alias
+`invalid`; an explicit `Answer: invalid` remains a valid answer. Missing or empty
+trusted alias lists invalidate the task. Answers that normalize to empty also
+score zero, including punctuation-only answers the source scorer could credit.
+TruthfulQA MC2 uses the MCQ primitive's
+probability-mass policy; malformed or nonfinite likelihoods invalidate the run.
+
+The flag rejects contracts without a native mapping instead of falling back to a
+source scorer. The existing `gsm8k_verifyit` task remains a separate opt-in; use
+it without `--verifyit_harness`.
