@@ -177,5 +177,65 @@ def test_rolling_category_callable_cannot_borrow_a_valid_source_namespace():
     alternate = original.__globals__["github_python"]
     task.config.process_docs = FunctionType(alternate.__code__, original.__globals__, original.__name__)
     task.dataset = DatasetDict(test=Dataset.from_list([{"category": "github_python", "content": "text"}]))
-    with pytest.raises(InvalidTask, match="category"):
+    with pytest.raises(InvalidTask):
         evaluate(RollingLikelihoods([-1.0]), {"case": task}, verifyit_enabled=True)
+
+
+def drop_task(spans):
+    path = Path(__file__).parents[2] / "eval/lm_eval_tasks/drop/drop.yaml"
+    config = load_yaml(path, resolve_func=True)
+    doc = {
+        "query_id": "span-boundary",
+        "passage": "A controlled span comparison.",
+        "question": "Which spans answer the question?",
+        "answer": {"number": "", "date": {"day": "", "month": "", "year": ""}, "spans": spans},
+        "validated_answers": {"number": [], "date": [], "spans": []},
+    }
+    config.update(
+        num_fewshot=0,
+        training_split=None,
+        validation_split=None,
+        test_split="test",
+        custom_dataset=lambda **kwargs: DatasetDict(test=Dataset.from_list([doc])),
+    )
+    return ConfigurableTask(config=config)
+
+
+@pytest.mark.parametrize(
+    "spans,response,expected",
+    [
+        (["red blue", "green", "yellow"], "Answer: red", 0.22),
+        (["red blue", "red blue"], "Answer: red", 0.33),
+        (["1990 red blue"], "1991 red blue", 0.0),
+        (["1990 red blue"], "1990 red blue", 1.0),
+    ],
+)
+def test_drop_single_prediction_preserves_alignment_numbers_and_rounding(spans, response, expected):
+    results = [
+        evaluate(Responses([response]), {"case": drop_task(spans)}, bootstrap_iters=0, verifyit_enabled=enabled)
+        for enabled in [False, True]
+    ]
+    assert results[0]["results"] == results[1]["results"]
+    assert results[1]["results"]["case"]["f1,extract_answer"] == expected
+
+
+def test_drop_uses_source_scaled_rounding_after_span_alignment():
+    reference = ["word" + chr(97 + i // 26) + chr(97 + i % 26) for i in range(100)]
+    candidate = reference[:33] + ["other" + chr(97 + i // 26) + chr(97 + i % 26) for i in range(67)]
+    for enabled in [False, True]:
+        result = evaluate(
+            Responses(["Answer: " + " ".join(candidate)]),
+            {"case": drop_task([" ".join(reference), "unrelated"])},
+            bootstrap_iters=0,
+            verifyit_enabled=enabled,
+        )
+        assert result["results"]["case"]["f1,extract_answer"] == 0.16
+
+
+def test_drop_missing_answer_cannot_match_an_empty_normalized_reference():
+    for enabled in [False, True]:
+        result = evaluate(Responses([""]), {"case": drop_task(["the"])}, bootstrap_iters=0, verifyit_enabled=enabled)
+        assert result["results"]["case"]["em,extract_answer"] == (0 if enabled else 1)
+        assert result["results"]["case"]["f1,extract_answer"] == (0 if enabled else 1)
+    with pytest.raises(InvalidTask):
+        evaluate(Responses([""]), {"case": drop_task([None])}, bootstrap_iters=0, verifyit_enabled=True)

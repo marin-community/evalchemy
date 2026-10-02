@@ -160,6 +160,13 @@ byte counts are preserved. These are unbounded diagnostics, not rewards; missing
 nonfinite, positive or overflowing log likelihoods abort reporting. The pinned
 category preparation and metric configuration must match the supported source.
 
+The `drop` override keeps its source short-answer extraction and normalizes spans
+before core set-F1 and numeric gating. Its single predicted span is aligned with
+the best gold span, retaining unmatched spans in the denominator and rounding
+after aggregation. Missing or normalized-empty answers score zero, even where
+the source could credit an empty normalized reference; malformed trusted spans
+invalidate the task. Other response cardinalities are unsupported.
+
 The flag rejects contracts without a native mapping instead of falling back to a
 source scorer. The existing `gsm8k_verifyit` task remains a separate opt-in; use
 it without `--verifyit_harness`.

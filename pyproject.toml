@@ -78,7 +78,7 @@ eval = "eval.serve_eval.cli:main"
 evalchemy = "eval.serve_eval.cli:main"
 
 [project.optional-dependencies]
-verifyit = ["verifyit[answer,schema] @ git+https://github.com/marin-community/verifyit@4d5b04c83d5650c45fc81088b8ca35b258c5acac"]
+verifyit = ["verifyit[answer,schema] @ git+https://github.com/marin-community/verifyit@d683cbfd8fbcc90c4355e8fa6f71f4717ef79753"]
 dev = [
     "pytest",
     "black",
