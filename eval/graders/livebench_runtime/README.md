@@ -126,3 +126,13 @@ comparison. GSM8K-Perturbed keeps its answer extraction and compares parsed numb
 through Numeric with zero tolerance. Missing candidate answers score zero. Invalid
 trusted references raise `InvalidTask` before per-sample metrics are updated; source
 scoring remains the default.
+
+AIME24, AIME25 and MATH500 accept the same opt-in flag. Their cutover compares
+extracted final expressions through Math and combines alternative references with
+core MAX. Every trusted reference is checked before scoring. Strict box parsing
+rejects incomplete boxes and unsupported percent or ordinal forms that the source
+fallback may accept; the default source grader is unchanged.
+
+Absent or nontext extracted Math candidates are treated as empty answers and score
+zero. Trusted references are still validated first, so a missing candidate cannot
+hide a malformed reference.
