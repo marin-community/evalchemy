@@ -230,22 +230,9 @@ def retained_score(question, response):
             raise InvalidTask("Proof rearrangement reference must be a nonempty integer sequence") from error
         return source.proof_rearrangement_process_results(reference, response, edit_distance=True, debug=False)
     if task == "tablereformat":
-        from livebench.process_results.data_analysis.tablereformat.utils import read_df_func
+        from eval.graders.verifyit_livebench_tables import grade_table
 
-        try:
-            output_format = (
-                question["turns"][0]
-                .split("Please convert the Input Table from ")[1]
-                .split("format to ")[1]
-                .split(" format")[0]
-                .lower()
-            )
-            table = read_df_func(output_format, reference)
-            if table is None or table.empty:
-                raise ValueError("Empty trusted table")
-        except (ValueError, TypeError, IndexError) as error:
-            raise InvalidTask("Invalid trusted table format or reference") from error
-        return source.table_process_results(question["turns"][0], reference, response, False)
+        return grade_table(question, response).reward
     if task == "tablejoin":
         try:
             mapping = ast.literal_eval(reference)

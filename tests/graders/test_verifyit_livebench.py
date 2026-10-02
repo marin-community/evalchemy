@@ -230,3 +230,33 @@ def test_zebra_empty_trusted_member_cannot_earn_partial_credit():
     row = question(category="reasoning", task="zebra_puzzle", ground_truth="red,", livebench_release_date="2024-11-25")
     with pytest.raises(InvalidTask, match="nonempty answers"):
         grade_retained(row, "<solution>red, anything</solution>")
+
+
+@pytest.mark.parametrize(
+    ("text", "reward"),
+    [
+        ('b,a\n,1.0000005\n word ,2\n', 1),
+        ('a,b\n1.0000011,\n2,word\n', 0),
+        ('a,b\n2,word\n1,\n', 0),
+        ('a,b\n,\n2,word\n', 0),
+        ('a,b,c\n1,,extra\n2,word,extra\n', 0),
+    ],
+)
+def test_table_core_preserves_order_nulls_and_numeric_tolerance(text, reward):
+    row = question(
+        task="tablereformat",
+        ground_truth="a,b\n1,\n2,word\n",
+        turns=["Please convert the Input Table from json format to csv format"],
+    )
+    assert grade_retained(row, text).reward == reward
+
+
+def test_tsv_successful_wrong_parse_does_not_retry_embedded_table():
+    from livebench.process_results.data_analysis.tablereformat import utils
+
+    prompt = "Please convert the Input Table from json format to tsv format"
+    reference = "a\tb\n1\t2\n"
+    candidate = "Explanation\na\tb\n1\t2\n"
+    assert utils.read_df_func("tsv", candidate) is not None
+    assert utils.table_process_results(prompt, reference, candidate) == 0
+    assert grade_retained(question(task="tablereformat", ground_truth=reference, turns=[prompt]), candidate).reward == 0
