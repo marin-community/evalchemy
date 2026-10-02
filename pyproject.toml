@@ -25,8 +25,8 @@ dependencies = [
     # below; nothing here pulls torch (its imports on the core path are guarded, so the
     # endpoint flow runs torch-free -- see eval/eval.py, eval/task.py, eval/eval_tracker.py).
 
-    # The companion adds isolated candidate transport to the exact upstream v0.4.12
-    # base. Source grading stays unchanged unless a benchmark enables verifyit.
+    # Immutable companion revision based on upstream v0.4.12, including isolated
+    # candidate transport and opt-in verifyit integrations.
     # API/math remain CPU endpoint dependencies; local vLLM is optional below.
     "lm-eval[api,math] @ git+https://github.com/marin-community/lm-evaluation-harness@ea39286e1aee2417301809bee3c6efa1233c58a5",
 
