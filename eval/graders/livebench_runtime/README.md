@@ -186,3 +186,29 @@ configured. Empty or nontext candidate answers receive zero without a provider
 call. Invalid trusted questions or references abort before judging; malformed or
 failed provider responses abort the batch instead of being excluded from its
 accuracy denominator.
+
+### HumanEval through the harness
+
+The `humaneval` task supports `--verifyit_harness` with one completion per task
+and `pass@1`. The `verifyit` extra installs pytest and its JSON report plugin for
+the trusted supervisor. Docker must be running, with this candidate image
+available:
+
+```bash
+docker pull python@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
+```
+
+Use `--confirm_run_unsafe_code` with the harness CLI. Python callers pass
+`verifyit_enabled=True, confirm_run_unsafe_code=True` to
+`lm_eval.evaluator.evaluate`. The source path additionally requires
+`HF_ALLOW_CODE_EVAL=1`.
+
+Source prompt concatenation and stop filtering are retained. Trusted checks run
+under verifyit's Pytest mode; candidate functions run in a separate read-only
+container that receives only candidate code and function arguments. Candidates
+cannot write the supervisor's tests, execution metadata or pytest report.
+Malformed trusted checks invalidate the task, while incorrect returns, broken
+candidate transport and a 30-second timeout score zero. The owned container is
+removed after every attempt, including timeout. Source checks that swallow a
+candidate transport failure do not receive credit. Omitting the opt-in keeps
+the original code-evaluation metric.

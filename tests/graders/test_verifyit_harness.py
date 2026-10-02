@@ -239,3 +239,26 @@ def test_drop_missing_answer_cannot_match_an_empty_normalized_reference():
         assert result["results"]["case"]["f1,extract_answer"] == (0 if enabled else 1)
     with pytest.raises(InvalidTask):
         evaluate(Responses([""]), {"case": drop_task([None])}, bootstrap_iters=0, verifyit_enabled=True)
+
+
+def test_humaneval_rejects_replaced_source_callable_before_execution():
+    path = Path(__file__).parents[2] / "eval" / "lm_eval_tasks" / "humaneval" / "humaneval.yaml"
+    config = load_yaml(path, resolve_func=True)
+    original = config["metric_list"][0]["metric"]
+    replacement = FunctionType(original.__code__, original.__globals__, original.__name__, original.__defaults__)
+    config["metric_list"][0]["metric"] = replacement
+    doc = {
+        "task_id": "HumanEval/control",
+        "prompt": "def answer():\n",
+        "entry_point": "answer",
+        "test": "def check(candidate):\n    assert candidate() == 42",
+    }
+    config.update(num_fewshot=0, custom_dataset=lambda **kwargs: DatasetDict(test=Dataset.from_list([doc])))
+    with pytest.raises(InvalidTask):
+        evaluate(
+            Responses(["    return 42\n"]),
+            {"case": ConfigurableTask(config=config)},
+            bootstrap_iters=0,
+            verifyit_enabled=True,
+            confirm_run_unsafe_code=True,
+        )
