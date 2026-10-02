@@ -32,6 +32,7 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
         annotator_model: Optional[str] = None,
         judge_api_key: Optional[str] = None,
         judge_base_url: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         super().__init__(
             data_file=None,
@@ -39,6 +40,7 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
             dataset_revision=dataset_revision,
             dataset_split=dataset_split,
             debug=debug,
+            verifyit_enabled=verifyit_enabled,
             seed=seed,
             max_tokens=max_tokens,
             logger=logger,

@@ -170,3 +170,19 @@ invalidate the task. Other response cardinalities are unsupported.
 The flag rejects contracts without a native mapping instead of falling back to a
 source scorer. The existing `gsm8k_verifyit` task remains a separate opt-in; use
 it without `--verifyit_harness`.
+
+FinanceBench, OlympiadBench, OlympiadBenchFull, SimpleQA and SimpleQAMini accept
+`verifyit_enabled=True` in their benchmark constructor. Supply the usual
+`annotator_model`, `judge_base_url` and `judge_api_key`; the enabled path sends
+source prompts to verifyit's Judge mode with the source label vocabulary.
+Omitting the option retains the original grader.
+
+When a judge is configured, Olympiad cutovers send every nonempty answer to
+Judge instead of first attempting deterministic Math equivalence. This supports
+textual and functional reference answers outside the Math parser, adds provider
+calls for answers that previously matched deterministically, and can change
+judgments. The Math-only helper path remains available when no judge is
+configured. Empty or nontext candidate answers receive zero without a provider
+call. Invalid trusted questions or references abort before judging; malformed or
+failed provider responses abort the batch instead of being excluded from its
+accuracy denominator.

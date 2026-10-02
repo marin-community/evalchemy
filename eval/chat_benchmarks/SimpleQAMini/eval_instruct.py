@@ -24,10 +24,12 @@ class SimpleQAMiniBenchmark(SimpleQABenchmark):
         judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         super().__init__(
             data_file=data_file,
             debug=debug,
+            verifyit_enabled=verifyit_enabled,
             seed=seed,
             max_tokens=max_tokens,
             annotator_model=annotator_model,

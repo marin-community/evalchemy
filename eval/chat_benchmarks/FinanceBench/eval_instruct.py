@@ -73,6 +73,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
         judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize FinanceBench benchmark.
@@ -94,6 +95,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model.
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.data_file = data_file
         self.debug = debug
         self.seed = seed
@@ -176,8 +178,19 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.logger.info(
             f"Judging {total} FinanceBench responses with {judge_model}..."
         )
+        equivalence_judge = judge_equivalence
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import judge_equivalence as verifyit_judge
+            from verifyit.grade import InvalidTask
+
+            if not examples or any(
+                not isinstance(example.get("answer"), str) or not example["answer"].strip()
+                for example in examples
+            ):
+                raise InvalidTask("FinanceBench requires nonempty trusted reference answers")
+            equivalence_judge = verifyit_judge
         judgments = asyncio.run(
-            judge_equivalence(
+            equivalence_judge(
                 [
                     EquivalenceRequest(
                         question=example["question"],

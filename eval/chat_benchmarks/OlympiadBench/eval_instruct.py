@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import asdict
@@ -136,6 +137,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         annotator_model: Optional[str] = None,
         judge_api_key: Optional[str] = None,
         judge_base_url: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize OlympiadBench benchmark.
@@ -164,6 +166,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             pass_at_k=pass_at_k,
         )
         self.data_file = data_file
+        self.verifyit_enabled = verifyit_enabled
         self.dataset_name = dataset_name
         self.dataset_revision = dataset_revision
         self.dataset_split = dataset_split
@@ -416,6 +419,25 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         answers_by_example: List[List[str]],
     ) -> tuple[List[List[bool]], Dict[str, Any]]:
         """Grade extracted answers with Minerva followed by the shared LLM judge."""
+        if self.verifyit_enabled:
+            from verifyit.grade import InvalidTask
+
+            for example in examples:
+                question = example.get("problem", example.get("question"))
+                raw = example.get("answer")
+                references = raw if isinstance(raw, (list, tuple)) else [raw]
+                if (
+                    not isinstance(question, str)
+                    or not question.strip()
+                    or not references
+                    or any(
+                        type(reference) not in (str, int, float)
+                        or (isinstance(reference, float) and not math.isfinite(reference))
+                        or not str(reference).strip()
+                        for reference in references
+                    )
+                ):
+                    raise InvalidTask("OlympiadBench requires a question and nonempty reference answers")
         requests = []
         positions = []
         for example_index, (example, answers) in enumerate(zip(examples, answers_by_example, strict=True)):
@@ -430,7 +452,11 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 )
                 positions.append((example_index, answer_index))
 
-        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
+        grader = grade_math_equivalence
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import grade_math_equivalence as grade_equivalence
+            grader = grade_equivalence
+        outcomes = asyncio.run(grader(requests, self.judge_config))
         correct_by_example = [[False] * len(answers) for answers in answers_by_example]
         grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
         num_graded_by_minerva = 0

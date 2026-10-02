@@ -57,9 +57,11 @@ class SimpleQABenchmark(BaseBenchmark):
         judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.data_file = data_file
+        self.verifyit_enabled = verifyit_enabled
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
@@ -154,8 +156,12 @@ class SimpleQABenchmark(BaseBenchmark):
             base_url=self.judge_config.base_url,
             api_key=self.judge_config.api_key,
         )
+        grader = judge_simpleqa
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import judge_simpleqa as grade_simpleqa
+            grader = grade_simpleqa
         return asyncio.run(
-            judge_simpleqa(
+            grader(
                 [
                     SimpleQARequest(
                         question=example["question"],
