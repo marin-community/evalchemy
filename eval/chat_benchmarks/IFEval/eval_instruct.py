@@ -22,6 +22,7 @@ class IFEvalBenchmark(BaseBenchmark):
         max_tokens: int = 512,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize Instruction Following Benchmark
@@ -37,6 +38,7 @@ class IFEvalBenchmark(BaseBenchmark):
         system_instruction: Optional system instruction for the model
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.data_dir = data_dir
         self.max_tokens = max_tokens
         self.num_examples = num_examples
@@ -165,7 +167,12 @@ class IFEvalBenchmark(BaseBenchmark):
 
             input_file = os.path.join(self.data_dir, "input_data.jsonl")
             response_file = os.path.join(temp_dir, "ifeval.jsonl")
-            result = evaluate_accuracy(response_file)
+            if self.verifyit_enabled:
+                from eval.graders.verifyit_instructions import evaluate_accuracy as verifyit_accuracy
+
+                result = verifyit_accuracy(response_file, "IFEval")
+            else:
+                result = evaluate_accuracy(response_file)
             follow_rates = result.pop(PER_PROMPT_FOLLOW_RATE)
             for example in results["examples"]:
                 rates = follow_rates[example["prompt"]]

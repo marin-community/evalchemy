@@ -603,6 +603,7 @@ def evaluate(
                         numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
                         torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
                         fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
+                        **({"verifyit_enabled": True} if getattr(args, "verifyit_harness", False) else {}),
                     )
             except Exception as exc:
                 outcomes.append(

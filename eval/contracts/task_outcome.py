@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from .failures import FailureCategory as FailureCategory
 from .failures import FailurePhase as FailurePhase
+from .failures import GradingBoundaryError
 from .failures import classify_task_exception as classify_task_exception
 from .grading import validate_serialized_artifact_manifests
 from .sample_manifest import SampleCoverageError, SampleManifest
@@ -41,6 +42,8 @@ class TaskFailure:
     category: FailureCategory
     message: str
     exception_type: str | None = None
+    grading_failure: dict | None = None
+    grading_verdict: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,8 @@ class TaskOutcome:
                 category=category,
                 message=failure_message,
                 exception_type=type(exception).__name__ if exception is not None else None,
+                grading_failure=exception.failure if isinstance(exception, GradingBoundaryError) else None,
+                grading_verdict=exception.verdict if isinstance(exception, GradingBoundaryError) else None,
             ),
         )
 
