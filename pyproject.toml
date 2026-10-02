@@ -28,7 +28,7 @@ dependencies = [
     # The companion adds isolated candidate transport to the exact upstream v0.4.12
     # base. Source grading stays unchanged unless a benchmark enables verifyit.
     # API/math remain CPU endpoint dependencies; local vLLM is optional below.
-    "lm-eval[api,math] @ git+https://github.com/marin-community/lm-evaluation-harness@0fba2ad07d251a11a3504e63216682c27a999ce9",
+    "lm-eval[api,math] @ git+https://github.com/marin-community/lm-evaluation-harness@ea39286e1aee2417301809bee3c6efa1233c58a5",
 
     # curator registers the `curator` model at eval.eval import; also brings
     # litellm / instructor / nest-asyncio / openai / pandas transitively.
@@ -244,7 +244,7 @@ benchmarks = [
 # torch is installed. Split these out of the base deps so a CPU-only install stays lean.
 vllm = [
     "accelerate",
-    "lm-eval[vllm] @ git+https://github.com/marin-community/lm-evaluation-harness@0fba2ad07d251a11a3504e63216682c27a999ce9",
+    "lm-eval[vllm] @ git+https://github.com/marin-community/lm-evaluation-harness@ea39286e1aee2417301809bee3c6efa1233c58a5",
 ]
 
 [tool.uv.sources]

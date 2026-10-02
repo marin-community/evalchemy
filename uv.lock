@@ -1235,8 +1235,8 @@ requires-dist = [
     { name = "langdetect", marker = "extra == 'ifeval'" },
     { name = "langdetect", marker = "extra == 'livebench'" },
     { name = "lark", marker = "extra == 'livebench'" },
-    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9" },
-    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9" },
+    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5" },
+    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5" },
     { name = "loguru" },
     { name = "lxml", marker = "extra == 'livebench'" },
     { name = "marin-finestore", marker = "extra == 'serve-eval'", specifier = ">=0.2.113.dev35019671596" },
@@ -2586,8 +2586,8 @@ wheels = [
 
 [[package]]
 name = "lm-eval"
-version = "0.4.12"
-source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9#0fba2ad07d251a11a3504e63216682c27a999ce9" }
+version = "0.4.14.dev0"
+source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5#ea39286e1aee2417301809bee3c6efa1233c58a5" }
 dependencies = [
     { name = "datasets" },
     { name = "dill" },
