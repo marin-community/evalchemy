@@ -111,8 +111,8 @@ also be graded with
 IFEval observations use shared core preparation and Schema/IFEval comparisons;
 IFBench retains its 58 observation mappings and delegates comparisons to core
 primitives. Language detection failure and malformed candidate JSON cannot earn
-credit. The `verifyit` extra pins core revision
-`b08a5ee8d94fcb4a2134562aee94ff9715dadd14`.
+credit. The `verifyit` extra and committed `uv.lock` pin the immutable core revision
+declared in `pyproject.toml`.
 
 ### Opt-in HumanEval shell grading
 
