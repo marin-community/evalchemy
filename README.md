@@ -112,7 +112,56 @@ IFEval observations use shared core preparation and Schema/IFEval comparisons;
 IFBench retains its 58 observation mappings and delegates comparisons to core
 primitives. Language detection failure and malformed candidate JSON cannot earn
 credit. The `verifyit` extra pins core revision
-`2ec1f2472ce8ff961343c6b1364cac1774870ed8`.
+`b08a5ee8d94fcb4a2134562aee94ff9715dadd14`.
+
+### Opt-in HumanEval shell grading
+
+Install `evalchemy[humaneval,verifyit]` and build the candidate image:
+
+```bash
+docker build -t verifyit-code:python-v1 eval/graders/code_runtime
+```
+
+Enable shell grading through the task manager's Python API:
+
+```python
+from eval.task import TaskManager
+
+manager = TaskManager(
+    task_list=["HumanEval"],
+    languages=["sh"],
+    verifyit_shell_enabled=True,
+    verifyit_shell_policy="isolated_first_shell_function_v2",
+)
+benchmark = manager.benchmark_instances["HumanEval"]
+results = benchmark.run_benchmark(model)  # An existing lm_eval LM instance.
+```
+
+The default `verifyit_shell_enabled=False` retains native grading. The flag
+changes only `sh`; other selected languages continue through the native grader.
+It is a Python configuration option, not the CLI's separate `--verifyit_harness`
+flag. Unknown shell policies fail before candidate execution. Each sample shares its
+timeout across reference preparation, image inspection and protected execution;
+container cleanup has its separate bounded allowance. Time spent queued behind
+other samples does not consume that sample's budget.
+
+The v2 policy parses the entire extracted source with Bash, imports its first
+entry-function definition, and invokes that function in a fresh isolated shell
+for each trusted call. It ignores newline-separated trailing helpers, global
+assignments and redefinitions; same-line trailing commands are rejected. Helpers
+inside the entry function remain available. Source initialization never runs.
+Shell startup variables are sanitized. Function output bytes and exit status are
+returned to protected trusted Bash assertions; a function's `exit 125` is an
+observable status rather than an exit from the trusted test process.
+
+This policy changes native source semantics, including shared state between
+calls. Syntax/import failures score zero even if trusted tests ignore shell
+errors. Invalid trusted references and infrastructure failures remain errors.
+One completion per task and pass@1 are supported; other k requests are rejected. Three genuine shell tasks with controlled
+positive and wrong responses have been compared; the 158 task prompt shapes do
+not establish archived-response coverage or full native-source parity. The
+native macOS comparison explicitly used multiprocessing `fork`; the upstream
+native worker cannot be pickled with the macOS default `spawn` method.
 
 ## 📚 Available Tasks
 
