@@ -138,7 +138,7 @@ def instruction_score(question, response, root):
 
         registry[identifier] = corrected()
     observations = []
-    _install("LiveBench", registry, root, observations)
+    _install("LiveBench", registry, observations)
     inputs = evaluation_main.read_prompt_list([question])
     result = evaluation_main.test_instruction_following_strict(inputs[0], {row["prompt"]: response})
     flags = result.follow_instruction_list
@@ -240,7 +240,11 @@ def retained_score(question, response):
     if task in ("zebra_puzzle", "web_of_lies_v2", "spatial"):
         from eval.graders import verifyit_livebench_reasoning as reasoning
 
-        prepare = {"zebra_puzzle": reasoning.zebra, "web_of_lies_v2": reasoning.web_of_lies, "spatial": reasoning.spatial}[task]
+        prepare = {
+            "zebra_puzzle": reasoning.zebra,
+            "web_of_lies_v2": reasoning.web_of_lies,
+            "spatial": reasoning.spatial,
+        }[task]
         return prepare(question, response).reward
     if task == "connections":
         if any(not word.strip() for word in reference.split(",")):

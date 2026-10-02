@@ -14,9 +14,8 @@ from pathlib import Path
 
 from verifyit.grade import Aggregation, InvalidTask, Reward, Status, aggregate_rewards, run
 from verifyit.json_objects import unique_object
-from verifyit.modes.grade_ifeval import grade_ifeval_candidate
 from verifyit.modes.grade_json_schema import grade_json_schema_candidate
-from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec, ScriptSpec, render_spec
+from verifyit.spec import ScriptSpec, render_spec
 
 FAMILIES = {"IFEval": "evaluation", "IFBench": "grader"}
 SOURCE_HASHES = {
@@ -26,7 +25,7 @@ SOURCE_HASHES = {
     "IFEval/instructions_registry.py": "75b84ca1e0f258ffb84896c2999e8dd850ba97757af8ab9e0e72b49fe956974d",
     "IFEval/instructions_util.py": "9c62950b0b27c6c3299122a941b0a17ed3ec85c9bc7ae6432a1359cb6b8e730d",
     "IFBench/grader.py": "1e71c509a1dff80f9c19fc2abde5400f7790e053a0c808f0fadd5b53a2b24415",
-    "IFBench/instructions.py": "fe169405312396cb843aa7dda755d160553a4510f47dc186b812dd471da76302",
+    "IFBench/instructions.py": "b32414e548123bad90f03178450f5300ddfd97aa08ad56bc616cd202071dff19",
     "IFBench/instructions_registry.py": "58a4797496ee0d8279d4e3837575123fc3052465f2b7c9a4b3fbc01d88343aed",
     "IFBench/instructions_util.py": "b7d60e07bbb2c56e42ee1a4a1b2f7281ced6c7af3af2719d2dca322afd3c20b8",
 }
@@ -227,44 +226,21 @@ def _validate(rows, registry):
             raise InvalidTask("Instruction key is missing")
 
 
-def _install(family, registry, root, observations):
-    from verifyit.modes.ifeval import CONSTRAINTS
-
+def _install(family, registry, observations):
     for instruction_id, original in tuple(registry.items()):
-        name = "evalchemy:" + family + ":" + instruction_id
-        if name in CONSTRAINTS:
-            raise InvalidTask("Trusted instruction registry collision")
 
-        def build_class(original=original, instruction_id=instruction_id, name=name):
+        def build_class(original=original, instruction_id=instruction_id):
             class VerifiedInstruction(original):
                 def check_following(self, response):
                     from eval.graders.verifyit_instruction_data import grade_prepared_instruction
 
                     prepared = grade_prepared_instruction(family, instruction_id, self, original, response)
-                    if prepared is not None:
-                        observations.append({"instruction": instruction_id, "verdict": dataclasses.asdict(prepared)})
-                        if prepared.status != Status.SCORED:
-                            raise RuntimeError("Instruction comparison failed")
-                        return prepared.reward == 1
-                    error = []
-
-                    def check(candidate, params):
-                        try:
-                            text = candidate
-                            passed = original.check_following(self, text)
-                            if type(passed) is not bool:
-                                raise RuntimeError("Source instruction did not return a boolean")
-                            return passed, "trusted source predicate"
-                        except Exception as exception:
-                            error.append(f"{type(exception).__name__}: {exception}")
-                            return False, "source predicate failed"
-
-                    specification = IfevalSpec((Constraint(name, {}),), empty_output=EmptyOutputPolicy.GRADE)
-                    verdict = grade_ifeval_candidate(specification, response, registry={name: check})
-                    observations.append({"instruction": instruction_id, "verdict": dataclasses.asdict(verdict)})
-                    if verdict.status != Status.SCORED or error:
-                        raise RuntimeError("Source instruction execution failed: " + str(error))
-                    return verdict.reward == 1
+                    if prepared is None:
+                        raise InvalidTask("Unsupported prepared instruction: " + instruction_id)
+                    observations.append({"instruction": instruction_id, "verdict": dataclasses.asdict(prepared)})
+                    if prepared.status != Status.SCORED:
+                        raise RuntimeError("Instruction comparison failed")
+                    return prepared.reward == 1
 
             return VerifiedInstruction
 
@@ -302,7 +278,7 @@ def main():
 
             langdetect.DetectorFactory.seed = 0
         random.setstate(_state(payload["random_state"]))
-        _install(family, registry, path.parent, observations)
+        _install(family, registry, observations)
         response_file = path.parent / "responses.jsonl"
         response_file.write_text(payload["rows"])
         try:

@@ -273,3 +273,95 @@ def test_ifbench_precision_zero_reference_and_invalid_metadata_precedence(tmp_pa
         )
         with pytest.raises(InvalidTask):
             evaluate_accuracy(path, "IFBench")
+
+
+def test_ifbench_rejects_impossible_dates_and_incomplete_csv_after_valid_row(tmp_path):
+    from eval.chat_benchmarks.IFBench.instructions import DateFormatListChecker, SpecialCharacterCSVChecker
+
+    dates = DateFormatListChecker("custom:date_format_list")
+    dates.build_description()
+    malformed_dates = ["1800-00-01", "1800-01-00", "1800-02-29"]
+    assert all(dates.check_following(value) for value in malformed_dates)
+    csv_source = SpecialCharacterCSVChecker("custom:csv_special_character")
+    csv_source.build_description()
+    csv_text = 'ProductID,Category,Brand,Price,Stock\n1,"a,b",C,1,2\n' + "1,2,3,4,5\n" * 12 + "missing,columns\n"
+    assert csv_source.check_following(csv_text)
+    cases = [row(str(index), value, ["custom:date_format_list"], [{}]) for index, value in enumerate(malformed_dates)]
+    cases += [
+        row("csv", csv_text, ["custom:csv_special_character"], [{}]),
+        row("valid", "1804-02-29", ["custom:date_format_list"], [{}]),
+    ]
+    path = tmp_path / "invalid-structure.jsonl"
+    path.write_text("\n".join(json.dumps(value) for value in cases) + "\n")
+    result = evaluate_accuracy(path, "IFBench")
+    assert [item["strict_instruction_pass"] for item in result["per_prompt_outcomes"]] == [[False]] * 4 + [[True]]
+
+
+def test_ifbench_case_and_nesting_require_the_requested_structure(tmp_path):
+    from eval.chat_benchmarks.IFBench.instructions import NestedQuotesChecker, TitleCaseChecker
+
+    title = TitleCaseChecker("format:title_case")
+    title.build_description()
+    assert title.check_following("hELlo")
+    quotes = NestedQuotesChecker("format:quotes")
+    quotes.build_description()
+    incomplete = "".join(['"', "'", '"', "'", "text", "'", '"', "'"])
+    assert quotes.check_following(incomplete)
+    closed = incomplete + '"'
+    cases = [
+        row("bad-case", "hELlo", ["format:title_case"], [{}]),
+        row("case", "Hello World", ["format:title_case"], [{}]),
+        row("open", incomplete, ["format:quotes"], [{}]),
+        row("closed", closed, ["format:quotes"], [{}]),
+        row("shallow", "\"one\" 'two'", ["format:quotes"], [{}]),
+    ]
+    path = tmp_path / "structure.jsonl"
+    path.write_text("\n".join(json.dumps(value) for value in cases) + "\n")
+    result = evaluate_accuracy(path, "IFBench")
+    assert [item["strict_instruction_pass"] for item in result["per_prompt_outcomes"]] == [
+        [False],
+        [True],
+        [False],
+        [True],
+        [False],
+    ]
+
+
+def test_ifbench_distinct_words_and_bullets_cannot_pass_vacuously(tmp_path):
+    from eval.chat_benchmarks.IFBench.instructions import (
+        CharacterCountUniqueWordsChecker,
+        ConjunctionCountChecker,
+        SubBulletPointsChecker,
+    )
+
+    conjunctions = ConjunctionCountChecker("count:conjunctions")
+    conjunctions.build_description(small_n=3)
+    assert conjunctions.check_following("and AND And")
+    sentences = CharacterCountUniqueWordsChecker("ratio:sentence_words")
+    sentences.build_description()
+    assert sentences.check_following("Cat. Cat. Cat.")
+    bullets = SubBulletPointsChecker("format:sub-bullets")
+    bullets.build_description()
+    assert bullets.check_following("Plain prose")
+    assert bullets.check_following("* main - nested")
+    cases = [
+        row("repeated-conjunction", "and AND And", ["count:conjunctions"], [{"small_n": 3}]),
+        row("distinct-conjunction", "and but for", ["count:conjunctions"], [{"small_n": 3}]),
+        row("repeated-sentence", "Cat. Cat. Cat.", ["ratio:sentence_words"], [{}]),
+        row("distinct-sentence", "Cat. Dog. Pig.", ["ratio:sentence_words"], [{}]),
+        row("no-bullets", "Plain prose", ["format:sub-bullets"], [{}]),
+        row("inline-bullets", "* main - nested", ["format:sub-bullets"], [{}]),
+        row("nested-bullets", "* main\n- nested", ["format:sub-bullets"], [{}]),
+    ]
+    path = tmp_path / "distinct-structure.jsonl"
+    path.write_text("\n".join(json.dumps(value) for value in cases) + "\n")
+    result = evaluate_accuracy(path, "IFBench")
+    assert [item["strict_instruction_pass"] for item in result["per_prompt_outcomes"]] == [
+        [False],
+        [True],
+        [False],
+        [True],
+        [False],
+        [False],
+        [True],
+    ]

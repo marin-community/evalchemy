@@ -90,21 +90,30 @@ alphabetic characters (such as CJK mixed with English), which source case checks
 can accept. Cased nonalphabetic characters still must have the requested case.
 The default source path is unchanged.
 
-The shared instruction transport also handles 19 IFBench contracts through Schema:
-word/unique-word/number counts, repetition limits, option selection, newline layout,
-keyword positions and frequencies, repeated text/spans, fixed output templates,
-whitespace, multiples, reversed characters, city CSV structure and prime word
-lengths. Other IFBench IDs retain source predicates. Integer-valued floating count
-metadata is normalized before comparison; options that normalize to empty labels
-are invalid trusted references. IFBench remains a partial migration, with source
-evaluation as the default and the existing explicit `verifyit_enabled` opt-in.
+The shared instruction transport maps all 58 IFBench contracts to Schema, Exact,
+IFEval and core aggregation. Source builders, tokenizers, taggers and emoji detection
+provide task data; source `check_following` callbacks are never invoked by the
+cutover. Unknown instruction IDs fail closed. Source evaluation remains the default;
+set `verifyit_enabled=True` to select the cutover.
 
-Blank responses score zero in both IFEval and IFBench, including batches containing
-other valid answers. Invalid trusted instruction arguments remain task errors.
+Integer-valued floating count metadata is normalized before comparison. Options
+that normalize to empty labels, missing trigram references and nonfinite metadata
+are invalid tasks. Blank responses score zero, including mixed batches. Trigram
+precision uses literal character trigrams and an inclusive ±2 percentage interval;
+case and whitespace remain significant. Empty references give nonempty candidates
+zero precision. Prepared collections retain verifyit's 10,000-item/1,000,000-character
+limits; oversized candidate counts score zero.
 
-IFBench `ratio:overlap` prepares literal character trigrams and delegates set
-precision to Exact, bringing the shared coverage to 20 of 58 instruction contracts.
-The requested percentage uses an inclusive ±2 interval; whitespace and case remain
-significant. Empty references define zero precision for nonempty candidates. Empty
-candidates score zero, while missing references and nonfinite metadata are invalid
-tasks. Prepared collections retain verifyit's 10,000-item/1,000,000-character limits.
+Calendar parsing rejects impossible dates, including zero month/day and nonleap
+February 29. CSV grading validates every row even when an earlier row contains the
+requested special character. Nested-bracket and quote grading require a fully closed group. Title-case checks
+reject lowercase-leading mixed-case tokens such as `hELlo`.
+These cases can receive credit on the source path and score zero on the cutover.
+Indentation ignores blank lines consistently; the source's list mutation can reject
+valid increasing indentation when consecutive blank lines are present. Finite prime word lengths through 97 remain part of the source task contract.
+
+Distinct conjunctions are counted after lowercasing and stripping surrounding ASCII
+punctuation. The equal-length sentence task also requires unique lowercase Unicode
+word tokens (`\w+`), preventing repeated sentences from earning credit. Sub-bullets
+require line-start `*` groups with a line-start `-` item in each group; inline marker
+characters and prose without bullets do not satisfy this format.
