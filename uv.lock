@@ -1235,8 +1235,8 @@ requires-dist = [
     { name = "langdetect", marker = "extra == 'ifeval'" },
     { name = "langdetect", marker = "extra == 'livebench'" },
     { name = "lark", marker = "extra == 'livebench'" },
-    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=bbbb78a8266105387cae3044a3b0a39b4b7f9a80" },
-    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=bbbb78a8266105387cae3044a3b0a39b4b7f9a80" },
+    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9" },
+    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9" },
     { name = "loguru" },
     { name = "lxml", marker = "extra == 'livebench'" },
     { name = "marin-finestore", marker = "extra == 'serve-eval'", specifier = ">=0.2.113.dev35019671596" },
@@ -1284,7 +1284,7 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'bigcodebench'" },
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
-    { name = "verifyit", extras = ["answer", "schema"], marker = "extra == 'verifyit'", git = "https://github.com/marin-community/verifyit?rev=b08a5ee8d94fcb4a2134562aee94ff9715dadd14" },
+    { name = "verifyit", extras = ["answer", "schema"], marker = "extra == 'verifyit'", git = "https://github.com/marin-community/verifyit?rev=232988d88eda32ef480685587f1bd0fdfc394dce" },
 ]
 provides-extras = ["verifyit", "dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa-loose", "nupa5k-loose", "olympiadbench", "olympiadbenchdeterministic", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
 
@@ -2587,7 +2587,7 @@ wheels = [
 [[package]]
 name = "lm-eval"
 version = "0.4.12"
-source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=bbbb78a8266105387cae3044a3b0a39b4b7f9a80#bbbb78a8266105387cae3044a3b0a39b4b7f9a80" }
+source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=0fba2ad07d251a11a3504e63216682c27a999ce9#0fba2ad07d251a11a3504e63216682c27a999ce9" }
 dependencies = [
     { name = "datasets" },
     { name = "dill" },
@@ -5554,7 +5554,7 @@ wheels = [
 [[package]]
 name = "verifyit"
 version = "0.1.0"
-source = { git = "https://github.com/marin-community/verifyit?rev=b08a5ee8d94fcb4a2134562aee94ff9715dadd14#b08a5ee8d94fcb4a2134562aee94ff9715dadd14" }
+source = { git = "https://github.com/marin-community/verifyit?rev=232988d88eda32ef480685587f1bd0fdfc394dce#232988d88eda32ef480685587f1bd0fdfc394dce" }
 dependencies = [
     { name = "harbor-config" },
     { name = "tomlkit" },
