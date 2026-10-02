@@ -191,3 +191,41 @@ def test_case_instructions_cannot_ignore_cased_nonalphabetic_characters(tmp_path
         "4": {"strict": 0.0, "loose": 0.0},
         "5": {"strict": 1.0, "loose": 1.0},
     }
+
+
+def test_ifbench_cached_float_bounds_and_empty_derived_options(tmp_path):
+    path = tmp_path / "ifbench.jsonl"
+    path.write_text(
+        json.dumps(row("count", "one two", ["count:word_count_range"], [{"min_words": 2.0, "max_words": 3.0}])) + "\n"
+    )
+    result = evaluate_accuracy(path, "IFBench")
+    assert result["strict_prompt_accuracy"] == 1.0
+    path.write_text(json.dumps(row("options", "!!!", ["format:options"], [{"options": "/"}])) + "\n")
+    with pytest.raises(InvalidTask):
+        evaluate_accuracy(path, "IFBench")
+
+
+@pytest.mark.parametrize("family,instruction", [("IFEval", "punctuation:no_comma"), ("IFBench", "format:newline")])
+def test_blank_candidate_is_zero_without_invalidating_instruction_task(tmp_path, family, instruction):
+    path = tmp_path / "empty.jsonl"
+    path.write_text(json.dumps(row("empty", " \n", [instruction], [{}])) + "\n")
+    result = evaluate_accuracy(path, family)
+    metric = "prompt-level" if family == "IFEval" else "strict_prompt_accuracy"
+    assert result[metric] == 0.0
+    with path.open("a") as handle:
+        handle.write(json.dumps(row("positive", "hello", [instruction], [{}])) + "\n")
+    mixed = evaluate_accuracy(path, family)
+    assert mixed[metric] == 0.5
+    if family == "IFEval":
+        assert mixed["per_prompt_follow_rate"] == {
+            "empty": {"strict": 0.0, "loose": 0.0},
+            "positive": {"strict": 1.0, "loose": 1.0},
+        }
+    else:
+        assert [item["strict_instruction_pass"] for item in mixed["per_prompt_outcomes"]] == [[False], [True]]
+    invalid_name, invalid_args = (
+        ("keywords:existence", {"keywords": []}) if family == "IFEval" else ("format:options", {"options": ""})
+    )
+    path.write_text(json.dumps(row("invalid", "", [invalid_name], [invalid_args])) + "\n")
+    with pytest.raises(InvalidTask):
+        evaluate_accuracy(path, family)

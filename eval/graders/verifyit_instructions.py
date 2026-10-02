@@ -15,6 +15,7 @@ from pathlib import Path
 from verifyit.grade import Aggregation, InvalidTask, Reward, Status, aggregate_rewards, run
 from verifyit.json_objects import unique_object
 from verifyit.modes.grade_ifeval import grade_ifeval_candidate
+from verifyit.modes.grade_json_schema import grade_json_schema_candidate
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec, ScriptSpec, render_spec
 
 FAMILIES = {"IFEval": "evaluation", "IFBench": "grader"}
@@ -291,9 +292,10 @@ def main():
         ]
         json.dumps(rows, allow_nan=False)
         _validate(rows, registry)
-        import langdetect
+        if family == "IFEval":
+            import langdetect
 
-        langdetect.DetectorFactory.seed = 0
+            langdetect.DetectorFactory.seed = 0
         random.setstate(_state(payload["random_state"]))
         _install(family, registry, path.parent, observations)
         response_file = path.parent / "responses.jsonl"
@@ -306,6 +308,9 @@ def main():
             Reward(item["verdict"]["reward"], Status(item["verdict"]["status"]), item["verdict"]["detail"])
             for item in observations
         ]
+        components.extend(
+            grade_json_schema_candidate({"type": "string", "minLength": 1}, row["response"].strip()) for row in rows
+        )
         combined = aggregate_rewards(components, expected_total=len(components), policy=Aggregation.ALL)
         verdict = dataclasses.asdict(combined)
         verdict["detail"].update(source_result=result, random_state=random.getstate(), ifeval_calls=observations)

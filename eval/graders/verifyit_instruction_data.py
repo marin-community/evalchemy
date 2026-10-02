@@ -1,5 +1,10 @@
 """Prepare source instruction observations for existing core comparisons."""
 
+import csv
+import io
+import string
+from collections import Counter
+
 import json
 import re
 
@@ -38,6 +43,29 @@ MAPPED_IDS = {
 }
 
 
+IFBENCH_IDS = {
+    "repeat:repeat_change",
+    "repeat:repeat_simple",
+    "count:numbers",
+    "words:keywords_specific_position",
+    "count:keywords_multiple",
+    "words:prime_lengths",
+    "format:newline",
+    "sentence:keyword",
+    "count:word_count_range",
+    "custom:multiples",
+    "words:repeats",
+    "format:options",
+    "repeat:repeat_span",
+    "words:words_position",
+    "format:output_template",
+    "custom:character_reverse",
+    "custom:csv_city",
+    "format:no_whitespace",
+    "count:unique_word_count",
+}
+
+
 def _count_schema(expected, relation="exactly"):
     if type(expected) is not int or expected < 0:
         raise InvalidTask("Instruction count must be a nonnegative integer")
@@ -49,6 +77,8 @@ def _count_schema(expected, relation="exactly"):
 
 def grade_prepared_instruction(family, identifier, instruction, original, text):
     """Use source builders/tokenizers only; core owns every acceptance decision."""
+    if family == "IFBench":
+        return _grade_ifbench_instruction(identifier, instruction, original, text)
     if family not in {"LiveBench", "IFEval"} or identifier not in MAPPED_IDS:
         return None
     args = instruction.get_instruction_args() or {}
@@ -203,4 +233,125 @@ def grade_prepared_instruction(family, identifier, instruction, original, text):
             raise InvalidTask("Prompt prefix must be text")
         schema["pattern"] = "^" + re.escape(prompt.strip().lower())
         instance = text.strip().lower()
+    return grade_json_schema_candidate(schema, instance)
+
+
+def _grade_ifbench_instruction(identifier, instruction, original, text):
+    if identifier not in IFBENCH_IDS:
+        return None
+    args = instruction.get_instruction_args() or {}
+    args = {key: int(value) if type(value) is float and value.is_integer() else value for key, value in args.items()}
+    namespace = original.check_following.__globals__
+    punctuation = string.punctuation
+    schema = {"type": "string"}
+    instance = text
+    if identifier == "count:word_count_range":
+        low, high = args["min_words"], args["max_words"]
+        _count_schema(low)
+        _count_schema(high)
+        if low > high:
+            raise InvalidTask("Reversed trusted word-count range")
+        schema = {"type": "integer", "minimum": low, "maximum": high}
+        instance = namespace["instructions_util"].count_words(text)
+    elif identifier == "count:unique_word_count":
+        schema = _count_schema(args["N"], "at least")
+        instance = len({word.strip(punctuation + " ") for word in text.lower().split()})
+    elif identifier == "count:numbers":
+        schema = _count_schema(args["N"])
+        instance = len(re.findall(r"\d+", text.translate(str.maketrans("", "", punctuation))))
+    elif identifier == "words:repeats":
+        _count_schema(args["small_n"])
+        schema = {"type": "array", "items": {"type": "integer", "maximum": args["small_n"]}}
+        words = text.lower().translate(str.maketrans("", "", punctuation)).split()
+        instance = list(Counter(words).values())
+    elif identifier == "format:options":
+        options = instruction._options
+        if not instruction._strict:
+            options = [option.strip(punctuation + " ").lower() for option in options]
+            instance = text.strip(punctuation + " ").lower()
+        if not options or any(not isinstance(option, str) or not option for option in options):
+            raise InvalidTask("Trusted instruction options must contain nonempty labels")
+        schema["enum"] = options
+    elif identifier == "format:newline":
+        value = text.translate(str.maketrans("", "", punctuation))
+        schema = _count_schema(len(value.strip().split()))
+        instance = len([line for line in value.strip().split("\n") if line != ""])
+    elif identifier in {"sentence:keyword", "words:keywords_specific_position"}:
+        position = args["N"] if identifier == "sentence:keyword" else args["n"]
+        _count_schema(position)
+        if position < 1:
+            raise InvalidTask("Sentence index must be positive")
+        sentences = namespace["instructions_util"].split_into_sentences(text)
+        sentence = sentences[position - 1] if position <= len(sentences) else None
+        if identifier == "sentence:keyword":
+            schema["pattern"] = r"(?i)\b" + re.escape(args["word"]) + r"\b"
+            instance = sentence
+        else:
+            word_position = args["m"]
+            _count_schema(word_position)
+            if word_position < 1:
+                raise InvalidTask("Word index must be positive")
+            words = namespace["_word_tokens_without_punctuation"](sentence) if sentence is not None else []
+            schema["const"] = args["keyword"].lower()
+            instance = words[word_position - 1].lower() if word_position <= len(words) else None
+    elif identifier == "count:keywords_multiple":
+        schema = {"type": "array", "const": [1, 2, 3, 5, 7]}
+        instance = [text.lower().count(args[f"keyword{index}"].lower()) for index in range(1, 6)]
+    elif identifier == "words:words_position":
+        words = namespace["instructions_util"].nltk.word_tokenize(text)
+        last = -3 if words and words[-1] in punctuation else -2
+        instance = [words[1].lower(), words[last].lower()] if len(words) >= max(2, -last) else []
+        schema = {"type": "array", "minItems": 2, "items": {"const": args["keyword"].lower()}}
+    elif identifier == "repeat:repeat_change":
+        schema = {
+            "type": "object",
+            "properties": {
+                "whole": {"not": {"const": args["prompt_to_repeat"]}},
+                "tail": {"const": " ".join(args["prompt_to_repeat"].split()[1:])},
+            },
+        }
+        instance = {"whole": text, "tail": " ".join(text.split()[1:])}
+    elif identifier in {"repeat:repeat_simple", "repeat:repeat_span"}:
+        reference = instruction._description_pattern
+        if identifier == "repeat:repeat_span":
+            start, end = args["n_start"], args["n_end"]
+            _count_schema(start)
+            _count_schema(end)
+            if end < start:
+                raise InvalidTask("Reversed trusted repeat span")
+            reference = args["prompt_to_repeat"][start : end + 1]
+        schema["const"] = reference.strip().lower()
+        instance = text.strip().lower()
+    elif identifier == "format:output_template":
+        schema["allOf"] = [
+            {"pattern": re.escape(marker)} for marker in ("My Answer:", "My Conclusion:", "Future Outlook:")
+        ]
+    elif identifier == "format:no_whitespace":
+        schema["not"] = {"pattern": r"\s"}
+    elif identifier == "custom:multiples":
+        schema = {"type": "array", "const": [str(value) for value in range(14, 51, 7)]}
+        instance = re.findall(r"\d+", text.replace(",", ", "))
+    elif identifier == "custom:character_reverse":
+        schema["pattern"] = "elgae dlab"
+        instance = text.lower()
+    elif identifier == "custom:csv_city":
+        schema = {
+            "type": "array",
+            "minItems": 8,
+            "maxItems": 8,
+            "prefixItems": [{"const": ["ID", "Country", "City", "Year", "Count"]}],
+            "items": {"type": "array", "minItems": 5, "maxItems": 5},
+        }
+        try:
+            instance = list(csv.reader(io.StringIO(text)))
+        except csv.Error:
+            instance = None
+    elif identifier == "words:prime_lengths":
+        schema = {
+            "type": "array",
+            "items": {
+                "enum": [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97]
+            },
+        }
+        instance = [len(word) for word in text.translate(str.maketrans("", "", punctuation)).split()]
     return grade_json_schema_candidate(schema, instance)
