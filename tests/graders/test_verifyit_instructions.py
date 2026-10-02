@@ -166,3 +166,28 @@ def test_json_instruction_rejects_ambiguous_and_recursive_candidates(tmp_path):
         "2": {"strict": 0.0, "loose": 0.0},
         "3": {"strict": 0.0, "loose": 0.0},
     }
+
+
+def test_case_instructions_cannot_ignore_cased_nonalphabetic_characters(tmp_path):
+    from eval.chat_benchmarks.IFEval.instructions import CapitalLettersEnglishChecker
+
+    source = CapitalLettersEnglishChecker("change_case:english_capital")
+    source.build_description()
+    english = "WAN WAN IS A POWERFUL AND CUNNING VILLAIN IN THE LEGEND OF THE SWORD AND THE FAIRY."
+    assert source.check_following(english)
+    assert not source.check_following(english + "ⅰ")
+    assert source.check_following(english + "中")
+    responses = [english, english + "ⅰ", english + "中", "", "123"]
+    result = score(
+        tmp_path,
+        [row(str(index), value, ["change_case:english_capital"], [{}]) for index, value in enumerate(responses)]
+        + [row("5", english.lower(), ["language:response_language"], [{"language": "en"}])],
+    )
+    assert result["per_prompt_follow_rate"] == {
+        "0": {"strict": 1.0, "loose": 1.0},
+        "1": {"strict": 0.0, "loose": 0.0},
+        "2": {"strict": 0.0, "loose": 0.0},
+        "3": {"strict": 0.0, "loose": 0.0},
+        "4": {"strict": 0.0, "loose": 0.0},
+        "5": {"strict": 1.0, "loose": 1.0},
+    }

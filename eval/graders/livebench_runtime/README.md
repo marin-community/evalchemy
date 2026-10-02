@@ -79,9 +79,13 @@ For instruction following, the cutover delegates keyword presence/absence,
 word/sentence/paragraph counts, paragraph first words, bullet/section counts,
 constrained responses, titles, JSON format, postscripts, quotation/end checks,
 and repeated-prompt/two-response checks to existing Schema or IFEval grading.
-Source builders and tokenizers still prepare their inputs. Other instruction
-IDs retain their source predicate path; this is not complete instruction-family
-migration. JSON-format answers with duplicate object keys, nonfinite numbers,
+Keyword/letter frequencies, placeholders, highlighted sections, capital-word
+counts, comma checks and language/case checks also use core comparisons, covering
+all 25 current LiveBench and IFEval instruction IDs. Source builders, tokenizers
+and language detectors prepare inputs; IFBench retains its source predicate path. JSON-format answers with duplicate object keys, nonfinite numbers,
 or excessive nesting score zero, even where the source parser accepts them.
 Malformed trusted instruction arguments remain task errors rather than wrong
-candidate answers. The default source path is unchanged.
+candidate answers. Language detection failures score zero. Case checks additionally reject uncased
+alphabetic characters (such as CJK mixed with English), which source case checks
+can accept. Cased nonalphabetic characters still must have the requested case.
+The default source path is unchanged.

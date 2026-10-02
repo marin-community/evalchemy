@@ -3,13 +3,22 @@
 import json
 import re
 
-from verifyit.grade import InvalidTask
+from verifyit.grade import Aggregation, InvalidTask, aggregate_rewards
 from verifyit.json_objects import unique_object
 from verifyit.modes.grade_ifeval import grade_ifeval_candidate
 from verifyit.modes.grade_json_schema import grade_json_schema_candidate
 from verifyit.spec import Constraint, EmptyOutputPolicy, IfevalSpec
 
 MAPPED_IDS = {
+    "keywords:frequency",
+    "keywords:letter_frequency",
+    "detectable_content:number_placeholders",
+    "detectable_format:number_highlighted_sections",
+    "change_case:capital_word_frequency",
+    "punctuation:no_comma",
+    "language:response_language",
+    "change_case:english_capital",
+    "change_case:english_lowercase",
     "keywords:existence",
     "keywords:forbidden_words",
     "length_constraints:number_words",
@@ -47,6 +56,27 @@ def grade_prepared_instruction(family, identifier, instruction, original, text):
         return grade_ifeval_candidate(
             IfevalSpec((Constraint(identifier, {}),), empty_output=EmptyOutputPolicy.GRADE), text
         )
+    if identifier in {"language:response_language", "change_case:english_capital", "change_case:english_lowercase"}:
+        import langdetect
+
+        expected = args["language"] if identifier == "language:response_language" else "en"
+        if not isinstance(expected, str) or not expected:
+            raise InvalidTask("Instruction language must be nonempty text")
+        components = []
+        if identifier != "language:response_language":
+            normalized = text.upper() if identifier.endswith("capital") else text.lower()
+            components = [
+                grade_ifeval_candidate(
+                    IfevalSpec((Constraint(identifier, {}),), empty_output=EmptyOutputPolicy.GRADE), text
+                ),
+                grade_json_schema_candidate({"const": normalized}, text),
+            ]
+        try:
+            detected = langdetect.detect(text)
+        except langdetect.LangDetectException:
+            detected = None
+        components.append(grade_json_schema_candidate({"type": "string", "const": expected}, detected))
+        return aggregate_rewards(components, expected_total=len(components), policy=Aggregation.ALL)
     schema = {"type": "string"}
     instance = text
     if identifier in {"keywords:existence", "keywords:forbidden_words"}:
@@ -68,6 +98,33 @@ def grade_prepared_instruction(family, identifier, instruction, original, text):
             else getattr(namespace["instructions_util"], "count_" + kind)
         )
         instance = tokenizer(text)
+    elif identifier == "keywords:frequency":
+        schema = _count_schema(args["frequency"], args["relation"])
+        try:
+            parser = re.compile(args["keyword"], re.IGNORECASE)
+        except re.error as error:
+            raise InvalidTask("Invalid trusted keyword pattern") from error
+        instance = len(parser.findall(text))
+    elif identifier == "keywords:letter_frequency":
+        schema = _count_schema(args["let_frequency"], args["let_relation"])
+        instance = text.lower().count(args["letter"])
+    elif identifier == "detectable_content:number_placeholders":
+        schema = _count_schema(args["num_placeholders"], "at least")
+        instance = len(re.findall(r"\[.*?\]", text))
+    elif identifier == "detectable_format:number_highlighted_sections":
+        schema = _count_schema(args["num_highlights"], "at least")
+        single = [value.strip("*").strip() for value in re.findall(r"\*[^\n\*]*\*", text)]
+        double = [
+            value.removeprefix("**").removesuffix("**").strip() for value in re.findall(r"\*\*[^\n\*]*\*\*", text)
+        ]
+        instance = len([value for value in single + double if value])
+    elif identifier == "change_case:capital_word_frequency":
+        schema = _count_schema(args["capital_frequency"], args["capital_relation"])
+        namespace = original.check_following.__globals__
+        nltk = namespace["nltk"] if family == "IFEval" else namespace["instructions_util"].nltk
+        instance = len([word for word in nltk.word_tokenize(text) if word.isupper()])
+    elif identifier == "punctuation:no_comma":
+        schema["not"] = {"pattern": ","}
     elif identifier == "length_constraints:number_paragraphs":
         parts = [part.strip() for part in re.split(r"\s?\*\*\*\s?", text)]
         if parts and not parts[0]:

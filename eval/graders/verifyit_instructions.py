@@ -248,26 +248,7 @@ def _install(family, registry, root, observations):
                     def check(candidate, params):
                         try:
                             text = candidate
-                            if family == "IFEval" and instruction_id in {
-                                "language:response_language",
-                                "change_case:english_capital",
-                                "change_case:english_lowercase",
-                            }:
-                                import langdetect
-
-                                try:
-                                    if instruction_id == "change_case:english_capital":
-                                        passed = text.isupper() and langdetect.detect(text) == "en"
-                                    elif instruction_id == "change_case:english_lowercase":
-                                        passed = text.islower() and langdetect.detect(text) == "en"
-                                    else:
-                                        passed = langdetect.detect(text) == self._language
-                                except langdetect.LangDetectException:
-                                    passed = False
-                            elif family == "IFEval" and instruction_id == "punctuation:no_comma":
-                                passed, _ = CONSTRAINTS["punctuation:no_comma"](text, {})
-                            else:
-                                passed = original.check_following(self, text)
+                            passed = original.check_following(self, text)
                             if type(passed) is not bool:
                                 raise RuntimeError("Source instruction did not return a boolean")
                             return passed, "trusted source predicate"
