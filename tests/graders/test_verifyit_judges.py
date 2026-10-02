@@ -12,12 +12,13 @@ from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchm
 from eval.graders.answer_equivalence import JudgeConfig, JudgeLabel
 from eval.graders.simpleqa import SimpleQARequest
 from eval.graders.verifyit_judges import judge_simpleqa
-from verifyit.grade import InvalidTask
+from eval.contracts.failures import GradingBoundaryError
+from verifyit.grade import Status
 
 
 @pytest.fixture
 def judge_server():
-    state = {"label": "A", "fault": None, "requests": []}
+    state = {"label": "A", "fault": None, "requests": [], "release": threading.Event()}
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -25,6 +26,8 @@ def judge_server():
             state["requests"].append(body)
             bad = any(marker in body["messages"][0]["content"] for marker in ("Question: bad", "Question:\nbad"))
             fault = state["fault"] if bad else None
+            if fault == "hang":
+                state["release"].wait(10)
             message = {"role": "assistant", "content": state["label"]}
             choice = {"index": 0, "finish_reason": "stop", "message": message}
             if fault == "truncated":
@@ -46,7 +49,10 @@ def judge_server():
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            try:
+                self.wfile.write(data)
+            except BrokenPipeError:
+                pass
 
         def log_message(self, *args):
             pass
@@ -57,6 +63,7 @@ def judge_server():
     try:
         yield state, JudgeConfig("fixture", f"http://127.0.0.1:{server.server_port}/v1", "fixture")
     finally:
+        state["release"].set()
         server.shutdown()
         server.server_close()
         thread.join()
@@ -98,7 +105,7 @@ def test_invalid_judge_completion_aborts_batch_after_valid_result(judge_server, 
 
 def test_invalid_reference_rejects_entire_batch_before_requests(judge_server):
     state, config = judge_server
-    with pytest.raises(InvalidTask):
+    with pytest.raises(GradingBoundaryError):
         asyncio.run(
             judge_simpleqa(
                 [SimpleQARequest("good", "Paris", "candidate"), SimpleQARequest("bad", " ", "candidate")], config
@@ -147,7 +154,7 @@ def test_financebench_missing_reference_is_not_stringified(judge_server):
         judge_base_url=config.base_url,
         verifyit_enabled=True,
     )
-    with pytest.raises(InvalidTask):
+    with pytest.raises(GradingBoundaryError):
         benchmark.evaluate_responses({"examples": [{"question": "good", "answer": None, "model_output": "None"}]})
     assert not state["requests"]
 
@@ -194,7 +201,7 @@ def test_olympiad_invalid_raw_reference_aborts_before_judge(judge_server, questi
         n_repeat=1,
         verifyit_enabled=True,
     )
-    with pytest.raises(InvalidTask):
+    with pytest.raises(GradingBoundaryError):
         benchmark.evaluate_responses(
             {"examples": [
                 {"problem": "good", "answer": "42", "model_answer": "42"},
@@ -202,3 +209,109 @@ def test_olympiad_invalid_raw_reference_aborts_before_judge(judge_server, questi
             ]}
         )
     assert state["requests"] == []
+
+
+@pytest.mark.parametrize("reply", [" explanation\nA", "A\nexplanation"])
+def test_whole_label_default_rejects_extra_provider_text(judge_server, reply):
+    state, config = judge_server
+    state["label"] = reply
+    with pytest.raises(GradingBoundaryError) as caught:
+        asyncio.run(judge_simpleqa([SimpleQARequest("good", "Paris", "candidate")], config))
+    assert caught.value.verdict["status"] == Status.INFRA_ERROR
+    assert caught.value.failure["stage"] == "grading"
+
+
+def test_raw_candidate_preserved_before_explicit_empty_policy(judge_server):
+    _, config = judge_server
+    result = asyncio.run(judge_simpleqa([SimpleQARequest("good", "Paris", 42)], config))[0]
+    assert result.prepared.raw.candidate == 42
+    assert result.prepared.candidate == ""
+    assert result.verdict.reward == 0
+    assert result.prepared.provenance["judge_policy"] == "source_whole_label_nontext_empty_v1"
+
+
+def test_olympiad_math_success_does_not_consult_wrong_provider(judge_server):
+    from eval.graders.verifyit_judges import capture_judge_input, grade_raw
+
+    state, config = judge_server
+    state["label"] = "incorrect"
+    result = asyncio.run(grade_raw([capture_judge_input("good", ["$2$", "$3$"], r"\boxed{2}")], config, "olympiad"))[0]
+    assert result.verdict.reward == 1
+    assert result.prepared.raw.reference == ["$2$", "$3$"]
+    assert result.prepared.candidate == "2"
+    assert state["requests"] == []
+
+
+@pytest.mark.parametrize(("answer", "reply", "status"), [(None, "correct", "invalid_task"), ("Paris", "bad label", "infra_error")])
+def test_evaluator_retains_terminal_grading_status(judge_server, answer, reply, status):
+    from eval.eval import _CustomTaskWork, _score_custom_task
+
+    state, config = judge_server
+    state["label"] = reply
+    benchmark = FinanceBenchBenchmark(annotator_model=config.model, judge_api_key=config.api_key,
+                                     judge_base_url=config.base_url, verifyit_enabled=True)
+    outcome, result = _score_custom_task(_CustomTaskWork("FinanceBench", benchmark,
+                            {"examples": [{"question": "good", "answer": answer, "model_output": "candidate"}]}))
+    assert result == {}
+    assert outcome.metrics == {}
+    assert outcome.status == "failed"
+    assert outcome.failure.grading_verdict["status"] == status
+    assert outcome.failure.grading_verdict["reward"] == 0
+    assert outcome.failure.category == ("invalid_task" if status == "invalid_task" else "grader_infrastructure")
+
+
+def test_total_deadline_terminates_hanging_judge(judge_server):
+    state, config = judge_server
+    state["fault"] = "hang"
+    with pytest.raises(GradingBoundaryError) as caught:
+        asyncio.run(judge_simpleqa([SimpleQARequest("bad", "Paris", "candidate")], config, timeout=3))
+    state["release"].set()
+    assert state["requests"]
+    assert caught.value.verdict["status"] == "infra_error"
+    assert caught.value.failure["error_type"] == "TimeoutError"
+    assert caught.value.failure["stage"] == "runtime"
+
+
+@pytest.mark.parametrize("name", ["FinanceBench", "SimpleQA", "SimpleQAMini"])
+@pytest.mark.parametrize("missing", ["question", "answer"])
+def test_missing_trusted_field_retains_invalid_task_at_evaluator(judge_server, name, missing):
+    from importlib import import_module
+    from eval.eval import _CustomTaskWork, _score_custom_task
+
+    state, config = judge_server
+    constructor = getattr(import_module(f"eval.chat_benchmarks.{name}.eval_instruct"), name + "Benchmark")
+    benchmark = constructor(annotator_model=config.model, judge_api_key=config.api_key,
+                            judge_base_url=config.base_url, verifyit_enabled=True)
+    example = {"question": "good", "answer": "Paris", "model_output": "candidate"}
+    del example[missing]
+    outcome, result = _score_custom_task(_CustomTaskWork(name, benchmark, {"examples": [example]}))
+    assert result == {} and outcome.metrics == {}
+    assert outcome.status == "failed"
+    assert outcome.failure.category == "invalid_task"
+    assert outcome.failure.grading_verdict["status"] == "invalid_task"
+    assert outcome.failure.grading_verdict["reward"] == 0
+    assert outcome.failure.grading_failure["stage"] == "preparation"
+    assert state["requests"] == []
+
+
+@pytest.mark.parametrize("name", ["SimpleQA", "SimpleQAMini"])
+@pytest.mark.parametrize(("reply", "correct", "incorrect", "not_attempted"),
+                         [("A", 1, 0, 0), ("B", 0, 1, 0), ("C", 0, 0, 1)])
+def test_simpleqa_primitive_rewards_preserve_integer_counts(judge_server, name, reply, correct, incorrect, not_attempted):
+    from importlib import import_module
+    from eval.eval import _CustomTaskWork, _score_custom_task
+
+    state, config = judge_server
+    state["label"] = reply
+    constructor = getattr(import_module(f"eval.chat_benchmarks.{name}.eval_instruct"), name + "Benchmark")
+    benchmark = constructor(annotator_model=config.model, judge_api_key=config.api_key,
+                            judge_base_url=config.base_url, verifyit_enabled=True)
+    outcome, result = _score_custom_task(_CustomTaskWork(name, benchmark,
+                     {"examples": [{"question": "good", "answer": "Paris", "model_output": "candidate"}]}))
+    assert outcome.status == "succeeded"
+    assert result["num_correct"] == correct
+    assert result["num_incorrect"] == incorrect
+    assert result["num_not_attempted"] == not_attempted
+    assert result["num_judged"] == 1
+    assert all(type(value) is int for key, value in result.items() if key.startswith("num_"))
+    assert result["examples"][0]["verifyit_grade"]["verdict"]["reward"] == correct

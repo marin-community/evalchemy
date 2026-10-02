@@ -25,11 +25,15 @@ class SimpleQAMiniBenchmark(SimpleQABenchmark):
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
         verifyit_enabled: bool = False,
+        verifyit_judge_policy: str = "source_whole_label_nontext_empty_v1",
+        verifyit_timeout: float = 300,
     ):
         super().__init__(
             data_file=data_file,
             debug=debug,
             verifyit_enabled=verifyit_enabled,
+            verifyit_judge_policy=verifyit_judge_policy,
+            verifyit_timeout=verifyit_timeout,
             seed=seed,
             max_tokens=max_tokens,
             annotator_model=annotator_model,
