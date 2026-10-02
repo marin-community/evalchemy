@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Run grader parity tests
-        run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
+        run: uv run --python 3.12 --extra dev --extra verifyit --extra ifeval --extra ifbench pytest tests/graders/ -q
 
   contracts:
     # The framework-wide task contracts, including the per-sample metrics every
