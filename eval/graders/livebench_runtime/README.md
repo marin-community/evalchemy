@@ -1,29 +1,18 @@
 # LiveBench source runtime
 
-Build from the Evalchemy repository root:
-
-```sh
-docker build -t verifyit-evalchemy-livebench:source-v1 -f eval/graders/livebench_runtime/Dockerfile .
-```
-
-The base Python image and all Python runtime packages are pinned. The PyExt fork
-commit matches the source evaluation environment and supports Python 3.12; the
-source contract module requires Python 3.11 or later. `VERIFYIT_LIVEBENCH_IMAGE`
-can select another prebuilt image with the same dependencies.
-
-Install the pinned client dependencies from the Evalchemy checkout:
+Install the pinned client and runtime dependencies from the repository root:
 
 ```sh
 uv sync --locked --extra livebench --extra verifyit --no-dev --no-editable
+docker build -t verifyit-evalchemy-livebench:source-v1 -f eval/graders/livebench_runtime/Dockerfile .
 ```
 
-The lock pins verifyit and the companion harness by immutable Git commit. The
-harness companion has the same upstream v0.4.12 base as the default evaluator and
-adds the isolated candidate worker. No `PYTHONPATH` setting is needed. Docker is
-required for coding and AMPS; build the image above before evaluating those tasks.
+The Docker recipe pins the base image, Python packages and PyExt fork. Docker is
+required for coding and AMPS. `VERIFYIT_LIVEBENCH_IMAGE` can select a prebuilt image
+with the same dependencies. Source hashes in `source-hashes.json` reject unsupported
+vendored grader revisions.
 
-The source grader remains the default. Use the normal task loader to enable the
-cutover for an existing LiveBench response JSONL:
+Use the task loader with the same dataset and release used during generation:
 
 ```python
 import json
@@ -31,9 +20,7 @@ from pathlib import Path
 from eval.task import TaskManager
 
 manager = TaskManager(
-    task_list=["LiveBench"],
-    dataset_name="live_bench",
-    release_date="2024-08-31",
+    task_list=["LiveBench"], dataset_name="live_bench", release_date="2024-08-31",
     verifyit_enabled=True,
 )
 benchmark = manager.get_benchmark("LiveBench")
@@ -43,172 +30,37 @@ responses = [json.loads(line) for line in Path("responses.jsonl").read_text().sp
 results = benchmark.evaluate_responses(responses)
 ```
 
-Run this with `.venv/bin/python`; response rows retain the source `question_id`,
-`model_id`, and `choices` fields. Use the same dataset and release as generation.
-Omit `verifyit_enabled` or set it to false to use the source grader. The task
-loader resolves vendored source imports; bounded workers validate and register
-the same installed package, rejecting a conflicting `livebench` namespace.
+Response rows retain source `question_id`, `model_id` and `choices` fields.
+Omitting `verifyit_enabled` preserves source grading. The enabled module registers
+the vendored `livebench` package and rejects a conflicting namespace.
 
-Coding uses this image as an isolated candidate worker. Its only bind mount is
-the read-only RPC worker; candidate source and inputs travel through stdin.
-Trusted references and core grading remain outside the container. Containers
-have no network, a read-only root filesystem, a 1 GiB memory limit, one CPU and
-64-process limit. Each call has a six-second deadline; the outer Script deadline
-is 120 seconds including startup. Both the shared worker context and outer
-supervisor clean up the exact named container on failure.
+Coding candidates run without network access in a container with a read-only
+root, 1 GiB memory, one CPU and a 64-process limit. Candidate source and inputs
+travel through stdin; the only mount is the read-only RPC worker. Trusted
+references and grading remain outside the container. Calls have six-second
+deadlines; the outer Script deadline is 120 seconds including startup. Both
+supervisors remove the exact named container on failure.
 
-Core JSONSchema compares functional outputs, StdIO compares decimal lines, and
-ALL combines test outcomes. Source singleton-list and approximate floating-point
-fallbacks are not used. Undefined/nonfinite references abort; candidate exceptions,
-malformed output and timeouts receive zero. AMPS remains in the source runtime.
-Zebra, web-of-lies and spatial routes prepare answers for core Exact/JSONSchema
-and core aggregation. Table reformatting uses core JSONSchema for structure and
-nulls, Numeric for finite numeric tolerance, and ALL/MAX for results. Table joins
-prepare canonical key/value labels for Exact set-overlap F1, rounded to two decimal
-places. Empty candidate values or nonstring labels conservatively score zero; empty or
-malformed reference mappings are invalid tasks. Other retained branches remain
-documented coverage gaps.
+JSONSchema compares functional outputs, StdIO compares decimal lines and ALL
+combines tests. Source singleton-list and approximate floating-point fallbacks
+are unsupported. Invalid trusted references abort; candidate exceptions, broken
+transport, malformed output and timeouts score zero. AMPS uses its source runtime.
+Reasoning, tables and retained-answer routes prepare observations for existing
+core primitives. Proof rearrangement, house traversal and plot unscrambling
+retain their declared source scorers; unknown routes fail closed.
 
-The source callback manifest guards the vendored implementation and shared code
-it imports. Instruction detection is deterministically seeded, and an undetectable
-language receives zero instead of the source's success fallback. Empty or malformed
-trusted contracts abort with `invalid_task`; ordinary malformed candidate answers
-receive zero. An empty eligible task cannot reuse an earlier judgment file.
+Instruction-following uses the shared IFEval/IFBench transport and named source
+preparation. Unknown IDs fail closed. Source tokenizers, taggers and emoji tools
+provide observations; enabled routes do not call source `check_following` graders.
+Preparation preserves the declared instruction collection limits, finite count
+admission and blank-response policy.
 
-For instruction following, the cutover delegates keyword presence/absence,
-word/sentence/paragraph counts, paragraph first words, bullet/section counts,
-constrained responses, titles, JSON format, postscripts, quotation/end checks,
-and repeated-prompt/two-response checks to existing Schema or IFEval grading.
-Keyword/letter frequencies, placeholders, highlighted sections, capital-word
-counts, comma checks and language/case checks also use core comparisons, covering
-all 25 current LiveBench and IFEval instruction IDs. Source builders, tokenizers
-and language detectors prepare inputs; partial IFBench coverage is listed below. JSON-format answers with duplicate object keys, nonfinite numbers,
-or excessive nesting score zero, even where the source parser accepts them.
-Malformed trusted instruction arguments remain task errors rather than wrong
-candidate answers. Language detection failures score zero. Case checks additionally reject uncased
-alphabetic characters (such as CJK mixed with English), which source case checks
-can accept. Cased nonalphabetic characters still must have the requested case.
-The default source path is unchanged.
+Other opt-ins are documented in the [main README](../../../README.md) and
+[Judge guide](../verifyit_judges.md). The `--verifyit_harness` flag selects the
+pinned companion harness's native mappings; unsupported contracts fail closed.
+HumanEval harness grading requires `--confirm_run_unsafe_code`, one completion,
+`pass@1` and its pinned candidate image:
 
-The shared instruction transport maps all 58 IFBench contracts to Schema, Exact,
-IFEval and core aggregation. Source builders, tokenizers, taggers and emoji detection
-provide task data; source `check_following` callbacks are never invoked by the
-cutover. Unknown instruction IDs fail closed. Source evaluation remains the default;
-set `verifyit_enabled=True` to select the cutover.
-
-Integer-valued floating count metadata is normalized before comparison. Options
-that normalize to empty labels, missing trigram references and nonfinite metadata
-are invalid tasks. Blank responses score zero, including mixed batches. Trigram
-precision uses literal character trigrams and an inclusive ±2 percentage interval;
-case and whitespace remain significant. Empty references give nonempty candidates
-zero precision. Prepared collections retain verifyit's 10,000-item/1,000,000-character
-limits; oversized candidate counts score zero.
-
-Calendar parsing rejects impossible dates, including zero month/day and nonleap
-February 29. CSV grading validates every row even when an earlier row contains the
-requested special character. Nested-bracket and quote grading require a fully closed group. Title-case checks
-reject lowercase-leading mixed-case tokens such as `hELlo`.
-These cases can receive credit on the source path and score zero on the cutover.
-Indentation ignores blank lines consistently; the source's list mutation can reject
-valid increasing indentation when consecutive blank lines are present. Finite prime word lengths through 97 remain part of the source task contract.
-
-Distinct conjunctions are counted after lowercasing and stripping surrounding ASCII
-punctuation. The equal-length sentence task also requires unique lowercase Unicode
-word tokens (`\w+`), preventing repeated sentences from earning credit. Sub-bullets
-require line-start `*` groups with a line-start `-` item in each group; inline marker
-characters and prose without bullets do not satisfy this format.
-
-AIW, AMC23 and GSM8K-Perturbed also accept `verifyit_enabled=True` in their benchmark
-constructors (or `verifyit_enabled=true` in `--benchmark_args`). Install the same
-`verifyit` extra shown above; these three routes need no additional runtime image.
-AIW and AMC23 use the pinned Hendrycks answer normalization followed by strict Exact
-comparison. GSM8K-Perturbed keeps its answer extraction and compares parsed numbers
-through Numeric with zero tolerance. Missing candidate answers score zero. Invalid
-trusted references raise `InvalidTask` before per-sample metrics are updated; source
-scoring remains the default.
-
-AIME24, AIME25 and MATH500 accept the same opt-in flag. Their cutover compares
-extracted final expressions through Math and combines alternative references with
-core MAX. Every trusted reference is checked before scoring. Strict box parsing
-rejects incomplete boxes and unsupported percent or ordinal forms that the source
-fallback may accept; the default source grader is unchanged.
-
-Absent or nontext extracted Math candidates are treated as empty answers and score
-zero. Trusted references are still validated first, so a missing candidate cannot
-hide a malformed reference.
-
-### Harness task opt-in
-
-With the `verifyit` extra installed, `python -m eval.eval --verifyit_harness ...`
-selects native verifyit grading for lm-eval-harness tasks. The Python entry points
-`lm_eval.simple_evaluate` and `lm_eval.evaluator.evaluate` accept
-`verifyit_enabled=True`. Enabled results record this choice in
-`config.verifyit_enabled`; omitting the flag preserves source grading.
-
-NQ-Open and TriviaQA retain their configured strict and extracted answer filters,
-then use Exact and MAX for aliases. Their reserved invalid-extraction marker maps
-to empty text, so a missing answer cannot receive credit against the alias
-`invalid`; an explicit `Answer: invalid` remains a valid answer. Missing or empty
-trusted alias lists invalidate the task. Answers that normalize to empty also
-score zero, including punctuation-only answers the source scorer could credit.
-TruthfulQA MC2 uses the MCQ primitive's
-probability-mass policy; malformed or nonfinite likelihoods invalidate the run.
-
-All 15 `uncheatable_eval_*` categories use the shared likelihood implementation
-for corpus word/byte perplexity and bits per byte. Source word splitting and UTF-8
-byte counts are preserved. These are unbounded diagnostics, not rewards; missing,
-nonfinite, positive or overflowing log likelihoods abort reporting. The pinned
-category preparation and metric configuration must match the supported source.
-
-The `drop` override keeps its source short-answer extraction and normalizes spans
-before core set-F1 and numeric gating. Its single predicted span is aligned with
-the best gold span, retaining unmatched spans in the denominator and rounding
-after aggregation. Missing or normalized-empty answers score zero, even where
-the source could credit an empty normalized reference; malformed trusted spans
-invalidate the task. Other response cardinalities are unsupported.
-
-The flag rejects contracts without a native mapping instead of falling back to a
-source scorer. The existing `gsm8k_verifyit` task remains a separate opt-in; use
-it without `--verifyit_harness`.
-
-FinanceBench, OlympiadBench, OlympiadBenchFull, SimpleQA and SimpleQAMini accept
-`verifyit_enabled=True` in their benchmark constructor. Supply the usual
-`annotator_model`, `judge_base_url` and `judge_api_key`; the enabled path sends
-source prompts to verifyit's Judge mode with the source label vocabulary.
-Omitting the option retains the original grader.
-
-When a judge is configured, Olympiad cutovers send every nonempty answer to
-Judge instead of first attempting deterministic Math equivalence. This supports
-textual and functional reference answers outside the Math parser, adds provider
-calls for answers that previously matched deterministically, and can change
-judgments. The Math-only helper path remains available when no judge is
-configured. Empty or nontext candidate answers receive zero without a provider
-call. Invalid trusted questions or references abort before judging; malformed or
-failed provider responses abort the batch instead of being excluded from its
-accuracy denominator.
-
-### HumanEval through the harness
-
-The `humaneval` task supports `--verifyit_harness` with one completion per task
-and `pass@1`. The `verifyit` extra installs pytest and its JSON report plugin for
-the trusted supervisor. Docker must be running, with this candidate image
-available:
-
-```bash
+```sh
 docker pull python@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 ```
-
-Use `--confirm_run_unsafe_code` with the harness CLI. Python callers pass
-`verifyit_enabled=True, confirm_run_unsafe_code=True` to
-`lm_eval.evaluator.evaluate`. The source path additionally requires
-`HF_ALLOW_CODE_EVAL=1`.
-
-Source prompt concatenation and stop filtering are retained. Trusted checks run
-under verifyit's Pytest mode; candidate functions run in a separate read-only
-container that receives only candidate code and function arguments. Candidates
-cannot write the supervisor's tests, execution metadata or pytest report.
-Malformed trusted checks invalidate the task, while incorrect returns, broken
-candidate transport and a 30-second timeout score zero. The owned container is
-removed after every attempt, including timeout. Source checks that swallow a
-candidate transport failure do not receive credit. Omitting the opt-in keeps
-the original code-evaluation metric.

@@ -20,6 +20,7 @@ from verifyit.modes.grade_script import grade_script_callable
 from verifyit.spec import ExactSpec
 
 from eval.chat_benchmarks.LiveBench import livebench
+from eval.graders.verifyit_livebench_reasoning import _literal
 
 existing = sys.modules.get("livebench")
 if existing is not None and getattr(existing, "__file__", None) != livebench.__file__:
@@ -166,52 +167,17 @@ def retained_score(question, response):
         value = extract_answer(question["turns"][0], reference)
         alternatives = [
             grade_exact_candidate(ExactSpec(expected=(reference * 4,), ignore_case=False, substring=True), response),
-            grade_exact_candidate(
-                ExactSpec(
-                    expected=(reference.lower(),),
-                    ignore_case=False,
-                    ignore_whitespace=False,
-                    strip_outer_whitespace=False,
-                ),
-                prepared,
-            ),
-            grade_exact_candidate(
-                ExactSpec(
-                    expected=(value,),
-                    ignore_case=False,
-                    ignore_whitespace=False,
-                    strip_outer_whitespace=False,
-                    substring=True,
-                ),
-                response[-20 - len(value) :],
-            ),
+            _literal(reference.lower(), prepared),
+            _literal(value, response[-20 - len(value) :], substring=True),
         ]
         return aggregate_rewards(alternatives, expected_total=3, policy=Aggregation.MAX).reward
     if parts[0] == "aime":
-        return grade_exact_candidate(
-            ExactSpec(
-                expected=(reference,),
-                ignore_case=False,
-                ignore_whitespace=False,
-                strip_outer_whitespace=False,
-                substring=True,
-            ),
-            response[-50:],
-        ).reward
+        return _literal(reference, response[-50:], substring=True).reward
     if task == "typos":
         from livebench.process_results.writing.typos.utils import extract_answer
 
         prepared = extract_answer(" ".join(filter(None, response.split("\n"))))
-        return grade_exact_candidate(
-            ExactSpec(
-                expected=(reference,),
-                ignore_case=False,
-                ignore_whitespace=False,
-                strip_outer_whitespace=False,
-                substring=True,
-            ),
-            prepared,
-        ).reward
+        return _literal(reference, prepared, substring=True).reward
     if parts[0] in ("imo", "usamo"):
         try:
             [int(number) for number in reference.split(",")]

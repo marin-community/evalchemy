@@ -3,7 +3,7 @@
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 
 from eval.chat_benchmarks.JEEBench.utils import last_boxed_only_string, remove_boxed
 from verifyit.adapters.evalchemy_jee import JEEPolicy, capture_jee_input, grade_prepared_jee, prepare_jee_input
@@ -17,13 +17,6 @@ from eval.contracts.failures import GradingBoundaryError
 BOXED_POLICY = "source_last_boxed_remove_boxed_nontext_empty_v1"
 
 
-@dataclass(frozen=True)
-class JEEBatchItem:
-    gold: object
-    question_type: str
-    model_outputs: object
-
-
 def capture_batch(examples, repeats):
     """Retain source outputs and trusted task fields without answer selection."""
     if type(repeats) is not int or repeats <= 0 or not isinstance(examples, list) or not examples:
@@ -33,8 +26,9 @@ def capture_batch(examples, repeats):
         if not isinstance(example, dict):
             raise InvalidTask("Malformed JEEBench task")
         outputs = example.get("model_outputs")
-        captured.append(JEEBatchItem(example.get("gold"), example.get("type"),
-                                     tuple(outputs) if isinstance(outputs, list) else outputs))
+        captured.append(capture_jee_input(example.get("gold"),
+                                         tuple(outputs) if isinstance(outputs, list) else outputs,
+                                         example.get("type")))
     return tuple(captured)
 
 
@@ -43,14 +37,14 @@ def prepare_batch(captured, repeats, policy, boxed_policy):
     if boxed_policy != BOXED_POLICY:
         raise InvalidTask("unknown JEEBench boxed extraction policy")
     for item in captured:
-        prepare_jee_input(capture_jee_input(item.gold, None, item.question_type), policy)
+        prepare_jee_input(capture_jee_input(item.expected, None, item.question_type), policy)
     for item in captured:
-        if not isinstance(item.model_outputs, tuple) or len(item.model_outputs) != repeats:
+        if not isinstance(item.candidate, tuple) or len(item.candidate) != repeats:
             raise RuntimeError("JEEBench model outputs must align with repetitions")
     prepared = []
     for item in captured:
         answers = []
-        for raw in item.model_outputs:
+        for raw in item.candidate:
             answer = ""
             if isinstance(raw, str):
                 boxed = last_boxed_only_string(raw)
@@ -59,7 +53,7 @@ def prepare_batch(captured, repeats, policy, boxed_policy):
                         answer = remove_boxed(boxed)
                     except AssertionError:
                         answer = ""
-            answers.append(prepare_jee_input(capture_jee_input(item.gold, answer, item.question_type), policy))
+            answers.append(prepare_jee_input(capture_jee_input(item.expected, answer, item.question_type), policy))
         prepared.append(tuple(answers))
     return tuple(prepared)
 
@@ -83,16 +77,15 @@ def _grade_batch(examples, repeats, policy, boxed_policy, timeout):
                 raise InvalidTask(str(verdict.detail))
             if verdict.status != Status.SCORED:
                 raise RuntimeError(str(verdict.detail))
-        records.append({"raw": asdict(item), "prepared": [asdict(answer) for answer in answers],
-                        "boxed_policy": boxed_policy, "verdicts": [asdict(verdict) for verdict in verdicts]})
-    return [{
-        "verdicts": [{"reward": verdict["reward"], "status": verdict["status"]} for verdict in record["verdicts"]],
-        "policy": policy.value,
-        "boxed_policy": boxed_policy,
-        "reference_sha256": hashlib.sha256(json.dumps(record["raw"]["gold"]).encode()).hexdigest(),
-        "outputs_sha256": hashlib.sha256(json.dumps(record["raw"]["model_outputs"]).encode()).hexdigest(),
-        "effective_options": {"item_credit": 0.25, "tolerance_abs": 0.01, "tolerance_rel": 0, "timeout": timeout},
-    } for record in records]
+        records.append({
+            "verdicts": [{"reward": verdict.reward, "status": verdict.status} for verdict in verdicts],
+            "policy": policy.value,
+            "boxed_policy": boxed_policy,
+            "reference_sha256": hashlib.sha256(json.dumps(item.expected).encode()).hexdigest(),
+            "outputs_sha256": hashlib.sha256(json.dumps(item.candidate).encode()).hexdigest(),
+            "effective_options": {"item_credit": 0.25, "tolerance_abs": 0.01, "tolerance_rel": 0, "timeout": timeout},
+        })
+    return records
 
 
 def grade_batch(examples, repeats, *, policy=JEEPolicy.SOURCE, boxed_policy=BOXED_POLICY, timeout=30):

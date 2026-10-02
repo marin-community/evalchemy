@@ -16,16 +16,14 @@ the source retry schedule and are recorded with each prepared input.
 
 `verifyit_timeout=300` bounds one complete scoring batch, including preparation,
 Math, queued Judge work and incomplete-completion retries. The existing verifyit worker kills
-its owned process group on termination. This is a task-local deadline, not a
-shared scheduler or a global request limit.
+its owned process group on termination. The deadline covers one task batch.
 
-Olympiad uses `source_first_box_dollar_alternatives_math_then_judge_v1`: raw values
-are retained, source turn-stop/first-box extraction and dollar-group reference
-flattening run as explicit policy, then core Math/BOXED and MAX grade alternatives.
-Only unresolved candidates reach Judge. Missing extraction maps to empty text.
-Already-extracted replay inputs are explicitly tagged `extracted_answer`; normal
-model responses are retained and tagged `response`. Dataset selection and the
-Full and Mini populations remain owned by the source benchmark loaders.
+Olympiad's `source_first_box_dollar_alternatives_math_then_judge_v1` preparation
+retains raw inputs, extracts the source first box and flattens dollar-group
+reference alternatives. Math/BOXED and MAX compare every alternative; only
+unresolved scored candidates reach a configured judge. Missing extraction scores
+zero. Already extracted replay inputs use `extracted_answer`; normal responses
+use `response`. Dataset populations remain source-owned.
 
 Each example retains `verifyit_grade` or `verifyit_grades` with raw inputs,
 effective policies and primitive verdicts. Accuracy uses primitive rewards;
@@ -35,8 +33,7 @@ preserves the finalized minimum verdict plus failure stage and category, keeping
 invalid_task distinct from grader infrastructure. No failed component becomes a
 successful zero-score task.
 
-From a checkout of the revision to deploy, install that immutable client and
-its declared companion/core pins into a fresh environment:
+Install the client and its declared companion/core pins:
 
 ```sh
 EVALCHEMY_REV="$(git rev-parse HEAD)"

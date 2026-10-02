@@ -114,6 +114,23 @@ primitives. Language detection failure and malformed candidate JSON cannot earn
 credit. The `verifyit` extra and committed `uv.lock` pin the immutable core revision
 declared in `pyproject.toml`.
 
+Other custom benchmarks accept the same `verifyit_enabled=True` constructor option:
+
+| Benchmarks | Enabled comparison |
+| --- | --- |
+| AIW, AMC23 | Source-normalized Exact |
+| GSM8K-Perturbed | Numeric with zero tolerance |
+| AIME24, AIME25, MATH500 | Math with strict extraction and MAX alternatives |
+| JEEBench | Source boxed preparation, choice credit and Numeric |
+| OlympiadBenchDeterministic | Math/MAX with no judge |
+| FinanceBench, SimpleQA/Mini, OlympiadBench/Full | [Judge and Math policies](eval/graders/verifyit_judges.md) |
+| LiveBench | [Pinned runtime and supported source routes](eval/graders/livebench_runtime/README.md) |
+
+Omitting the option preserves native grading. Invalid trusted references abort
+before metrics are committed; candidate zero scores remain successful results.
+The separate CLI flag `--verifyit_harness` selects the pinned harness's supported
+native mappings and rejects unsupported contracts.
+
 ### Opt-in HumanEval shell grading
 
 Install `evalchemy[humaneval,verifyit]` and build the candidate image:
@@ -157,11 +174,7 @@ observable status rather than an exit from the trusted test process.
 This policy changes native source semantics, including shared state between
 calls. Syntax/import failures score zero even if trusted tests ignore shell
 errors. Invalid trusted references and infrastructure failures remain errors.
-One completion per task and pass@1 are supported; other k requests are rejected. Three genuine shell tasks with controlled
-positive and wrong responses have been compared; the 158 task prompt shapes do
-not establish archived-response coverage or full native-source parity. The
-native macOS comparison explicitly used multiprocessing `fork`; the upstream
-native worker cannot be pickled with the macOS default `spawn` method.
+One completion per task and pass@1 are supported; other k requests are rejected.
 
 ## 📚 Available Tasks
 
