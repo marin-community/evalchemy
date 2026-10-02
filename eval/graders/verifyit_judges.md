@@ -15,7 +15,7 @@ retries, and at most 300 seconds per request. These transport choices differ fro
 the source retry schedule and are recorded with each prepared input.
 
 `verifyit_timeout=300` bounds one complete scoring batch, including preparation,
-Math, queued Judge work and provider retries. The existing verifyit worker kills
+Math, queued Judge work and incomplete-completion retries. The existing verifyit worker kills
 its owned process group on termination. This is a task-local deadline, not a
 shared scheduler or a global request limit.
 
@@ -35,7 +35,7 @@ preserves the finalized minimum verdict plus failure stage and category, keeping
 invalid_task distinct from grader infrastructure. No failed component becomes a
 successful zero-score task.
 
-From a checkout of the reviewed revision, install the same immutable client and
+From a checkout of the revision to deploy, install that immutable client and
 its declared companion/core pins into a fresh environment:
 
 ```sh
