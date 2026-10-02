@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from dataclasses import asdict
 
 from harbor_config.errors import error_category
-from verifyit.bounded import call_bounded
+from verifyit.execution.worker import call_bounded
 from verifyit.grade import Aggregation, InvalidTask, Status, aggregate_rewards, finalize_preparation_failure
 from verifyit.modes.grade_math import grade_math_candidate
 from verifyit.preparation.errors import PreparationFailure

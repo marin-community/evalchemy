@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from eval.chat_benchmarks.JEEBench.utils import last_boxed_only_string, remove_boxed
 from verifyit.adapters.evalchemy_jee import JEEPolicy, capture_jee_input, grade_prepared_jee, prepare_jee_input
 from harbor_config.errors import error_category
-from verifyit.bounded import call_bounded
+from verifyit.execution.worker import call_bounded
 from verifyit.grade import InvalidTask, Status, finalize_preparation_failure
 from verifyit.preparation.errors import PreparationFailure
 
