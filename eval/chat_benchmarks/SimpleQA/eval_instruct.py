@@ -198,7 +198,6 @@ class SimpleQABenchmark(BaseBenchmark):
             label = judgment.label
             if self.verifyit_enabled:
                 example["verifyit_grade"] = asdict(judgment)
-            if self.verifyit_enabled:
                 counts[JudgeLabel.CORRECT] += int(judgment.verdict.reward == 1)
                 if judgment.verdict.reward == 0:
                     counts[label] += 1
