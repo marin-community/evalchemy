@@ -78,7 +78,7 @@ eval = "eval.serve_eval.cli:main"
 evalchemy = "eval.serve_eval.cli:main"
 
 [project.optional-dependencies]
-verifyit = ["verifyit[answer,schema] @ git+https://github.com/marin-community/verifyit@5f9b8b4bceb3737f1d3a845f6599ec447bf1c71a", "harbor-config @ git+https://github.com/marin-community/harbor@6b2e76e1dae5c084eed05edefefffcec8c0c1ad9#subdirectory=packages/harbor-config", "pytest", "pytest-json-report"]
+verifyit = ["verifyit[answer,schema] @ git+https://github.com/marin-community/verifyit@de797f61334a34bd4d43f402297c2dc3619f1ba0", "harbor-config @ git+https://github.com/marin-community/harbor@6b2e76e1dae5c084eed05edefefffcec8c0c1ad9#subdirectory=packages/harbor-config", "pytest", "pytest-json-report"]
 dev = [
     "pytest",
     "black",
