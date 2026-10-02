@@ -10,7 +10,8 @@ from lm_eval.api.model import LM
 from lm_eval.api.task import ConfigurableTask
 from lm_eval.evaluator import evaluate, simple_evaluate
 from lm_eval.tasks._yaml_loader import load_yaml
-from verifyit.grade import InvalidTask
+from verifyit.grade import InvalidTask, Status
+from verifyit.preparation.errors import PreparationError
 
 from eval.lm_eval_compat import setup_parser
 from eval.resume.lm_eval_native import resume_simple_evaluate
@@ -52,7 +53,7 @@ def short_answer_task(name, references):
 
 @pytest.mark.parametrize("name", ["nq_open", "triviaqa"])
 def test_reserved_invalid_extraction_cannot_match_a_real_reference(name):
-    outputs = [None, [], "", "Answer: invalid"]
+    outputs = ["", " ", "Answer: invalid"]
     for enabled in [False, True]:
         result = evaluate(
             Responses(outputs),
@@ -63,8 +64,23 @@ def test_reserved_invalid_extraction_cannot_match_a_real_reference(name):
         )
         for filter_name in ["strict_answer", "extract_answer"]:
             scores = [sample["exact_match"] for sample in result["samples"]["case"] if sample["filter"] == filter_name]
-            assert scores == ([0, 0, 0, 1] if enabled else [1, 1, 1, 1])
+            assert scores == ([0, 0, 1] if enabled else [1, 1, 1])
         assert result.get("config", {}).get("verifyit_enabled", False) is enabled
+
+
+@pytest.mark.parametrize("name", ["nq_open", "triviaqa"])
+@pytest.mark.parametrize("completion", [None, []])
+def test_nontext_provider_completion_preserves_infrastructure_failure(name, completion):
+    with pytest.raises(PreparationError) as raised:
+        evaluate(
+            Responses(["Answer: correct", completion]),
+            {"case": short_answer_task(name, [["correct"], ["invalid"]])},
+            bootstrap_iters=0,
+            verifyit_enabled=True,
+        )
+    assert raised.value.verdict.status is Status.INFRA_ERROR
+    assert raised.value.verdict.reward == 0
+    assert not isinstance(raised.value, InvalidTask)
 
 
 @pytest.mark.parametrize("name", ["nq_open", "triviaqa"])
@@ -83,7 +99,7 @@ def test_harness_cli_opt_in_reaches_native_simple_evaluate():
     args = setup_parser().parse_args(["--verifyit_harness"])
     result = resume_simple_evaluate(
         simple_evaluate,
-        model=Responses([None]),
+        model=Responses([""]),
         tasks=[short_answer_task("nq_open", [["invalid"]])],
         bootstrap_iters=0,
         log_samples=True,
@@ -118,7 +134,7 @@ def test_global_opt_in_does_not_fall_back_to_a_custom_source_scorer():
 def test_missing_and_punctuation_only_answers_cannot_match_normalized_empty_alias(name):
     for enabled in [False, True]:
         result = evaluate(
-            Responses([None, "Answer: !!!"]),
+            Responses(["", "Answer: !!!"]),
             {"case": short_answer_task(name, [["!!!"], ["!!!"]])},
             bootstrap_iters=0,
             log_samples=True,
