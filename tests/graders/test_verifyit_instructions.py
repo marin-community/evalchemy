@@ -102,6 +102,7 @@ def test_malformed_producer_result_does_not_change_host_rng(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [
+        ("keywords:existence", {"keywords": []}),
         ("keywords:existence", {"keywords": [""]}),
         ("keywords:existence", {"keywords": [".*"]}),
         ("length_constraints:number_words", {"num_words": 0, "relation": "at least"}),
@@ -145,3 +146,23 @@ def test_ifbench_aggregate_must_match_returned_flags_before_rng_commit(tmp_path,
     with pytest.raises(RuntimeError, match="Inconsistent IFBench"):
         evaluate_accuracy(path, "IFBench")
     assert random.getstate() == before
+
+
+def test_json_instruction_rejects_ambiguous_and_recursive_candidates(tmp_path):
+    from eval.chat_benchmarks.IFEval.instructions import JsonFormat
+
+    source = JsonFormat("detectable_format:json_format")
+    source.build_description()
+    ambiguous = ['{"answer": 1, "answer": 2}', '{"answer": NaN}']
+    assert all(source.check_following(value) for value in ambiguous)
+    responses = ['{"answer": 1}', *ambiguous, "[" * 1200 + "0" + "]" * 1200]
+    result = score(
+        tmp_path,
+        [row(str(index), value, ["detectable_format:json_format"], [{}]) for index, value in enumerate(responses)],
+    )
+    assert result["per_prompt_follow_rate"] == {
+        "0": {"strict": 1.0, "loose": 1.0},
+        "1": {"strict": 0.0, "loose": 0.0},
+        "2": {"strict": 0.0, "loose": 0.0},
+        "3": {"strict": 0.0, "loose": 0.0},
+    }

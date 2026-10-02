@@ -235,6 +235,14 @@ def _install(family, registry, root, observations):
         def build_class(original=original, instruction_id=instruction_id, name=name):
             class VerifiedInstruction(original):
                 def check_following(self, response):
+                    from eval.graders.verifyit_instruction_data import grade_prepared_instruction
+
+                    prepared = grade_prepared_instruction(family, instruction_id, self, original, response)
+                    if prepared is not None:
+                        observations.append({"instruction": instruction_id, "verdict": dataclasses.asdict(prepared)})
+                        if prepared.status != Status.SCORED:
+                            raise RuntimeError("Instruction comparison failed")
+                        return prepared.reward == 1
                     error = []
 
                     def check(candidate, params):

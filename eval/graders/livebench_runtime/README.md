@@ -74,3 +74,14 @@ it imports. Instruction detection is deterministically seeded, and an undetectab
 language receives zero instead of the source's success fallback. Empty or malformed
 trusted contracts abort with `invalid_task`; ordinary malformed candidate answers
 receive zero. An empty eligible task cannot reuse an earlier judgment file.
+
+For instruction following, the cutover delegates keyword presence/absence,
+word/sentence/paragraph counts, paragraph first words, bullet/section counts,
+constrained responses, titles, JSON format, postscripts, quotation/end checks,
+and repeated-prompt/two-response checks to existing Schema or IFEval grading.
+Source builders and tokenizers still prepare their inputs. Other instruction
+IDs retain their source predicate path; this is not complete instruction-family
+migration. JSON-format answers with duplicate object keys, nonfinite numbers,
+or excessive nesting score zero, even where the source parser accepts them.
+Malformed trusted instruction arguments remain task errors rather than wrong
+candidate answers. The default source path is unchanged.
