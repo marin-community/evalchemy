@@ -541,6 +541,12 @@ def evaluate(
                         )
                     )
                 continue
+            # Context-selected benchmarks learn their attempted population at generation time.
+            description = benchmark.describe(task)
+            if description is not None:
+                args.resolved_benchmark_metadata = tuple(
+                    item for item in getattr(args, "resolved_benchmark_metadata", ()) if item.task != task
+                ) + (description,)
             generation_work.append(
                 _CustomTaskWork(
                     task_name=task,
@@ -1172,3 +1178,4 @@ def handle_evaluation_output(
 
 if __name__ == "__main__":
     cli_evaluate()
+

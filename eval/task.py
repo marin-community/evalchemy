@@ -520,6 +520,10 @@ class BaseBenchmark(ABC):
         for index, example in enumerate(examples):
             record_sample_metrics(example, **{name: values[index] for name, values in estimates.items()})
 
+    def request_max_tokens(self, instance: Instance, output_cap: Optional[int]) -> Optional[int]:
+        """Resolve a request budget under the run cap; default to the global budget."""
+        return output_cap
+
     def _normalize_model_args(self, model: LM, instances: List[Instance]) -> List[Instance]:
         overrides = dict(self._evaluation_gen_kwargs)
         override_cap = resolve_limit(
@@ -528,13 +532,14 @@ class BaseBenchmark(ABC):
         )
         output_cap = override_cap if override_cap is not None else self._evaluation_max_tokens
         for instance in instances:
-            if output_cap is not None:
+            request_cap = self.request_max_tokens(instance, output_cap)
+            if request_cap is not None:
                 # The request is the last common point all custom benchmarks
                 # traverse.  Discard every backend spelling before assigning the
                 # canonical output cap so a task-local default cannot win.
                 for alias in MAX_OUTPUT_ALIASES:
                     instance.args[1].pop(alias, None)
-                instance.args[1]["max_new_tokens"] = output_cap
+                instance.args[1]["max_new_tokens"] = request_cap
             seeds = None
             if "seed" in instance.args[1]:
                 seeds = instance.args[1]["seed"]
@@ -1215,3 +1220,4 @@ if __name__ == "__main__":
 
     # Print available tasks
     print("Available tasks:", task_manager.available_tasks)
+
