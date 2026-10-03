@@ -42,6 +42,7 @@ from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_t
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
+    SampleIdentityError,
     SampleManifest,
     SampleRequest,
     canonical_json_identity,

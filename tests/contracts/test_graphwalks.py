@@ -1,6 +1,7 @@
 import pytest
 
 from eval.chat_benchmarks.GraphWalks import eval_instruct as graphwalks
+from eval.sample_logging import canonicalize_samples
 from eval.completion_response import (
     CompletionContentPolicy,
     CompletionText,
@@ -114,7 +115,8 @@ def test_length_ended_parse_failure_scores_zero_and_retains_completion(monkeypat
     sample = task.to_samples(generated, scored)[0]
     assert scored["f1"] == 0.0
     assert scored["n_unanswered"] == 1
-    assert sample["resps"][0][0].response.finish_reason == "length"
+    persisted = canonicalize_samples(task.benchmark_name, [sample], task.sample_manifest)[0]
+    assert persisted["completion_responses"][0][0]["finish_reason"] == "length"
     assert sample["answer_extraction_errors"] == ["failed_to_parse"]
 
 

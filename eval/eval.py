@@ -186,7 +186,7 @@ def _attach_benchmark_metadata(
                 )
             )
         except ValueError as exc:
-            eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
+            utils.eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
     results["benchmark_metadata"] = {description.task: description.to_dict() for description in metadata}
     results["canonical_results"] = canonicalize_results(results["results"], metadata)
 
