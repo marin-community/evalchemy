@@ -104,6 +104,17 @@ def test_output_cap_skips_without_shortening_gold_budget(monkeypatch):
     assert model.requests[0].args[1]["max_new_tokens"] == 8198
 
 
+def test_default_none_template_kwargs_preserves_generation_and_context_selection(monkeypatch):
+    task = benchmark(monkeypatch, [row(10)], context=8276)
+    model = Model()
+    model._evalchemy_chat_template_kwargs = None
+    generated = task.generate_responses(model)
+    assert generated["selection"]["chat_template_kwargs"] == {}
+    assert generated["examples"][0]["prompt_tokens"] == 12
+    assert model.requests[0].args[1]["max_new_tokens"] == 8200
+    assert task.evaluate_responses(generated)["f1"] == 1.0
+
+
 def test_length_ended_parse_failure_scores_zero_and_retains_completion(monkeypatch):
     choice = {"message": {"content": "unfinished reasoning"}, "finish_reason": "length"}
     output = CompletionText(

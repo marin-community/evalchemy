@@ -125,7 +125,7 @@ class GraphWalksBenchmark(BaseBenchmark):
         cap = override_cap or self._evaluation_max_tokens or self.max_tokens
         if context <= 8192 + _CONTEXT_MARGIN or cap < 8192:
             raise ValueError("GraphWalks requires room for the prompt and at least 8192 output tokens")
-        template_kwargs = getattr(model, "_evalchemy_chat_template_kwargs", {})
+        template_kwargs = getattr(model, "_evalchemy_chat_template_kwargs", None) or {}
         dataset = self._load_rows()
         selected = []
         context_skips = Counter()
