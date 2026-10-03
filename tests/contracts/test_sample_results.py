@@ -138,6 +138,20 @@ def _patch_simpleqa_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchm
     monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_simpleqa", judge_simpleqa)
 
 
+def _graphwalks_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
+    del monkeypatch, tmp_path
+    benchmark = _load_benchmark("GraphWalks")
+    example = {
+        "source_index": 0,
+        "prompt": "Find the reachable nodes.",
+        "answer": '["a", "b"]',
+        "answer_nodes": ["a", "b"],
+        "model_output": "Final Answer: [a, b]",
+        "max_output_tokens": 8200,
+    }
+    return benchmark, {"examples": [example], "selection": {"n_benchmark": 1, "n_attempted": 1}}
+
+
 def _financebench_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
     """Grade one FinanceBench answer with the judge boundary stubbed out."""
     del tmp_path
@@ -324,6 +338,7 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy", "no_answer"),
     ),
+    "GraphWalks": GradingCase(_graphwalks_case, ("f1", "precision", "recall", "exact_match")),
     "HLE": GradingCase(
         _examples_case(
             "HLE",
