@@ -240,3 +240,12 @@ def test_code_fractional_limit_uses_native_sample_selection(task_name):
     expected_size = (source_size + 9) // 10
     assert benchmark.evaluation_limit == expected_size
     assert len(benchmark.limit_samples(range(source_size))) == expected_size
+
+
+def test_humaneval_fractional_limit_uses_each_language_collection():
+    benchmark = TaskManager(task_list=["HumanEvalPlus"], limit=0.1).get_benchmark("HumanEvalPlus")
+    examples = benchmark.load_examples("python")
+    first_language = examples[:100]
+    second_language = examples[100:]
+    assert benchmark.limit_samples(first_language) == first_language[:10]
+    assert benchmark.limit_samples(second_language) == second_language[:7]

@@ -106,6 +106,7 @@ class BaseBenchmark(ABC):
         self._evaluation_max_tokens: Optional[int] = None
         self._evaluation_gen_kwargs: Dict[str, Any] = {}
         self._evaluation_limit: Optional[int] = None
+        self._evaluation_fraction: float | None = None
         self._limited_sample_ids: Dict[str, set[str]] = {}
         self._registered_task_name: str | None = None
         self._sample_manifest = SampleManifest(self.benchmark_name)
@@ -197,10 +198,11 @@ class BaseBenchmark(ABC):
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
         self._evaluation_limit = None
+        self._evaluation_fraction = limit if limit is not None and 0 < limit < 1 else None
         if limit is not None and limit > 0:
             source_size = self.benchmark_size() if limit < 1 else 0
             if source_size is None:
-                raise ValueError("A fractional limit requires a known benchmark size")
+                raise ValueError(f"{self.benchmark_name}: a fractional limit requires a known benchmark size")
             self._evaluation_limit = get_sample_size(SimpleNamespace(eval_docs=range(source_size)), limit)
         self._limited_sample_ids.clear()
         if max_length is not None and hasattr(self, "max_model_length"):
@@ -229,6 +231,10 @@ class BaseBenchmark(ABC):
         """Materialize at most the configured number of source samples."""
         if self.evaluation_limit is None:
             return list(samples)
+        if self._evaluation_fraction is not None:
+            source = list(samples)
+            count = get_sample_size(SimpleNamespace(eval_docs=source), self._evaluation_fraction)
+            return source[:count]
         return list(islice(samples, self.evaluation_limit))
 
     def _limit_instances(self, inputs: List[Instance], sample_namespace: str) -> List[Instance]:

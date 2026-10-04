@@ -142,10 +142,10 @@
       "sha256": "5650226af228a1e68a8ed40eba3819429aa1157e58577ef388a04aeb516c4f1e"
     },
     "MBPPPlus": {
-      "distinct_prompt_count": 378,
+      "distinct_prompt_count": 375,
       "longest_prompt_chars": 4473,
       "longest_prompt_tokens": 1452,
-      "sha256": "1c562e0f8987dc72f27e6a86dec113f67e87c0f43708430acbf06df3907f1b65"
+      "sha256": "0298b9ed4ac6b215e3d543ed33557b359e1c99a418c280759013de1c511aa4f5"
     },
     "MMLUPro": {
       "distinct_prompt_count": 12032,

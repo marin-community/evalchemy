@@ -85,20 +85,21 @@ class MBPPPlusBenchmark(BaseBenchmark):
             self.logger.info(f"Loaded {len(examples)} examples from {data_path}")
 
             examples_str = []
+            demonstration_ids = set()
             for i in range(1, self.num_examples + 1):
                 ex = examples[i]
+                demonstration_ids.add(ex["task_id"])
                 example_prompt = "- Example {}:\n{}".format(
                     i, self.format_test_example(ex["prompt"], ex["test_list"], ex["code"])
                 )
                 examples_str.append(example_prompt)
 
-            demonstration_ids = {examples[i]["task_id"] for i in range(1, self.num_examples + 1)}
             eval_range = [
                 i for i in range(self.start_idx, min(self.end_idx, len(examples)))
                 if examples[i]["task_id"] not in demonstration_ids
             ]
             if self.debug:
-                eval_range = list(eval_range)[:2]
+                eval_range = eval_range[:2]
                 self.logger.info(f"Debug mode: using 2 examples")
 
             for i in eval_range:
