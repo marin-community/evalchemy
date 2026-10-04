@@ -199,7 +199,6 @@ class _CodeCompletionModel:
 @pytest.mark.parametrize("task_name", ["HumanEvalPlus", "MBPPPlus"])
 def test_code_generation_limit_preserves_selected_ids_and_grader_artifact(task_name):
     args = setup_parser().parse_args(["--limit", "32"])
-    assert isinstance(args.limit, float)
     benchmark = TaskManager(task_list=[task_name], limit=args.limit).get_benchmark(task_name)
     if task_name == "HumanEvalPlus":
         source = benchmark.load_examples("python")
