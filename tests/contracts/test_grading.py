@@ -242,10 +242,24 @@ def test_code_fractional_limit_uses_native_sample_selection(task_name):
     assert len(benchmark.limit_samples(range(source_size))) == expected_size
 
 
-def test_humaneval_fractional_limit_uses_each_language_collection():
-    benchmark = TaskManager(task_list=["HumanEvalPlus"], limit=0.1).get_benchmark("HumanEvalPlus")
-    examples = benchmark.load_examples("python")
-    first_language = examples[:100]
-    second_language = examples[100:]
-    assert benchmark.limit_samples(first_language) == first_language[:10]
-    assert benchmark.limit_samples(second_language) == second_language[:7]
+def test_humaneval_fractional_limit_uses_each_language_collection(tmp_path):
+    original = TaskManager(task_list=["HumanEvalPlus"]).get_benchmark("HumanEvalPlus")
+    examples = original.load_examples("python")
+    language_rows = {"python": examples[:20], "cpp": examples[20:30]}
+    for language, rows in language_rows.items():
+        (tmp_path / f"humanevalplus-{language}.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows)
+        )
+    benchmark = TaskManager(
+        task_list=["HumanEvalPlus"], languages=["python", "cpp"], data_dir=str(tmp_path), limit=0.1
+    ).get_benchmark("HumanEvalPlus")
+    results = benchmark.generate_responses(_CodeCompletionModel())
+    artifacts = results["artifacts"]
+    try:
+        for language, expected_count in (("python", 2), ("cpp", 1)):
+            records = [json.loads(line) for line in artifacts.path(f"generated-{language}").read_text().splitlines()]
+            assert [row["task_id"] for row in records] == [
+                row["task_id"] for row in language_rows[language][:expected_count]
+            ]
+    finally:
+        artifacts.cleanup()

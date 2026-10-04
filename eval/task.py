@@ -192,8 +192,8 @@ class BaseBenchmark(ABC):
         ``model_args``.  MMLU-Pro additionally owns its prompt-budgeting logic,
         so synchronize its legacy field here.  ``max_tokens`` is forced on every
         generated ``Instance`` in :meth:`_normalize_model_args`, including
-        benchmarks with a hard-coded per-task default. ``limit`` gives custom
-        benchmarks the same positive sample cap as native lm-eval tasks.
+        benchmarks with a hard-coded per-task default. ``limit`` uses native lm-eval count or fraction selection. Fractions
+        require a known benchmark size.
         """
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
@@ -228,7 +228,7 @@ class BaseBenchmark(ABC):
         return self._evaluation_limit
 
     def limit_samples(self, samples: Iterable[_Sample]) -> List[_Sample]:
-        """Materialize at most the configured number of source samples."""
+        """Select a source prefix by count or by this collection's fraction."""
         if self.evaluation_limit is None:
             return list(samples)
         if self._evaluation_fraction is not None:
