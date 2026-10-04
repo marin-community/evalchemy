@@ -182,3 +182,50 @@ def test_generation_artifact_manifest_rejects_missing_and_wrong_count():
         manifest.write_jsonl("wrong-count", "wrong.jsonl", [{"id": "a"}], expected_count=2)
 
     manifest.cleanup()
+
+
+class _CodeCompletionModel:
+    rank = 0
+    world_size = 1
+
+    def apply_chat_template(self, messages):
+        return "\n".join(message["content"] for message in messages)
+
+    def generate_until(self, instances):
+        return [f"```python\n# source {instance.doc['task_id']}\nreturn 0\n```" for instance in instances]
+
+
+@pytest.mark.parametrize("task_name", ["HumanEvalPlus", "MBPPPlus"])
+def test_code_generation_limit_preserves_selected_ids_and_grader_artifact(task_name):
+    benchmark = TaskManager(task_list=[task_name]).get_benchmark(task_name)
+    if task_name == "HumanEvalPlus":
+        source = benchmark.load_examples("python")
+    else:
+        source = list(benchmark.read_test_examples(os.path.join(benchmark.data_dir, "mbppplus.jsonl")))
+        with open(os.path.join(benchmark.data_dir, "mbppplus.jsonl")) as stream:
+            original_rows = [json.loads(line) for line in stream]
+        demonstration_ids = {row["task_id"] for row in original_rows[1:4]}
+        assert {row["task_id"] for row in source}.isdisjoint(demonstration_ids)
+    selected = source[:32]
+    benchmark.set_evaluation_limits(limit=32)
+
+    results = benchmark.generate_responses(_CodeCompletionModel())
+    artifacts = results["artifacts"]
+    try:
+        artifacts.validate_required()
+        records = [json.loads(line) for line in artifacts.path("generated-python").read_text().splitlines()]
+        assert len(records) == 32
+        assert [record["task_id"] for record in records] == [record["task_id"] for record in selected]
+        if task_name == "MBPPPlus":
+            assert {record["task_id"] for record in records}.isdisjoint(demonstration_ids)
+        assert [record["prompt"] for record in records] == [record["prompt"] for record in selected]
+        for record, original in zip(records, selected, strict=True):
+            assert {key: record[key] for key in original} == original
+        output_key = "output" if task_name == "HumanEvalPlus" else "gpt_completion"
+        for record in records:
+            assert f"# source {record['task_id']}" in record[output_key]
+            assert f"# source {record['task_id']}" in record["generation"]
+        scored = benchmark.evaluate_responses(results)
+        assert scored["scored_count"] == 32
+    finally:
+        artifacts.cleanup()

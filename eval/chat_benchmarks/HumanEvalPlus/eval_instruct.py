@@ -94,7 +94,7 @@ Please continue to complete the function. You are not allowed to modify the give
 
         for lang in self.languages:
             try:
-                examples = self.load_examples(lang)
+                examples = self.limit_samples(self.load_examples(lang))
                 if not examples:
                     continue
                 self.logger.info(f"Loaded {len(examples)} examples for {lang}")

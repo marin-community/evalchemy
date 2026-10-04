@@ -92,7 +92,11 @@ class MBPPPlusBenchmark(BaseBenchmark):
                 )
                 examples_str.append(example_prompt)
 
-            eval_range = range(self.start_idx, min(self.end_idx, len(examples)))
+            demonstration_ids = {examples[i]["task_id"] for i in range(1, self.num_examples + 1)}
+            eval_range = [
+                i for i in range(self.start_idx, min(self.end_idx, len(examples)))
+                if examples[i]["task_id"] not in demonstration_ids
+            ]
             if self.debug:
                 eval_range = list(eval_range)[:2]
                 self.logger.info(f"Debug mode: using 2 examples")
@@ -142,7 +146,7 @@ Here is my problem:
         try:
 
             problem_file = os.path.join(self.data_dir, "mbppplus.jsonl")
-            examples = list(self.read_test_examples(problem_file))
+            examples = self.limit_samples(self.read_test_examples(problem_file))
             self.logger.info(f"Processing {len(examples)} examples")
 
             all_instances = []
