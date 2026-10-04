@@ -6,7 +6,7 @@ import random
 import sys
 from abc import ABC, abstractmethod
 from itertools import islice
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Type, TypeVar, Union
 
 import lm_eval.models as lm_eval_models
@@ -33,6 +33,7 @@ import lm_eval.models.openai_completions  # noqa: F401,E402
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES, resolve_limit
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
+from lm_eval.evaluator_utils import get_sample_size
 
 from eval.contracts.benchmark_metadata import BenchmarkMetadata, MetricKind, SourceMetric, resolve_metric_metadata
 from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
@@ -182,7 +183,7 @@ class BaseBenchmark(ABC):
         *,
         max_length: Optional[int] = None,
         max_tokens: Optional[int] = None,
-        limit: Optional[int] = None,
+        limit: int | float | None = None,
     ) -> None:
         """Attach Evalchemy's resolved limits to this custom benchmark.
 
@@ -195,7 +196,12 @@ class BaseBenchmark(ABC):
         """
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
-        self._evaluation_limit = limit if limit is not None and limit > 0 else None
+        self._evaluation_limit = None
+        if limit is not None and limit > 0:
+            source_size = self.benchmark_size() if limit < 1 else 0
+            if source_size is None:
+                raise ValueError("A fractional limit requires a known benchmark size")
+            self._evaluation_limit = get_sample_size(SimpleNamespace(eval_docs=range(source_size)), limit)
         self._limited_sample_ids.clear()
         if max_length is not None and hasattr(self, "max_model_length"):
             self.max_model_length = max_length

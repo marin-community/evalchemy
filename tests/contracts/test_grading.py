@@ -17,6 +17,7 @@ from eval.contracts.grading import (
     execute_grading_jobs,
     validate_serialized_artifact_manifests,
 )
+from eval.lm_eval_compat import setup_parser
 from eval.task import TaskManager
 
 
@@ -197,7 +198,9 @@ class _CodeCompletionModel:
 
 @pytest.mark.parametrize("task_name", ["HumanEvalPlus", "MBPPPlus"])
 def test_code_generation_limit_preserves_selected_ids_and_grader_artifact(task_name):
-    benchmark = TaskManager(task_list=[task_name]).get_benchmark(task_name)
+    args = setup_parser().parse_args(["--limit", "32"])
+    assert isinstance(args.limit, float)
+    benchmark = TaskManager(task_list=[task_name], limit=args.limit).get_benchmark(task_name)
     if task_name == "HumanEvalPlus":
         source = benchmark.load_examples("python")
     else:
@@ -207,7 +210,6 @@ def test_code_generation_limit_preserves_selected_ids_and_grader_artifact(task_n
         demonstration_ids = {row["task_id"] for row in original_rows[1:4]}
         assert {row["task_id"] for row in source}.isdisjoint(demonstration_ids)
     selected = source[:32]
-    benchmark.set_evaluation_limits(limit=32)
 
     results = benchmark.generate_responses(_CodeCompletionModel())
     artifacts = results["artifacts"]
@@ -229,3 +231,13 @@ def test_code_generation_limit_preserves_selected_ids_and_grader_artifact(task_n
         assert scored["scored_count"] == 32
     finally:
         artifacts.cleanup()
+
+
+@pytest.mark.parametrize("task_name", ["HumanEvalPlus", "MBPPPlus"])
+def test_code_fractional_limit_uses_native_sample_selection(task_name):
+    args = setup_parser().parse_args(["--limit", "0.1"])
+    benchmark = TaskManager(task_list=[task_name], limit=args.limit).get_benchmark(task_name)
+    source_size = benchmark.benchmark_size()
+    expected_size = (source_size + 9) // 10
+    assert benchmark.evaluation_limit == expected_size
+    assert len(benchmark.limit_samples(range(source_size))) == expected_size
