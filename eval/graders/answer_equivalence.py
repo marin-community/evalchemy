@@ -12,9 +12,6 @@ from urllib.parse import urlsplit
 from math_verify import parse, verify
 from openai import AsyncOpenAI
 
-from eval.graders.minerva_math import is_equiv as minerva_is_equiv
-from eval.graders.minerva_math import normalize_final_answer
-
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_NUM_WORKERS = 16
@@ -124,6 +121,9 @@ class EquivalenceResult:
 
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
     """Return whether the candidate is mathematically equivalent to any reference."""
+    from eval.graders.minerva_math import is_equiv as minerva_is_equiv
+    from eval.graders.minerva_math import normalize_final_answer
+
     candidate = normalize_final_answer(candidate_answer)
     parsed_candidate = parse(f"\\boxed{{{candidate_answer}}}")
     for reference in reference_answers:
@@ -135,6 +135,34 @@ def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[s
         if minerva_is_equiv(candidate, normalize_final_answer(reference)):
             return True
     return False
+
+
+def verifyit_math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
+    """Compare final mathematical answers using only the existing Math mode."""
+    from verifyit.grade import Aggregation, InvalidTask, Status, aggregate_rewards
+    from verifyit.modes.extract import BOXED, extract_boxed, last_line
+    from verifyit.modes.grade_math import grade_math_candidate
+    from verifyit.spec import MathProfile, MathSpec
+
+    if not reference_answers or any(not isinstance(value, str) or not value.strip() for value in reference_answers):
+        raise InvalidTask("Math equivalence requires nonempty textual reference answers")
+    specs = [MathSpec(expected=reference, profile=MathProfile.BOXED) for reference in reference_answers]
+    for spec in specs:
+        grade_math_candidate(MathSpec(expected=spec.expected), "")
+    candidate_answer = candidate_answer if isinstance(candidate_answer, str) else ""
+    candidate = (
+        (extract_boxed(candidate_answer) or "") if BOXED in candidate_answer else last_line(candidate_answer) or ""
+    )
+    verdict = aggregate_rewards(
+        [grade_math_candidate(spec, candidate) for spec in specs],
+        expected_total=len(specs),
+        policy=Aggregation.MAX,
+    )
+    if verdict.status is Status.INVALID_TASK:
+        raise InvalidTask(str(verdict.detail))
+    if verdict.status is not Status.SCORED:
+        raise RuntimeError(str(verdict.detail))
+    return verdict.reward == 1
 
 
 def _parse_judgment(text: str) -> JudgeLabel:

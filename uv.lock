@@ -1045,6 +1045,7 @@ benchmarks = [
     { name = "absl-py" },
     { name = "alpaca-eval" },
     { name = "anthropic" },
+    { name = "beautifulsoup4" },
     { name = "codebleu" },
     { name = "cohere" },
     { name = "emoji" },
@@ -1052,11 +1053,13 @@ benchmarks = [
     { name = "fschat" },
     { name = "fuzzywuzzy" },
     { name = "google-generativeai" },
+    { name = "html5lib" },
     { name = "ijson" },
     { name = "immutabledict" },
     { name = "jsonlines" },
     { name = "langdetect" },
     { name = "lark" },
+    { name = "lxml" },
     { name = "nltk" },
     { name = "patsy" },
     { name = "pqdm" },
@@ -1108,10 +1111,13 @@ ifeval = [
     { name = "nltk" },
 ]
 livebench = [
+    { name = "beautifulsoup4" },
     { name = "fschat" },
+    { name = "html5lib" },
     { name = "immutabledict" },
     { name = "langdetect" },
     { name = "lark" },
+    { name = "lxml" },
     { name = "nltk" },
     { name = "prettytable" },
     { name = "psutil" },
@@ -1163,6 +1169,12 @@ serve-eval = [
 swebench = [
     { name = "swebench" },
 ]
+verifyit = [
+    { name = "harbor-config" },
+    { name = "pytest" },
+    { name = "pytest-json-report" },
+    { name = "verifyit", extra = ["answer", "schema"] },
+]
 vllm = [
     { name = "accelerate" },
     { name = "lm-eval", extra = ["vllm"] },
@@ -1190,6 +1202,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'mtbench'" },
     { name = "anthropic", marker = "extra == 'wildbench'" },
     { name = "anthropic", marker = "extra == 'zeroeval'" },
+    { name = "beautifulsoup4", marker = "extra == 'livebench'" },
     { name = "bespokelabs-curator", specifier = ">=0.1.16.0" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "click", marker = "extra == 'serve-eval'", specifier = ">=8" },
@@ -1210,6 +1223,8 @@ requires-dist = [
     { name = "fschat", marker = "extra == 'mtbench'", directory = "eval/chat_benchmarks/MTBench" },
     { name = "fuzzywuzzy", marker = "extra == 'repobench'" },
     { name = "google-generativeai", marker = "extra == 'zeroeval'" },
+    { name = "harbor-config", marker = "extra == 'verifyit'", git = "https://github.com/marin-community/harbor?subdirectory=packages%2Fharbor-config&rev=6b2e76e1dae5c084eed05edefefffcec8c0c1ad9" },
+    { name = "html5lib", marker = "extra == 'livebench'" },
     { name = "huggingface-hub" },
     { name = "ijson", marker = "extra == 'nupa-loose'" },
     { name = "ijson", marker = "extra == 'nupa5k-loose'" },
@@ -1220,9 +1235,10 @@ requires-dist = [
     { name = "langdetect", marker = "extra == 'ifeval'" },
     { name = "langdetect", marker = "extra == 'livebench'" },
     { name = "lark", marker = "extra == 'livebench'" },
-    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12" },
-    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12" },
+    { name = "lm-eval", extras = ["api", "math"], git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5" },
+    { name = "lm-eval", extras = ["vllm"], marker = "extra == 'vllm'", git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5" },
     { name = "loguru" },
+    { name = "lxml", marker = "extra == 'livebench'" },
     { name = "marin-finestore", marker = "extra == 'serve-eval'", specifier = ">=0.2.113.dev35019671596" },
     { name = "marin-rigging", marker = "extra == 'serve-eval'", specifier = ">=0.2.67.dev30673006835" },
     { name = "nltk", marker = "extra == 'ifbench'" },
@@ -1244,6 +1260,8 @@ requires-dist = [
     { name = "pydantic-settings", marker = "extra == 'serve-eval'", specifier = ">=2" },
     { name = "pyext", marker = "extra == 'livebench'", git = "https://github.com/penfever/PyExt" },
     { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest", marker = "extra == 'verifyit'" },
+    { name = "pytest-json-report", marker = "extra == 'verifyit'" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "pyyaml", marker = "extra == 'serve-eval'" },
@@ -1266,8 +1284,9 @@ requires-dist = [
     { name = "tree-sitter", marker = "extra == 'bigcodebench'" },
     { name = "tree-sitter", marker = "extra == 'multiple'" },
     { name = "tree-sitter-python", marker = "extra == 'bigcodebench'" },
+    { name = "verifyit", extras = ["answer", "schema"], marker = "extra == 'verifyit'", git = "https://github.com/marin-community/verifyit?rev=de797f61334a34bd4d43f402297c2dc3619f1ba0" },
 ]
-provides-extras = ["dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa-loose", "nupa5k-loose", "olympiadbench", "olympiadbenchdeterministic", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
+provides-extras = ["verifyit", "dev", "serve-eval", "database", "bigcodebench", "cruxeval", "humaneval", "humanevalplus", "ifeval", "ifbench", "livebench", "mbpp", "mbppplus", "mtbench", "mixeval", "mrcr", "multiple", "repobench", "swebench", "wildbench", "alpaca-eval", "zeroeval", "aime24", "aime25", "aiw", "amc23", "codeelo", "codeforces", "financebench", "gpqadiamond", "gsm8kperturbed", "hle", "hmmt", "jeebench", "livecodebench", "livecodebenchv5", "livecodebenchv5-official", "math500", "mmlupro", "nupa-loose", "nupa5k-loose", "olympiadbench", "olympiadbenchdeterministic", "olympiadbenchfull", "simpleqa", "simpleqamini", "benchmarks", "vllm"]
 
 [[package]]
 name = "evaluate"
@@ -2061,6 +2080,19 @@ wheels = [
 ]
 
 [[package]]
+name = "harbor-config"
+version = "0.1.0"
+source = { git = "https://github.com/marin-community/harbor?subdirectory=packages%2Fharbor-config&rev=6b2e76e1dae5c084eed05edefefffcec8c0c1ad9#6b2e76e1dae5c084eed05edefefffcec8c0c1ad9" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "shortuuid" },
+    { name = "toml" },
+    { name = "typing-extensions" },
+    { name = "universal-pathlib" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2083,6 +2115,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/26/5b/fcabf6028144a8723726318b07a32c2f3314acdff6265743cf08a344b18e/hpack-4.2.0.tar.gz", hash = "sha256:0895cfa3b5531fc65fe439c05eb65144f123bf7a394fcaa56aa423548d8e45c0", size = 51300, upload-time = "2026-06-23T18:34:46.667Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/71/b4/4a9fcfb2aef6ba44d9073ecd301443aa00b3dac95de5619f2a7de7ec8a91/hpack-4.2.0-py3-none-any.whl", hash = "sha256:858ac0b02280fa582b5080d68db0899c62a80375e0e5413a74970c5e518b6986", size = 34246, upload-time = "2026-06-23T18:34:45.472Z" },
+]
+
+[[package]]
+name = "html5lib"
+version = "1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "six" },
+    { name = "webencodings" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/b6/b55c3f49042f1df3dcd422b7f224f939892ee94f22abcf503a9b7339eaf2/html5lib-1.1.tar.gz", hash = "sha256:b2e5b40261e20f354d198eae92afc10d750afb487ed5e50f9c4eaf07c184146f", size = 272215, upload-time = "2020-06-22T23:32:38.834Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6c/dd/a834df6482147d48e225a49515aabc28974ad5a4ca3215c18a882565b028/html5lib-1.1-py2.py3-none-any.whl", hash = "sha256:0d78f8fde1c230e99fe37986a60526d7049ed4bf8a9fadbad5f00e22e58e041d", size = 112173, upload-time = "2020-06-22T23:32:36.781Z" },
 ]
 
 [[package]]
@@ -2541,8 +2586,8 @@ wheels = [
 
 [[package]]
 name = "lm-eval"
-version = "0.4.12"
-source = { git = "https://github.com/EleutherAI/lm-evaluation-harness?rev=v0.4.12#6d642546f4688648fced259eb3302efd36ece5af" }
+version = "0.4.14.dev0"
+source = { git = "https://github.com/marin-community/lm-evaluation-harness?rev=ea39286e1aee2417301809bee3c6efa1233c58a5#ea39286e1aee2417301809bee3c6efa1233c58a5" }
 dependencies = [
     { name = "datasets" },
     { name = "dill" },
@@ -3676,6 +3721,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pathlib-abc"
+version = "0.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/cb/448649d7f25d228bf0be3a04590ab7afa77f15e056f8fa976ed05ec9a78f/pathlib_abc-0.5.2.tar.gz", hash = "sha256:fcd56f147234645e2c59c7ae22808b34c364bb231f685ddd9f96885aed78a94c", size = 33342, upload-time = "2025-10-10T18:37:20.524Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/29/c028a0731e202035f0e2e0bfbf1a3e46ad6c628cbb17f6f1cc9eea5d9ff1/pathlib_abc-0.5.2-py3-none-any.whl", hash = "sha256:4c9d94cf1b23af417ce7c0417b43333b06a106c01000b286c99de230d95eefbb", size = 19070, upload-time = "2025-10-10T18:37:19.437Z" },
+]
+
+[[package]]
 name = "pathspec"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4243,6 +4297,31 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "pytest-json-report"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+    { name = "pytest-metadata" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/4f/d3/765dae9712fcd68d820338908c1337e077d5fdadccd5cacf95b9b0bea278/pytest-json-report-1.5.0.tar.gz", hash = "sha256:2dde3c647851a19b5f3700729e8310a6e66efb2077d674f27ddea3d34dc615de", size = 21241, upload-time = "2022-03-15T21:03:10.2Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/35/d07400c715bf8a88aa0c1ee9c9eb6050ca7fe5b39981f0eea773feeb0681/pytest_json_report-1.5.0-py3-none-any.whl", hash = "sha256:9897b68c910b12a2e48dd849f9a284b2c79a732a8a9cb398452ddd23d3c8c325", size = 13222, upload-time = "2022-03-15T21:03:08.65Z" },
+]
+
+[[package]]
+name = "pytest-metadata"
+version = "3.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a6/85/8c969f8bec4e559f8f2b958a15229a35495f5b4ce499f6b865eac54b878d/pytest_metadata-3.1.1.tar.gz", hash = "sha256:d2a29b0355fbc03f168aa96d41ff88b1a3b44a3b02acbe491801c98a048017c8", size = 9952, upload-time = "2024-02-12T19:38:44.887Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/43/7e7b2ec865caa92f67b8f0e9231a798d102724ca4c0e1f414316be1c1ef2/pytest_metadata-3.1.1-py3-none-any.whl", hash = "sha256:c8e0844db684ee1c798cfa38908d20d67d0463ecb6137c72e91f418558dd5f4b", size = 11428, upload-time = "2024-02-12T19:38:42.531Z" },
 ]
 
 [[package]]
@@ -5122,6 +5201,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tomlkit"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/94/96/e07752635b98536177fa1f37671c8f3cdde2e724c6bcf6034b2cfb571565/tomlkit-0.15.1.tar.gz", hash = "sha256:e25bbf38843005246210a12982776f27f99cb9be67160e14434d0c0d21ee1e97", size = 180129, upload-time = "2026-07-17T01:48:04.562Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl", hash = "sha256:177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304", size = 49449, upload-time = "2026-07-17T01:48:05.728Z" },
+]
+
+[[package]]
 name = "torch"
 version = "2.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5396,6 +5484,19 @@ wheels = [
 ]
 
 [[package]]
+name = "universal-pathlib"
+version = "0.3.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "fsspec" },
+    { name = "pathlib-abc" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/6e/d997a70ee8f4c61f9a7e2f4f8af721cf072a3326848fc881b05187e52558/universal_pathlib-0.3.10.tar.gz", hash = "sha256:4487cbc90730a48cfb64f811d99e14b6faed6d738420cd5f93f59f48e6930bfb", size = 261110, upload-time = "2026-02-22T14:40:58.87Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/dd/1a/5d9a402b39ec892d856bbdd9db502ff73ce28cdf4aff72eb1ce1d6843506/universal_pathlib-0.3.10-py3-none-any.whl", hash = "sha256:dfaf2fb35683d2eb1287a3ed7b215e4d6016aa6eaf339c607023d22f90821c66", size = 83528, upload-time = "2026-02-22T14:40:57.316Z" },
+]
+
+[[package]]
 name = "uritemplate"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5448,6 +5549,25 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/6f/e62b4dfc7ad6518e7eff2516f680d02a0f6eb62c0c212e152ca708a0085e/uvloop-0.22.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7b5b1ac819a3f946d3b2ee07f09149578ae76066d70b44df3fa990add49a82e4", size = 4426307, upload-time = "2025-10-16T22:16:32.917Z" },
     { url = "https://files.pythonhosted.org/packages/90/60/97362554ac21e20e81bcef1150cb2a7e4ffdaf8ea1e5b2e8bf7a053caa18/uvloop-0.22.1-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e047cc068570bac9866237739607d1313b9253c3051ad84738cbb095be0537b2", size = 4131970, upload-time = "2025-10-16T22:16:34.015Z" },
     { url = "https://files.pythonhosted.org/packages/99/39/6b3f7d234ba3964c428a6e40006340f53ba37993f46ed6e111c6e9141d18/uvloop-0.22.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:512fec6815e2dd45161054592441ef76c830eddaad55c8aa30952e6fe1ed07c0", size = 4296343, upload-time = "2025-10-16T22:16:35.149Z" },
+]
+
+[[package]]
+name = "verifyit"
+version = "0.1.0"
+source = { git = "https://github.com/marin-community/verifyit?rev=de797f61334a34bd4d43f402297c2dc3619f1ba0#de797f61334a34bd4d43f402297c2dc3619f1ba0" }
+dependencies = [
+    { name = "harbor-config" },
+    { name = "tomlkit" },
+]
+
+[package.optional-dependencies]
+answer = [
+    { name = "math-verify" },
+    { name = "sympy" },
+]
+schema = [
+    { name = "jsonschema" },
+    { name = "pyyaml" },
 ]
 
 [[package]]
@@ -5605,6 +5725,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/34/74/c6428f875774288bec1396f5bfcbc2d925700a4dad61727fd5f2b12f249d/wcwidth-0.8.2.tar.gz", hash = "sha256:91fbef97204b96a3d4d421609b80340b760cf33e26da123ff243d76b1fda8dda", size = 1466253, upload-time = "2026-06-29T18:11:11.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/42/3e5985a0a7e57de470b320c6d6a1a67c844f6737a587f3d44dd13d1819e7/wcwidth-0.8.2-py3-none-any.whl", hash = "sha256:d63947694a0539a1d51e01eda7caf800c291020e6cdd7e28ad7b14dd33ad4f85", size = 323166, upload-time = "2026-06-29T18:11:09.888Z" },
+]
+
+[[package]]
+name = "webencodings"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/a0/8fd707bcb776a7be556bad06a2ea5fb9bd519df78ef8e26f70ccf0f38bff/webencodings-0.6.1.tar.gz", hash = "sha256:565f9ad031c702dae404e27a099e3e09186a3ab1b9520f06d215502b651fd910", size = 15001, upload-time = "2026-08-15T14:22:57.549Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/77/c6/040cbc72480d789a5f40d63fb484d3106554c4dfa2d2b70ad5022057750f/webencodings-0.6.1-py3-none-any.whl", hash = "sha256:7fab6269c8bf237c657876b52058ccb182e861518d1c695c1a9aaa8c1c105d5b", size = 8745, upload-time = "2026-08-15T14:22:56.31Z" },
 ]
 
 [[package]]

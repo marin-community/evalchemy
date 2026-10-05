@@ -57,9 +57,15 @@ class SimpleQABenchmark(BaseBenchmark):
         judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
+        verifyit_judge_policy: str = "source_whole_label_nontext_empty_v1",
+        verifyit_timeout: float = 300,
     ):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.data_file = data_file
+        self.verifyit_enabled = verifyit_enabled
+        self.verifyit_judge_policy = verifyit_judge_policy
+        self.verifyit_timeout = verifyit_timeout
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
@@ -154,17 +160,22 @@ class SimpleQABenchmark(BaseBenchmark):
             base_url=self.judge_config.base_url,
             api_key=self.judge_config.api_key,
         )
+        grader = judge_simpleqa
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import judge_simpleqa as grade_simpleqa
+            grader = grade_simpleqa
         return asyncio.run(
-            judge_simpleqa(
+            grader(
                 [
                     SimpleQARequest(
-                        question=example["question"],
-                        target=example["answer"],
-                        predicted_answer=example.get("model_output", "") or "",
+                        question=(example.get("question") if self.verifyit_enabled else example["question"]),
+                        target=(example.get("answer") if self.verifyit_enabled else example["answer"]),
+                        predicted_answer=(example.get("model_output") if self.verifyit_enabled else example.get("model_output", "") or ""),
                     )
                     for example in examples
                 ],
                 judge_config,
+                **({"policy": self.verifyit_judge_policy, "timeout": self.verifyit_timeout} if self.verifyit_enabled else {}),
             )
         )
 
@@ -185,7 +196,13 @@ class SimpleQABenchmark(BaseBenchmark):
 
             assert isinstance(judgment, EquivalenceJudgment)
             label = judgment.label
-            counts[label] += 1
+            if self.verifyit_enabled:
+                example["verifyit_grade"] = asdict(judgment)
+                counts[JudgeLabel.CORRECT] += int(judgment.verdict.reward == 1)
+                if judgment.verdict.reward == 0:
+                    counts[label] += 1
+            else:
+                counts[label] += 1
             self._record_judgment(example, judgment)
         return _GradeCounts(
             correct=counts[JudgeLabel.CORRECT],
@@ -209,14 +226,13 @@ class SimpleQABenchmark(BaseBenchmark):
         record_sample_metrics(example, judge_failed=True)
         self.logger.warning("SimpleQA judge failed for trial %d: %s", index, error)
 
-    @staticmethod
-    def _record_judgment(example: Dict[str, Any], judgment: EquivalenceJudgment) -> None:
+    def _record_judgment(self, example: Dict[str, Any], judgment: EquivalenceJudgment) -> None:
         label = judgment.label
         example["judge_label"] = label.value
         example["judge_raw"] = judgment.raw
         record_sample_metrics(
             example,
-            accuracy=label == JudgeLabel.CORRECT,
+            accuracy=(judgment.verdict.reward if self.verifyit_enabled else label == JudgeLabel.CORRECT),
             incorrect=label == JudgeLabel.INCORRECT,
             not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
             judge_failed=False,
