@@ -149,6 +149,7 @@ async def _complete_judge_prompt(
     prompt: str,
     config: JudgeConfig,
     client: AsyncOpenAI,
+    labels: Sequence[str],
 ) -> str:
     raw = ""
     for max_tokens in JUDGE_TOKEN_BUDGETS:
@@ -159,8 +160,10 @@ async def _complete_judge_prompt(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = (response.choices[0].message.content or "").strip()
-        if raw:
-            return raw
+        normalized = raw.lower()
+        if not raw or (normalized not in labels and any(label.startswith(normalized) for label in labels)):
+            continue
+        return raw
     return raw
 
 
@@ -168,6 +171,7 @@ async def judge_prompts(
     prompts: Sequence[str],
     config: JudgeConfig,
     parse_response: Callable[[str], _Judgment],
+    labels: Sequence[str],
     num_workers: int = DEFAULT_NUM_WORKERS,
 ) -> list[_Judgment | BaseException]:
     """Complete and parse independent judge prompts while preserving input order."""
@@ -176,6 +180,7 @@ async def judge_prompts(
     if num_workers < 1:
         raise ValueError("num_workers must be positive")
     semaphore = asyncio.Semaphore(num_workers)
+    normalized_labels = tuple(label.lower() for label in labels)
     async with AsyncOpenAI(
         api_key=config.api_key,
         base_url=config.base_url,
@@ -185,7 +190,7 @@ async def judge_prompts(
 
         async def bound(prompt: str) -> _Judgment:
             async with semaphore:
-                raw = await _complete_judge_prompt(prompt, config, client)
+                raw = await _complete_judge_prompt(prompt, config, client, normalized_labels)
                 return parse_response(raw)
 
         return await asyncio.gather(*(bound(prompt) for prompt in prompts), return_exceptions=True)
@@ -209,6 +214,7 @@ async def judge_equivalence(
         prompts,
         config,
         lambda raw: EquivalenceJudgment(_parse_judgment(raw), raw),
+        labels=tuple(JudgeLabel),
         num_workers=num_workers,
     )
 

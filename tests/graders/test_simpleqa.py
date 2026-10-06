@@ -49,6 +49,25 @@ def test_simpleqa_judge_maps_canonical_labels(monkeypatch, response, expected_la
     assert "Predicted answer: The answer is Paris." in prompt
 
 
+def test_simpleqa_judge_keeps_complete_c_verdict(monkeypatch):
+    class ChangingJudge(_SimpleQAJudge):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.answered = False
+
+        async def create(self, **kwargs):
+            content = "A" if self.answered else "C"
+            self.answered = True
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", ChangingJudge)
+    config = JudgeConfig("judge-model", "https://judge.example/v1", "judge-key")
+
+    judgments = asyncio.run(judge_simpleqa([SimpleQARequest("Question", "target", "answer")], config))
+
+    assert judgments == [EquivalenceJudgment(JudgeLabel.NOT_ATTEMPTED, "C")]
+
+
 @pytest.mark.parametrize("response", ["A because it is correct", "CORRECT", "", "D"])
 def test_simpleqa_judge_rejects_noncanonical_responses(monkeypatch, response):
     _SimpleQAJudge.response = response

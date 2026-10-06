@@ -139,5 +139,6 @@ async def judge_simpleqa(
         prompts,
         config,
         _parse_simpleqa_judgment,
+        labels=tuple(_GRADE_LABELS),
         num_workers=num_workers,
     )
