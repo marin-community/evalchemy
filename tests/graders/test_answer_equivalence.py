@@ -163,7 +163,17 @@ def test_judge_equivalence_retries_transient_server_failures(judge_server):
     assert body["model"] == "retry-model"
 
 
-def test_judge_equivalence_retries_empty_reasoning_completion(monkeypatch):
+@pytest.mark.parametrize(
+    "responses",
+    [
+        ("", "", "correct"),
+        ("not", "not_attempt", "not_attempted"),
+        (" NOT ", "NOT_ATTEMPT", "NOT_ATTEMPTED"),
+        ("c", "correc", "correct"),
+        ("inc", "incorrec", "incorrect"),
+    ],
+)
+def test_judge_equivalence_retries_incomplete_label(monkeypatch, responses):
     class ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -171,7 +181,7 @@ def test_judge_equivalence_retries_empty_reasoning_completion(monkeypatch):
 
         async def create(self, **kwargs):
             self.requests += 1
-            content = "correct" if self.requests == 3 else ""
+            content = responses[self.requests - 1]
             return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
     monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", ReasoningJudgeAsyncOpenAI)
@@ -181,11 +191,11 @@ def test_judge_equivalence_retries_empty_reasoning_completion(monkeypatch):
     judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
 
     assert judgments == [
-        answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")
+        answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel(responses[-1].lower()), responses[-1])
     ]
 
 
-@pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", ""])
+@pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", "", "not_attempt"])
 def test_judge_equivalence_rejects_non_label_responses(monkeypatch, response):
     class NonLabelAsyncOpenAI(_FakeAsyncOpenAI):
         async def create(self, **kwargs):
