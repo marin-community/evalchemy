@@ -159,6 +159,12 @@
       "longest_prompt_tokens": 799,
       "sha256": "53a443baa46ffb97aede3097062eab4b07ddf1c9c7540c48cc556df902ddf45e"
     },
+    "NUPA200-Loose": {
+      "distinct_prompt_count": 199,
+      "longest_prompt_chars": 563,
+      "longest_prompt_tokens": 367,
+      "sha256": "25feaf4b6c529a02b5e5a89648a8b733bbb3eca751f10a18471cd5d58781c8c5"
+    },
     "NUPA5K-Loose": {
       "distinct_prompt_count": 4973,
       "longest_prompt_chars": 612,
