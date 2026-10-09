@@ -6,7 +6,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Sequence, TypeVar
+from typing import Any, Mapping, Sequence, TypeVar
 from urllib.parse import urlsplit
 
 from math_verify import parse, verify
@@ -58,6 +58,7 @@ class JudgeConfig:
     model: str
     base_url: str
     api_key: str = field(repr=False)
+    extra_body: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not self.model.strip():
@@ -157,6 +158,7 @@ async def _complete_judge_prompt(
             max_tokens=max_tokens,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
+            extra_body=config.extra_body,
         )
         raw = (response.choices[0].message.content or "").strip()
         if raw:

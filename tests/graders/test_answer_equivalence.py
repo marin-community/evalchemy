@@ -153,14 +153,28 @@ def test_judge_equivalence_retries_transient_server_failures(judge_server):
 
     judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
 
-    assert judgments == [
-        answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")
-    ]
+    assert judgments == [answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")]
     assert len(requests) == 4
     path, headers, body = requests[0]
     assert path == "/v1/chat/completions"
     assert headers["Authorization"] == "Bearer judge-key"
     assert body["model"] == "retry-model"
+
+
+def test_judge_equivalence_sends_structured_choice_to_openai_endpoint(judge_server):
+    base_url, requests = judge_server
+    request = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
+    config = answer_equivalence.JudgeConfig(
+        "judge-model",
+        base_url,
+        "judge-key",
+        extra_body={"structured_outputs": {"choice": ["correct", "incorrect", "not_attempted"]}},
+    )
+
+    judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
+
+    assert judgments[0].label == answer_equivalence.JudgeLabel.CORRECT
+    assert requests[0][2]["structured_outputs"] == {"choice": ["correct", "incorrect", "not_attempted"]}
 
 
 def test_judge_equivalence_retries_empty_reasoning_completion(monkeypatch):
@@ -180,9 +194,7 @@ def test_judge_equivalence_retries_empty_reasoning_completion(monkeypatch):
 
     judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
 
-    assert judgments == [
-        answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")
-    ]
+    assert judgments == [answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")]
 
 
 @pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", ""])
