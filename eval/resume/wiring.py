@@ -146,12 +146,9 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
         "system_instruction": getattr(args, "system_instruction", None),
     }
 
-    model_dir = _sanitize(model_repo or "model")
-    base_run_dir = Path(output_path) / ".resume" / model_dir if output_path else None
+    base_run_dir = Path(output_path) / ".resume" / _sanitize(model_repo or "model") if output_path else None
 
     def factory(task_name: str):
-        from .manager import ResumeManager
-
         fp = RunFingerprint.from_run_inputs(
             model_repo=model_repo,
             model_revision=model_revision,
@@ -176,6 +173,8 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
                 world_size=world_size,
                 rank=rank,
             )
+        from .manager import ResumeManager
+
         return ResumeManager(
             run_dir=base_run_dir / _sanitize(task_name),
             fingerprint=fp,
@@ -208,7 +207,4 @@ def attach_to_chat_benchmarks(task_manager: Any, task_list: list, factory: Any) 
         bench = instances.get(task_name)
         if bench is None:
             continue
-        try:
-            bench.attach_resume_manager(factory(task_name))
-        except Exception as exc:  # pragma: no cover - defensive; never break a run on wiring
-            logger.warning("resume: could not attach manager to %s (%s); running without resume.", task_name, exc)
+        bench.attach_resume_manager(factory(task_name))
