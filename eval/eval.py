@@ -84,6 +84,7 @@ from eval.contracts.task_outcome import (
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import parse_key_value_args, resolve_evaluation_limits
 from eval.resume import lm_eval_native
+from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
 
@@ -223,7 +224,7 @@ def _grade_custom_tasks(
                 continue
             results["results"][work.task_name] = scored_result
             _record_generation_artifacts(results, work)
-            if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
+            if not is_scored_result(scored_result):
                 outcomes.append(outcome)
                 continue
 
@@ -584,7 +585,7 @@ def evaluate(
                         limit=args.limit,
                         check_integrity=args.check_integrity,
                         write_out=args.write_out,
-                        log_samples=args.log_samples,
+                        log_samples=True,
                         evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
                         system_instruction=args.system_instruction,
                         apply_chat_template=args.apply_chat_template,
@@ -624,20 +625,19 @@ def evaluate(
             results["results"].update(pretrain_results.get("results", {}))
             if pretrain_results.get("n-samples"):
                 results.setdefault("n-samples", {}).update(pretrain_results["n-samples"])
-            if getattr(args, "log_samples", False):
-                native_samples = pretrain_results.get("samples", {})
-                for task, scored_result in pretrain_results.get("results", {}).items():
-                    if not is_scored_result(scored_result):
-                        continue
-                    task_samples = native_samples.get(task, [])
-                    if not task_samples:
-                        eval_logger.warning("log_samples: scored task %s produced no sample records", task)
-                        continue
-                    results.setdefault("samples", {})[task] = canonicalize_samples(
-                        task,
-                        task_samples,
-                        sample_manifest,
-                    )
+            native_samples = pretrain_results.get("samples", {})
+            for task, scored_result in pretrain_results.get("results", {}).items():
+                if not is_scored_result(scored_result):
+                    continue
+                task_samples = native_samples.get(task, [])
+                if not task_samples:
+                    eval_logger.warning("scored task %s produced no sample records", task)
+                    continue
+                results.setdefault("samples", {})[task] = canonicalize_samples(
+                    task,
+                    task_samples,
+                    sample_manifest,
+                )
 
     finalized_outcomes = []
     for outcome in outcomes:
@@ -737,7 +737,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         raise ValueError("--finestore_output_path is required")
     if args.resume_mode == "off":
         raise ValueError("FineStore output requires --resume-mode auto or force-fresh")
-    args.log_samples = True
     if completed_finestore_output(args.finestore_output_path, args.finestore_output_prefix):
         utils.eval_logger.info("Evaluation already completed in %s", args.finestore_output_path)
         return
@@ -884,8 +883,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         )
 
     # One per-task factory feeds the native lm-eval and chat benchmark resume paths.
-    from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
-
     _resume_factory = build_resume_wiring(args, lm)
     attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
 
@@ -1102,8 +1099,7 @@ def handle_evaluation_output(
         try:
             wandb_logger.post_init(results)
             wandb_logger.log_eval_result()
-            if args.log_samples:
-                wandb_logger.log_eval_samples(samples)
+            wandb_logger.log_eval_samples(samples)
         except Exception as e:
             utils.eval_logger.info(f"Logging to Weights and Biases failed due to {e}")
 

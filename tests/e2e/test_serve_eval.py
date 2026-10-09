@@ -129,6 +129,19 @@ def test_apply_chat_template_flag_is_bare_never_a_value():
     assert not following or following[0].startswith("--")
     assert "True" not in argv
 
+def test_runner_rejects_output_override_that_would_change_archive_reader():
+    served = ServedModel(base_url="http://h/v1", model="m")
+    cfg = RunConfig.load(None, tasks=["gsm8k"])
+    with pytest.raises(ValueError, match="owns the FineStore output"):
+        build_eval_argv(
+            served,
+            cfg,
+            "/out",
+            limit=None,
+            extra_args=["--finestore_output_prefix", "other"],
+            python="python",
+        )
+
 
 # --- run config boundaries ----------------------------------------------------
 
@@ -584,7 +597,9 @@ def test_telemetry_delivery_failure_does_not_change_runner_output_or_status(tmp_
     try:
         output_dir = tmp_path / "results"
         args = _runner_args(server, output_dir, _fake_eval_python(tmp_path, exit_code=eval_exit_code))
+        baseline_started = time.monotonic()
         without_telemetry = CliRunner().invoke(main, args)
+        baseline_elapsed = time.monotonic() - baseline_started
         started = time.monotonic()
         with_broken_telemetry = _invoke_with_telemetry(server, args)
         elapsed = time.monotonic() - started
@@ -593,4 +608,4 @@ def test_telemetry_delivery_failure_does_not_change_runner_output_or_status(tmp_
 
     assert with_broken_telemetry.exit_code == without_telemetry.exit_code
     assert with_broken_telemetry.output == without_telemetry.output
-    assert elapsed < 3
+    assert elapsed - baseline_elapsed < 3

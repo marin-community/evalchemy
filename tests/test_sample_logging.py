@@ -51,7 +51,6 @@ class _EmptyPretrainTaskManager:
 def _args(**overrides) -> Namespace:
     values = {
         "model": "local-completions",
-        "log_samples": True,
         "model_args": "model=test-model",
         "gen_kwargs": None,
         "num_fewshot": 0,
@@ -102,7 +101,7 @@ def _write_output(tmp_path: Path, results: dict[str, Any], args: Namespace):
         ("IFEval", {"prompt": "Respond with hello", "response": "hello"}),
     ],
 )
-def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
+def test_custom_scored_tasks_write_canonical_finestore_samples(
     tmp_path: Path, task_name: str, example: dict[str, Any]
 ):
     generation_result = {"examples": [example]}
@@ -130,7 +129,7 @@ def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
     )
 
 
-def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_path: Path, monkeypatch):
+def test_lm_eval_task_uses_same_finestore_sample_contract(tmp_path: Path, monkeypatch):
     native_record = {
         "doc_id": 0,
         "doc": {"question": "1 + 1"},
@@ -152,7 +151,6 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     args = _args(
         max_batch_size=None,
         device=None,
-        use_cache=None,
         check_integrity=False,
         write_out=False,
         system_instruction=None,
@@ -181,7 +179,7 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
     assert samples[0].metrics == {"exact_match": 1.0}
 
 
-def test_log_samples_unscored_task_reports_failure():
+def test_unscored_task_reports_failure():
     benchmark = _RecordingBenchmark(
         {"examples": [{"prompt": "x", "response": "y"}]},
         {"error": "grader failed"},

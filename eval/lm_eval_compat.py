@@ -20,6 +20,7 @@ import argparse
 import logging
 from functools import partial
 
+from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
 # ---------------------------------------------------------------------------
 # eval_logger singleton (was lm_eval.utils.eval_logger, removed upstream >=0.4.8)
 # ---------------------------------------------------------------------------
@@ -126,7 +127,7 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--finestore_output_prefix",
-        default="run",
+        default=DEFAULT_SOURCE_PREFIX,
         type=str,
         metavar="NAME",
         help="Stable task-group name for results and resume state inside FineStore.",
@@ -158,7 +159,6 @@ def setup_parser() -> argparse.ArgumentParser:
         default=False,
         help="Prints the prompt for the first few documents.",
     )
-    parser.set_defaults(log_samples=True)
     parser.add_argument(
         "--system_instruction",
         type=str,

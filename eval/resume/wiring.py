@@ -17,8 +17,10 @@ material fingerprint field so tasks never collide.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, Optional
 
+from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
 from eval.contracts.finestore_resume import FineStoreResumeManager
 
 from .fingerprint import RunFingerprint, resolve_model_revision
@@ -68,7 +70,7 @@ def _world_rank(lm: Any) -> tuple[int, int]:
     return int(getattr(lm, "world_size", 1) or 1), int(getattr(lm, "rank", 0) or 0)
 
 
-def build_resume_wiring(args: Any, lm: Any) -> Any:
+def build_resume_wiring(args: Any, lm: Any) -> Callable[[str], FineStoreResumeManager]:
     """Build the per-task FineStore manager factory and stash it on ``args``.
 
     Returns the factory (also set as ``args.resume_manager_factory``) so the
@@ -131,7 +133,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Any:
         "system_instruction": getattr(args, "system_instruction", None),
     }
 
-    def factory(task_name: str):
+    def factory(task_name: str) -> FineStoreResumeManager:
         fp = RunFingerprint.from_run_inputs(
             model_repo=model_repo,
             model_revision=model_revision,
@@ -146,7 +148,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Any:
         )
         return FineStoreResumeManager(
             root=finestore_output_path,
-            source_prefix=getattr(args, "finestore_output_prefix", "run"),
+            source_prefix=getattr(args, "finestore_output_prefix", DEFAULT_SOURCE_PREFIX),
             task_name=task_name,
             fingerprint=fp,
             mode=mode,

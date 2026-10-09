@@ -781,9 +781,7 @@ class BaseBenchmark(ABC):
         return evaluation_results
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Reshape generated examples into canonical lm-eval-compatible records.
-        lm-eval per-doc sample records (the schema ``save_results_samples`` /
-        ``save_results_aggregated`` / ``wandb.log_eval_samples`` consume).
+        """Reshape generated examples into canonical lm-eval-compatible sample records.
 
         Default implementation reads the ``{"examples": [...]}`` convention shared
         by the math chat_benchmarks (MATH500/AIME24/AMC23): each ``example`` is the
@@ -796,9 +794,8 @@ class BaseBenchmark(ABC):
         ``doc_id``, ``doc``, ``target``, ``arguments`` (a list of
         ``[prompt_str, gen_kwargs]`` pairs, so ``save_results_samples``'s
         ``enumerate(sample["arguments"])`` → ``enumerate(arg)`` unpacking works),
-        ``resps``/``filtered_resps`` (lists), and the MANDATORY ``doc_hash`` /
-        ``prompt_hash`` / ``target_hash`` (``eval_tracker.save_results_aggregated``
-        reads all three to build the cumulative task hash).
+        ``resps``/``filtered_resps`` (lists), and the ``doc_hash``,
+        ``prompt_hash``, and ``target_hash`` fields.
         """
         import json as _json
 

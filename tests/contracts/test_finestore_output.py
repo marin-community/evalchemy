@@ -338,7 +338,7 @@ def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
 
 
 def test_finestore_cli_refuses_resume_off(tmp_path: Path):
-    args = Namespace(finestore_output_path=str(tmp_path / "archive"), log_samples=True, resume_mode="off")
+    args = Namespace(finestore_output_path=str(tmp_path / "archive"), resume_mode="off")
     with pytest.raises(ValueError, match="FineStore output requires"):
         cli_evaluate(args)
 
@@ -373,7 +373,6 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
         "config": {"batch_sizes": [1]},
     }
     args = Namespace(
-        log_samples=True,
         show_config=False,
         wandb_args=None,
         use_database=False,

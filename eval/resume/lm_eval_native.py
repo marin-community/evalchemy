@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from lm_eval.api.model import LM
+
 from eval.robust_api import configure_generation_overrides, parse_generation_overrides
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
@@ -19,6 +21,7 @@ from eval.contracts.sample_manifest import (
     SampleRequest,
     canonical_json_identity,
 )
+from eval.resume.unit_keys import find_restored_payload
 
 
 logger = logging.getLogger(__name__)
@@ -118,22 +121,13 @@ def _track_request_method(self, method_name: str, requests: List[Any], *args: An
 
 
 def _make_resume_caching_lm_cls():
-    """Build the `ResumeCachingLM` class as an `lm_eval.api.model.LM` subclass.
-
-    Done lazily inside a factory so the module imports without `lm_eval` present
-    (the resume package is pure-stdlib otherwise — manager/manifest/fingerprint are
-    unit-testable on any Python). `simple_evaluate`'s `isinstance(model, LM)` gate
-    (`evaluator.py:254`) REQUIRES the wrapped LM to be an `LM` subclass — `CachingLM`
-    sidesteps this because lm-eval wraps it AFTER that check, but we pass our wrapper
-    as a pre-initialized `model`, so it must pass the isinstance test.
-    """
-    from lm_eval.api.model import LM
+    """Build an LM subclass so upstream accepts the wrapped model."""
 
     class ResumeCachingLM(LM):
         """An LM wrapper that restores completed FineStore requests.
 
         Mirrors `CachingLM`'s shape (`lm_eval/api/model.py:235`): `generate_until` is
-        intercepted to (a) restore already-done problems from the manifest, (b)
+        intercepted to (a) restore committed responses from FineStore, (b)
         generate ONLY the remaining requests, (c) record each new completion;
         everything else delegates to the underlying LM. Sampled requests use
         distinct unit keys, so each draw can resume independently.
@@ -207,7 +201,7 @@ def _make_resume_caching_lm_cls():
 def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -> List[str]:
     """Resume-aware `generate_until`.
 
-    For each request: skip+restore if its unit is already in the manifest, else
+    For each request: restore a committed unit from FineStore, else
     regenerate. Newly generated completions are recorded one-by-one. Works for both
     greedy (`do_sample=False`) and sampled (`do_sample=True`) — the latter is the
     case `CachingLM` bypasses entirely.
@@ -228,8 +222,6 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
     ]
     restored = manager.restore()  # {canonical_key: payload}
     self._sample_manifest.validate_prior_entries(list(restored.values()), unique_entries)
-    from .unit_keys import find_restored_payload
-
     remaining_reqs: List[Any] = []
     remaining_positions: List[int] = []
     skipped = 0

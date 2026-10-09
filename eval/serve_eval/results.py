@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from eval.contracts.finestore_output import read_finestore_output
+from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX, read_finestore_output
 from eval.contracts.task_outcome import TaskOutcome, lm_eval_task_counts, validate_result_document
 
 
@@ -35,7 +35,7 @@ class EvalResults(BaseModel):
         return value
 
     @classmethod
-    def load_archive(cls, root: str, source_prefix: str = "run") -> "EvalResults":
+    def load_archive(cls, root: str, source_prefix: str = DEFAULT_SOURCE_PREFIX) -> "EvalResults":
         """Load one task group's committed aggregate from FineStore."""
         document = read_finestore_output(root, source_prefix)
         if document is None:

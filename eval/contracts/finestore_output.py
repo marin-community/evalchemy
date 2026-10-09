@@ -23,6 +23,7 @@ from lm_eval.utils import handle_non_serializable
 from eval.contracts.lm_eval_normalization import samples_from_lm_eval
 
 RESULTS_TABLE = "evalchemy_results"
+DEFAULT_SOURCE_PREFIX = "run"
 _SOURCE_PREFIX = "source_prefix"
 _DOCUMENT = "document"
 _SCORED = "scored"
@@ -38,17 +39,20 @@ def _scored_results(results: Mapping[str, Any]) -> bool:
     )
 
 
+def _result_row(root: str, source_prefix: str) -> dict[str, Any] | None:
+    rows = list(ReadView(root).iter_rows(RESULTS_TABLE, where=[(_SOURCE_PREFIX, "==", source_prefix)]))
+    return rows[0] if rows else None
+
+
 def read_finestore_output(root: str, source_prefix: str) -> dict[str, Any] | None:
     """Read one Evalchemy result document from the FineStore results table."""
-    rows = list(ReadView(root).iter_rows(RESULTS_TABLE, where=[(_SOURCE_PREFIX, "==", source_prefix)]))
-    row = rows[0] if rows else None
+    row = _result_row(root, source_prefix)
     return None if row is None else json.loads(row[_DOCUMENT])
 
 
 def completed_finestore_output(root: str, source_prefix: str) -> bool:
     """Whether this task has a committed successful result in FineStore."""
-    rows = list(ReadView(root).iter_rows(RESULTS_TABLE, where=[(_SOURCE_PREFIX, "==", source_prefix)]))
-    row = rows[0] if rows else None
+    row = _result_row(root, source_prefix)
     return row is not None and row[_SCORED]
 
 
