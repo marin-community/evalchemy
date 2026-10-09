@@ -107,7 +107,8 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
         return None
 
     output_path = getattr(args, "output_path", None)
-    if not output_path:
+    finestore_output_path = getattr(args, "finestore_output_path", None)
+    if not output_path and not finestore_output_path:
         # No durable run dir to anchor state -> resume impossible; degrade to no-op.
         logger.info("resume: --resume-mode=%s but no --output_path; resume disabled (no-op).", mode)
         args.resume_manager_factory = None
@@ -116,7 +117,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     world_size, rank = _world_rank(lm)
 
     margs = _parse_model_args(getattr(args, "model_args", "") or "")
-    model_repo = margs.get("pretrained") or getattr(args, "model_name", None)
+    model_repo = margs.get("pretrained") or margs.get("model") or getattr(args, "model_name", None)
     revision = margs.get("revision")
     model_revision = resolve_model_revision(model_repo, revision, allow_network=False)
     # Evalchemy's canonical CLI writes ``max_length``.  Keep the older vLLM
@@ -164,7 +165,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     }
 
     model_dir = _sanitize(model_repo or "model")
-    base_run_dir = Path(output_path) / ".resume" / model_dir
+    base_run_dir = Path(output_path) / ".resume" / model_dir if output_path else None
 
     def factory(task_name: str):
         from .manager import ResumeManager
@@ -181,9 +182,20 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
             apply_chat_template=apply_chat_template,
             rendered_config=rendered_config,
         )
-        run_dir = base_run_dir / _sanitize(task_name)
+        if finestore_output_path:
+            from eval.contracts.finestore_resume import FineStoreResumeManager
+
+            return FineStoreResumeManager(
+                root=finestore_output_path,
+                source_prefix=getattr(args, "finestore_output_prefix", ""),
+                task_name=task_name,
+                fingerprint=fp,
+                mode=mode,
+                world_size=world_size,
+                rank=rank,
+            )
         return ResumeManager(
-            run_dir=run_dir,
+            run_dir=base_run_dir / _sanitize(task_name),
             fingerprint=fp,
             mode=mode,
             world_size=world_size,
@@ -194,7 +206,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     logger.info(
         "resume: --resume-mode=%s active; per-task state under %s (model=%s, rev=%s).",
         mode,
-        base_run_dir,
+        finestore_output_path or base_run_dir,
         model_repo,
         model_revision,
     )

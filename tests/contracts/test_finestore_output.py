@@ -3,15 +3,20 @@
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
-from eval.contracts.finestore_output import write_finestore_output
+from eval.contracts.finestore_output import completed_finestore_output, write_finestore_output
+from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
 from eval.eval import handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
 from eval.native_serialization import results_json, samples_jsonl
+from eval.resume.fingerprint import RunFingerprint
+from eval.resume.manager import ResumeRefused
+from eval.resume.wiring import build_resume_wiring
 
 
 def test_lm_eval_normalization_maps_multiple_choice_scores():
@@ -218,8 +223,65 @@ def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: 
     assert set(table.column("task").to_pylist()) == {"hellaswag_0shot", "hellaswag_10shot"}
 
 
-def test_finestore_mode_does_not_write_a_second_sample_jsonl(tmp_path: Path):
-    local_root = tmp_path / "local"
+def test_finestore_resume_restores_units_and_preserves_completed_task(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    fingerprint = RunFingerprint(inputs={"task_name": "gsm8k", "model_repo": "test-model"})
+    first = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
+    assert first.decide() == "fresh"
+    first.record({"task": "gsm8k", "problem_idx": 0}, {"output": "42"})
+    first.finalize()
+
+    changed = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", RunFingerprint(inputs={"task_name": "other"}))
+    with pytest.raises(ResumeRefused):
+        changed.decide()
+
+    retry = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
+    assert retry.decide() == "resume"
+    assert retry.restore() == {(('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"}}
+    assert retry.should_skip({"task": "gsm8k", "problem_idx": 0})
+    retry.record({"task": "gsm8k", "problem_idx": 1}, {"output": "43"})
+    retry.finalize()
+
+    results = {"results": {"gsm8k": {"exact_match": 0.5}}}
+    write_finestore_output(root, "gsm8k_0shot", results, {})
+    sealed = ReadView(root)
+    assert completed_finestore_output(root, "gsm8k_0shot")
+    assert sealed.is_sealed()
+    write_finestore_output(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
+    assert ReadView(root).token == sealed.token
+    other_task = FineStoreResumeManager(root, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
+    other_task.record({"task": "arc", "problem_idx": 0}, {"output": "A"})
+    other_task.finalize()
+    assert not ReadView(root).is_sealed()
+    assert completed_finestore_output(root, "gsm8k_0shot")
+    assert FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).restore() == {
+        (('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"},
+        (('problem_idx', 1), ('task', 'gsm8k')): {"output": "43"},
+    }
+
+
+def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    args = Namespace(
+        resume_mode="auto",
+        output_path=None,
+        finestore_output_path=root,
+        finestore_output_prefix="gsm8k_0shot",
+        model_args="model=test-model",
+    )
+    model = Namespace(world_size=1, rank=0)
+    unit = {"task": "gsm8k", "problem_idx": 0}
+    factory = build_resume_wiring(args, model)
+    first = factory("gsm8k")
+    first.record(unit, {"output": "42"})
+    first.finalize()
+
+    retry = build_resume_wiring(args, model)("gsm8k")
+    assert retry.should_skip(unit)
+    assert retry.restore()[(('problem_idx', 0), ('task', 'gsm8k'))] == {"output": "42"}
+
+
+def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
     archive_root = tmp_path / "archive"
     record = {
         "doc_id": 0,
@@ -271,11 +333,12 @@ def test_finestore_mode_does_not_write_a_second_sample_jsonl(tmp_path: Path):
         finestore_output_path=str(archive_root),
         finestore_output_prefix="gsm8k_0shot",
     )
-    tracker = DCEvaluationTracker(str(local_root))
+    tracker = DCEvaluationTracker(None)
     tracker.general_config_tracker.model_name_sanitized = "test-model"
 
     handle_evaluation_output(results, args, tracker)
 
-    assert list(local_root.rglob("samples_*.jsonl")) == []
+    assert list(tmp_path.rglob("samples_*.jsonl")) == []
+    assert list(tmp_path.rglob("results_*.json")) == []
     source = ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl")
     assert source == samples_jsonl([record]).encode()

@@ -419,11 +419,9 @@ def setup_custom_parser():
         type=str,
         default="auto",
         choices=["auto", "force-fresh", "off"],
-        help="Unified resume manager mode. 'auto' (default) auto-detects matching prior "
-        "run-state under --output_path and resumes (or refuses on a material delta); a first "
-        "run with no prior state is a pure no-op (byte-identical to today). 'force-fresh' wipes "
-        "prior state and starts over. 'off' disables the manager entirely (reproduces today "
-        "exactly). Requires --output_path; without it resume is disabled.",
+        help="Resume completed requests from --finestore_output_path or --output_path. "
+        "A material fingerprint change refuses the resume. FineStore output requires a new "
+        "path for force-fresh.",
     )
     return parser
 
@@ -904,6 +902,8 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         _resume_factory = build_resume_wiring(args, lm)
         attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
     except Exception as e:
+        if args.finestore_output_path:
+            raise
         utils.eval_logger.warning(f"resume: wiring failed ({e}); running without resume.")
         args.resume_manager_factory = None
 
