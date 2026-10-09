@@ -124,7 +124,7 @@ class EquivalenceResult:
 
 
 def _is_symbol_free_relation(parsed: Sequence[object]) -> bool:
-    """Return whether every parsed value is a relation over no free symbols."""
+    """Return whether every non-string parsed value is a relation over no free symbols."""
     relations = [value for value in parsed if not isinstance(value, str)]
     return bool(relations) and all(isinstance(value, Relational) and not value.free_symbols for value in relations)
 
