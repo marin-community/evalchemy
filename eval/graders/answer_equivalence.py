@@ -218,11 +218,14 @@ async def grade_math_equivalence(
     config: JudgeConfig | None,
     num_workers: int = DEFAULT_NUM_WORKERS,
 ) -> list[EquivalenceResult | BaseException]:
-    """Use Minerva equivalence first; judge unresolved answers only when configured."""
+    """Zero empty candidates, use Minerva equivalence next, judge the rest only when configured."""
     outcomes: list[EquivalenceResult | BaseException | None] = [None] * len(requests)
     unresolved_indexes = []
     unresolved_requests = []
     for index, request in enumerate(requests):
+        if not request.candidate_answer.strip():
+            outcomes[index] = EquivalenceResult(False, EquivalenceMethod.MINERVA)
+            continue
         if math_answers_equivalent(request.candidate_answer, request.reference_answers):
             outcomes[index] = EquivalenceResult(True, EquivalenceMethod.MINERVA)
             continue
