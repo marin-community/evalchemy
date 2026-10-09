@@ -82,6 +82,16 @@ def test_math_answers_equivalent_accepts_symbolically_equal_latex():
     assert answer_equivalence.math_answers_equivalent(r"\frac{1}{2}", ["0.5"])
 
 
+def test_math_answers_equivalent_rejects_vacuous_symbol_free_equation_pairs():
+    assert not answer_equivalence.math_answers_equivalent(r"$I_{i}(0) = I_{e}(0)$", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
+    assert not answer_equivalence.math_answers_equivalent("$1 = 2$", ["$3 = 4$"])
+
+
+def test_math_answers_equivalent_keeps_nonvacuous_symbol_free_and_symbolic_matches():
+    assert answer_equivalence.math_answers_equivalent("42", ["42"])
+    assert answer_equivalence.math_answers_equivalent("x = 1", ["x=1"])
+
+
 def test_judge_config_resolves_normalized_environment_without_exposing_key(monkeypatch):
     monkeypatch.setenv("JUDGE_MODEL", "judge-model")
     monkeypatch.setenv("JUDGE_BASE_URL", "https://judge.example/v1")
