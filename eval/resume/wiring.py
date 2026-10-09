@@ -1,27 +1,10 @@
-"""Auto-detect wiring — construct the ResumeManager from CLI run inputs (Stage 4).
+"""Construct per-task resume managers from CLI inputs.
 
-This is the ONE construction site that feeds all three resume paths (global
-invariant #5 — one interface). ``cli_evaluate`` (``eval/eval.py``) calls
-:func:`build_resume_wiring` once after model init; the result both
-
-  * sets ``args.resume_manager_factory`` — the seam the lm-eval-native (3b) and
-    native pass@k (3c) call sites read (``resume_manager_factory(task_name) ->
-    ResumeManager``), and
-  * is used to ``attach_resume_manager(...)`` on the chat_benchmark instances
-    (the 3a / 3c seam).
-
-``--resume-mode`` semantics (default ``auto``):
-  * ``off``       — pure no-op: NO factory is built, NOTHING is attached, no
-    ``resume/`` dir is written. Reproduces today exactly (global invariant #1).
-  * ``auto``      — auto-detect prior state under the per-task run dir; a FIRST
-    run with no matching state is a pure no-op that only writes the (inert)
-    fingerprint/state dir (mirror Harbor's ``is_resuming=False`` branch); a
-    second run with identical inputs resumes; a material delta refuses.
-  * ``force-fresh`` — wipe any prior state and start fresh.
-
-When ``output_path`` is unset there is no durable run dir to anchor state on, so
-resume is impossible — we degrade to a no-op (same as ``off``), preserving the
-flag-off invariant.
+The factory feeds both native lm-eval and chat benchmarks. FineStore output stores
+request state in its archive and requires a new archive path for ``force-fresh``.
+Without FineStore, ``auto`` resumes from ``output_path`` and ``force-fresh`` clears
+the local state. ``off`` disables local resume; FineStore output rejects that mode.
+When neither output path is set, the factory is disabled.
 
 The fingerprint here is built from the run inputs that are *cheaply available
 from ``args`` + the initialized ``lm``* (model repo/revision, decoding params,
@@ -96,8 +79,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
 
     Returns the factory (also set as ``args.resume_manager_factory``) so the
     caller can ``attach_resume_manager`` to chat benchmark instances, or ``None``
-    when resume is disabled (``off`` mode, or no ``output_path``) — in which case
-    NOTHING is attached and behavior is byte-identical to today.
+    when resume is disabled (``off`` mode, or neither output path is set).
     """
     mode = getattr(args, "resume_mode", "auto") or "auto"
 
@@ -183,7 +165,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
             rendered_config=rendered_config,
         )
         if finestore_output_path:
-            from eval.contracts.finestore_resume import FineStoreResumeManager
+            from eval.contracts.finestore_resume import FineStoreResumeManager  # noqa: PLC0415 - optional extra
 
             return FineStoreResumeManager(
                 root=finestore_output_path,
@@ -216,7 +198,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
 def attach_to_chat_benchmarks(task_manager: Any, task_list: list, factory: Any) -> None:
     """Attach a per-task ResumeManager to each chat benchmark instance (3a/3c seam).
 
-    No-op when ``factory`` is ``None`` (off-mode / no output_path) so nothing is
+    No-op when ``factory`` is ``None`` so nothing is
     attached and ``compute`` stays byte-identical to today.
     """
     if factory is None:

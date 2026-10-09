@@ -11,6 +11,7 @@ import pyarrow as pa
 from finestore.layout import OnConflict
 from finestore.reader import ReadView
 from finestore.store import DataStore
+from rigging.filesystem.storage_path import prefix_join
 
 from eval.contracts.resume_values import decode_resume_value, encode_resume_value
 from eval.native_serialization import safe_artifact_name
@@ -20,8 +21,11 @@ from eval.resume.manifest import UnitKey, canonical_unit_key
 
 RESUME_TABLE = "evalchemy_resume"
 _FLUSH_EVERY = 32
+_NAMESPACE = "namespace"
+_UNIT_KEY = "unit_key"
+_PAYLOAD = "payload"
 _RESUME_SCHEMA = pa.schema(
-    [pa.field("namespace", pa.string()), pa.field("unit_key", pa.string()), pa.field("payload", pa.string())]
+    [pa.field(_NAMESPACE, pa.string()), pa.field(_UNIT_KEY, pa.string()), pa.field(_PAYLOAD, pa.string())]
 )
 
 
@@ -43,13 +47,14 @@ class FineStoreResumeManager:
 
     @property
     def _namespace(self) -> str:
-        return f"{safe_artifact_name(self.source_prefix)}/{safe_artifact_name(self.task_name)}"
+        return prefix_join(safe_artifact_name(self.source_prefix), safe_artifact_name(self.task_name))
 
     @property
     def _fingerprint_blob(self) -> str:
-        return f"evalchemy/{self._namespace}/resume/fingerprint.json"
+        return prefix_join(prefix_join("evalchemy", self._namespace), "resume/fingerprint.json")
 
     def decide(self) -> str:
+        """Return fresh or resume after validating the stored fingerprint; refuse material changes."""
         if self._decision is not None:
             return self._decision
         if self.mode == "off":
@@ -86,7 +91,7 @@ class FineStoreResumeManager:
             self._store = DataStore.open(self.root, writer_id=f"evalchemy-resume-{uuid.uuid4().hex}")
             self._store.table(
                 RESUME_TABLE,
-                primary_key=("namespace", "unit_key"),
+                primary_key=(_NAMESPACE, _UNIT_KEY),
                 schema=_RESUME_SCHEMA,
                 on_conflict=OnConflict.ERROR,
             )
@@ -97,11 +102,11 @@ class FineStoreResumeManager:
             return self._states
         if self._decision is None:
             self.decide()
-        namespace = f"{self._namespace}/rank{self.rank}"
+        namespace = prefix_join(self._namespace, f"rank{self.rank}")
         states = {}
-        for row in ReadView(self.root).iter_rows(RESUME_TABLE, where=[("namespace", "==", namespace)]):
-            key = canonical_unit_key(json.loads(row["unit_key"]))
-            states[key] = decode_resume_value(json.loads(row["payload"]))
+        for row in ReadView(self.root).iter_rows(RESUME_TABLE, where=[(_NAMESPACE, "==", namespace)]):
+            key = canonical_unit_key(json.loads(row[_UNIT_KEY]))
+            states[key] = decode_resume_value(json.loads(row[_PAYLOAD]))
         self._states = states
         return states
 
@@ -109,6 +114,7 @@ class FineStoreResumeManager:
         return set(self._load_states())
 
     def restore(self) -> dict[UnitKey, dict[str, Any]]:
+        """Return committed payloads for this task and rank, keyed by evaluator request."""
         return dict(self._load_states())
 
     def should_skip(self, unit: dict[str, Any]) -> bool:
@@ -124,12 +130,12 @@ class FineStoreResumeManager:
         if key in states:
             return
         store = self._open_store()
-        table = store.table(RESUME_TABLE, primary_key=("namespace", "unit_key"), schema=_RESUME_SCHEMA)
+        table = store.table(RESUME_TABLE, primary_key=(_NAMESPACE, _UNIT_KEY), schema=_RESUME_SCHEMA)
         table.append(
             {
-                "namespace": f"{self._namespace}/rank{self.rank}",
-                "unit_key": json.dumps(unit, sort_keys=True),
-                "payload": json.dumps(encode_resume_value(payload), separators=(",", ":")),
+                _NAMESPACE: prefix_join(self._namespace, f"rank{self.rank}"),
+                _UNIT_KEY: json.dumps(unit, sort_keys=True),
+                _PAYLOAD: json.dumps(encode_resume_value(payload), separators=(",", ":")),
             }
         )
         states[key] = payload

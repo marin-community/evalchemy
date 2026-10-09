@@ -742,6 +742,8 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     if args.finestore_output_path:
         if not args.log_samples:
             raise ValueError("--finestore_output_path requires --log_samples")
+        if args.resume_mode == "off":
+            raise ValueError("FineStore output requires --resume-mode auto or force-fresh")
         require_finestore_output()
 
     if args.config is not None:
@@ -888,14 +890,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
 
-    # Stage 4: auto-detect resume wiring. ONE construction site that feeds all
-    # three resume paths (global invariant #5). Builds a per-task ResumeManager
-    # factory from the run inputs and sets `args.resume_manager_factory` (the
-    # lm-eval-native 3b + native pass@k 3c seam) AND attaches a manager to each
-    # chat_benchmark instance (the 3a/3c seam). `--resume-mode off` (or no
-    # `--output_path`) builds nothing and attaches nothing -> byte-identical to
-    # today (invariant #1); `auto` (the default) on a first run with no prior
-    # state is a pure no-op that only writes the inert fingerprint/state dir.
+    # One per-task factory feeds the native lm-eval and chat benchmark resume paths.
     try:
         from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 

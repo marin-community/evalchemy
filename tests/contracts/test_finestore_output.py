@@ -11,7 +11,7 @@ from eval.contracts.finestore_output import completed_finestore_output, write_fi
 from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
-from eval.eval import handle_evaluation_output
+from eval.eval import cli_evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
 from eval.native_serialization import results_json, samples_jsonl
 from eval.resume.fingerprint import RunFingerprint
@@ -223,7 +223,7 @@ def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: 
     assert set(table.column("task").to_pylist()) == {"hellaswag_0shot", "hellaswag_10shot"}
 
 
-def test_finestore_resume_restores_units_and_preserves_completed_task(tmp_path: Path):
+def test_finestore_resume_restores_committed_units(tmp_path: Path):
     root = str(tmp_path / "archive")
     fingerprint = RunFingerprint(inputs={"task_name": "gsm8k", "model_repo": "test-model"})
     first = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
@@ -242,6 +242,14 @@ def test_finestore_resume_restores_units_and_preserves_completed_task(tmp_path: 
     retry.record({"task": "gsm8k", "problem_idx": 1}, {"output": "43"})
     retry.finalize()
 
+    assert FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).restore() == {
+        (('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"},
+        (('problem_idx', 1), ('task', 'gsm8k')): {"output": "43"},
+    }
+
+
+def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
+    root = str(tmp_path / "archive")
     results = {"results": {"gsm8k": {"exact_match": 0.5}}}
     write_finestore_output(root, "gsm8k_0shot", results, {})
     sealed = ReadView(root)
@@ -254,10 +262,6 @@ def test_finestore_resume_restores_units_and_preserves_completed_task(tmp_path: 
     other_task.finalize()
     assert not ReadView(root).is_sealed()
     assert completed_finestore_output(root, "gsm8k_0shot")
-    assert FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).restore() == {
-        (('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"},
-        (('problem_idx', 1), ('task', 'gsm8k')): {"output": "43"},
-    }
 
 
 def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
@@ -279,6 +283,12 @@ def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
     retry = build_resume_wiring(args, model)("gsm8k")
     assert retry.should_skip(unit)
     assert retry.restore()[(('problem_idx', 0), ('task', 'gsm8k'))] == {"output": "42"}
+
+
+def test_finestore_cli_refuses_resume_off(tmp_path: Path):
+    args = Namespace(finestore_output_path=str(tmp_path / "archive"), log_samples=True, resume_mode="off")
+    with pytest.raises(ValueError, match="FineStore output requires"):
+        cli_evaluate(args)
 
 
 def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):

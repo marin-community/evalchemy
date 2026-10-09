@@ -494,4 +494,5 @@ canonical JSONL and aggregate JSON as source artifacts, and one normalized sampl
 filter. The task completion marker is committed after its results and samples, so a retry can skip a
 completed task even when another task has reopened the archive. `--output_path` is optional in this
 mode; when omitted, Evalchemy writes no local aggregate or sample files. A changed resume fingerprint
-raises an error. Use a new FineStore path for an intentional fresh evaluation.
+raises an error. FineStore output does not accept `--resume-mode off`. Use a new FineStore path for an
+intentional fresh evaluation.
