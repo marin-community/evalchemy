@@ -82,6 +82,16 @@ def test_math_answers_equivalent_accepts_symbolically_equal_latex():
     assert answer_equivalence.math_answers_equivalent(r"\frac{1}{2}", ["0.5"])
 
 
+def test_math_answers_equivalent_rejects_vacuous_symbol_free_equation_pairs():
+    assert not answer_equivalence.math_answers_equivalent(r"$I_{i}(0) = I_{e}(0)$", [r"$I_{e}(0)=\gamma I_{i}(0)$"])
+    assert not answer_equivalence.math_answers_equivalent("$1 = 2$", ["$3 = 4$"])
+
+
+def test_math_answers_equivalent_keeps_nonvacuous_symbol_free_and_symbolic_matches():
+    assert answer_equivalence.math_answers_equivalent("42", ["42"])
+    assert answer_equivalence.math_answers_equivalent("x = 1", ["x=1"])
+
+
 def test_judge_config_resolves_normalized_environment_without_exposing_key(monkeypatch):
     monkeypatch.setenv("JUDGE_MODEL", "judge-model")
     monkeypatch.setenv("JUDGE_BASE_URL", "https://judge.example/v1")
@@ -211,3 +221,30 @@ def test_judge_equivalence_rejects_non_label_responses(monkeypatch, response):
 
     assert len(judgments) == 1
     assert isinstance(judgments[0], ValueError)
+
+
+@pytest.mark.parametrize("candidate_answer", ["", " ", "\n\t "])
+def test_grade_math_equivalence_empty_candidate_zero_score_without_judge(judge_server, candidate_answer):
+    base_url, requests = judge_server
+    config = answer_equivalence.JudgeConfig("judge-model", base_url, "judge-key")
+    request = answer_equivalence.EquivalenceRequest("Question", ("0",), candidate_answer)
+
+    outcomes = asyncio.run(answer_equivalence.grade_math_equivalence([request], config))
+
+    assert outcomes == [answer_equivalence.EquivalenceResult(False, answer_equivalence.EquivalenceMethod.MINERVA)]
+    assert requests == []
+
+
+def test_grade_math_equivalence_mixed_batch_judges_only_attempted_answers(judge_server):
+    base_url, requests = judge_server
+    config = answer_equivalence.JudgeConfig("judge-model", base_url, "judge-key")
+    empty = answer_equivalence.EquivalenceRequest("Question", ("reference",), "")
+    attempted = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
+
+    outcomes = asyncio.run(answer_equivalence.grade_math_equivalence([empty, attempted], config))
+
+    assert outcomes[0] == answer_equivalence.EquivalenceResult(False, answer_equivalence.EquivalenceMethod.MINERVA)
+    assert outcomes[1].equivalent is True
+    assert outcomes[1].method == answer_equivalence.EquivalenceMethod.LLM_JUDGE
+    assert len(requests) == 1
+    assert "Candidate answer:\ncandidate" in requests[0][2]["messages"][0]["content"]
