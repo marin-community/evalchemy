@@ -24,7 +24,7 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
         --model_name "gemini/gemini-2.0-flash-thinking-exp-01-21" \
         --apply_chat_template False \
         --model_args 'tokenized_requests=False' \
-        --finestore_output_path logs/my-run
+        --output_path logs/my-run
 ```
 #### [2025.01.29] New Reasoning Benchmarks
 
@@ -38,7 +38,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "pretrained=meta-llama/Meta-Llama-3-8B-Instruct" \
     --batch_size 16 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 - [OpenAI models](https://openai.com/): Full support for OpenAI's model lineup
 ```bash
@@ -47,7 +47,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "model=gpt-4o-mini-2024-07-18,num_concurrent=32" \
     --batch_size 16 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 ### Key Features
@@ -158,7 +158,7 @@ python -m eval.eval \
     --tasks HumanEval,mmlu \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 Results, samples, and request resume state are stored in the FineStore archive at
@@ -175,8 +175,9 @@ uv run python -c 'from eval.serve_eval.results import EvalResults; print(EvalRes
 - `--tasks`: Comma-separated list of tasks to be evaluated.
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
-- `--finestore_output_path`: Required FineStore archive root for aggregate results,
-  normalized samples, and request-level resume state.
+- `--output_path` (`--finestore_output_path`): Required FineStore archive root for
+  aggregate results, normalized samples, and request-level resume state. Both
+  spellings select the same archive; neither writes native JSON or JSONL files.
 - `--finestore_output_prefix`: Stable task-group name inside the archive.
 - `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
 - `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
@@ -194,7 +195,7 @@ python -m eval.eval \
     --tasks MTBench,WildBench,alpaca_eval \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 **Config shortcuts**:
@@ -205,7 +206,7 @@ To be able to reuse commonly used settings without having to manually supply ful
 python -m eval.eval \
     --model hf \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
-    --finestore_output_path logs/my-run \
+    --output_path logs/my-run \
     --config configs/light_gpt4omini0718.yaml
 ```
 
@@ -261,7 +262,7 @@ accelerate launch --num-processes <num-gpus> --num-machines <num-nodes> \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3' \
     --batch_size 2 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 ### Large Model Evaluation
@@ -274,7 +275,7 @@ python -m eval.eval \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3,parallelize=True' \
     --batch_size 2 \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 > **💡 Note**: While "auto" batch size is supported, we recommend manually tuning the batch size for optimal performance. The optimal batch size depends on the model size, GPU memory, and the specific benchmark. We used a maximum of 32 and a minimum of 4 (for RepoBench) to evaluate Llama-3-8B-Instruct on 8xH100 GPUs.
@@ -416,7 +417,7 @@ python -m eval.eval \
     --tasks MTBench \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --finestore_output_path logs/my-run \
+    --output_path logs/my-run \
     --debug
 ```
 

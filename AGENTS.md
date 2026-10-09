@@ -48,7 +48,7 @@ in one command on a CPU box — name the extras for the benchmarks you want:
 uvx --from "git+https://github.com/marin-community/evalchemy[mbpp,ifeval]" eval \
     --model local-completions --tasks MBPP,IFEval \
     --model_args model=served,base_url=http://localhost:8000/v1/completions \
-    --finestore_output_path logs/my-run
+    --output_path logs/my-run
 ```
 
 `marin-serve` is **not** an extra. It cannot co-resolve with evalchemy's dependencies,

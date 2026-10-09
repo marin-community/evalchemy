@@ -3,6 +3,6 @@ accelerate launch --num-processes 1 --num-machines 1 -m eval.eval \
     --task alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3' \
     --batch_size 1 \
-    --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \
+    --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \
     --annotator gpt-4-1106-preview-greedy
     

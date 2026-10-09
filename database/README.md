@@ -12,7 +12,7 @@ python -m eval.eval \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=meta-llama/Meta-Llama-3-8B-Instruct' \
     --batch_size 2 \
-    --finestore_output_path logs/my-run \
+    --output_path logs/my-run \
     --use_database
 ```
 

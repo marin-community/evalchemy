@@ -129,7 +129,8 @@ def test_apply_chat_template_flag_is_bare_never_a_value():
     assert not following or following[0].startswith("--")
     assert "True" not in argv
 
-def test_runner_rejects_output_override_that_would_change_archive_reader():
+@pytest.mark.parametrize("option", ["--finestore_output_path", "--output_path", "--finestore_output_prefix"])
+def test_runner_rejects_output_override_that_would_change_archive_reader(option):
     served = ServedModel(base_url="http://h/v1", model="m")
     cfg = RunConfig.load(None, tasks=["gsm8k"])
     with pytest.raises(ValueError, match="owns the FineStore output"):
@@ -138,7 +139,7 @@ def test_runner_rejects_output_override_that_would_change_archive_reader():
             cfg,
             "/out",
             limit=None,
-            extra_args=["--finestore_output_prefix", "other"],
+            extra_args=[option, "other"],
             python="python",
         )
 

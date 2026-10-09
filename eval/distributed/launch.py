@@ -209,9 +209,9 @@ def create_evaluation_dataset(tasks, system_instruction=None):
     )
     tasks_str = ",".join(tasks)
     if system_instruction:
-        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --system_instruction '{system_instruction}'"
+        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --system_instruction '{system_instruction}'"
     else:
-        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$"
+        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$"
 
     print_warning(f"Running command: {cmd}")
     stdout, stderr, return_code = execute_command(cmd)
@@ -636,7 +636,7 @@ def compute_and_upload_scores(tasks, output_repo_id, model_name, logs_dir, on_lo
         print_warning("LiveCodeBench evaluation takes ~15mins")
 
     tasks_str = ",".join(tasks)
-    cmd = f'python -m eval.eval --model precomputed_hf --model_args "repo_id={output_repo_id}",model="{model_name}" --tasks {tasks_str} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --use_database'
+    cmd = f'python -m eval.eval --model precomputed_hf --model_args "repo_id={output_repo_id}",model="{model_name}" --tasks {tasks_str} --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --use_database'
 
     # Check hostname to determine which sbatch script to use
     hostname_cmd = "echo $HOSTNAME"

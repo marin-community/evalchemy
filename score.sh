@@ -56,5 +56,5 @@ srun --nodes=1 --ntasks=1 python -m eval.eval \
   --model precomputed_hf \
   --model_args "repo_id=${OUTPUT_DATASET},model=${MODEL_NAME}" \
   --tasks "${TASKS_STR}" \
-  --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \
+  --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \
   --use_database

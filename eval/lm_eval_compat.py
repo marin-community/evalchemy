@@ -120,6 +120,8 @@ def setup_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--finestore_output_path",
+        "--output_path",
+        dest="finestore_output_path",
         required=True,
         type=str,
         metavar="DIR",

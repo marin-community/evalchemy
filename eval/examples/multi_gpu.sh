@@ -4,5 +4,5 @@ accelerate launch --num-processes $num_gpus --multi-gpu --num-machines 1 -m eval
     --task alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3' \
     --batch_size 16 \
-    --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$
+    --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$
 

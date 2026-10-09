@@ -206,7 +206,7 @@ def build_eval_argv(
     """
     if not cfg.tasks:
         raise ValueError("no tasks to run (--tasks or config 'tasks')")
-    output_options = {"--finestore_output_path", "--finestore_output_prefix"}
+    output_options = {"--finestore_output_path", "--output_path", "--finestore_output_prefix"}
     if any(arg.split("=", 1)[0] in output_options for arg in extra_args):
         raise ValueError("the serve-eval runner owns the FineStore output path and prefix")
     adapter = adapter_for(cfg.apply_chat_template)

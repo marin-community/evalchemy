@@ -13,9 +13,17 @@ from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
 from eval.eval import cli_evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
+from eval.lm_eval_compat import setup_parser
 from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
+
+
+@pytest.mark.parametrize("option", ["--output_path", "--finestore_output_path"])
+def test_output_path_alias_uses_finestore_destination(option):
+    args = setup_parser().parse_args([option, "logs/my-run"])
+
+    assert args.finestore_output_path == "logs/my-run"
 
 
 def test_lm_eval_normalization_maps_multiple_choice_scores():
