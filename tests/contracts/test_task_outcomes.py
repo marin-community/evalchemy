@@ -89,6 +89,7 @@ def _args(**overrides):
         "predict_only": False,
         "confirm_run_unsafe_code": False,
         "seed": [0, 1234, 1234, 1234],
+        "finestore_output_prefix": "run",
     }
     values.update(overrides)
     return Namespace(**values)
@@ -186,10 +187,10 @@ def test_custom_grader_infrastructure_failure_is_reported_without_a_score():
 def test_failed_task_is_saved_in_the_results_package(tmp_path):
     result = _custom_evaluate(_Benchmark({"examples": [{"prompt": "x"}]}, grading_error=RuntimeError("sandbox failed")))
     result["config"] = {"batch_sizes": [1]}
-    tracker = DCEvaluationTracker(str(tmp_path))
+    tracker = DCEvaluationTracker()
     tracker.general_config_tracker.model_name_sanitized = "test-model"
     args = _args(
-        finestore_output_path=None,
+        finestore_output_path=str(tmp_path / "archive"),
         show_config=False,
         use_database=False,
         debug=False,
@@ -199,9 +200,7 @@ def test_failed_task_is_saved_in_the_results_package(tmp_path):
 
     handle_evaluation_output(result, args, tracker)
 
-    packages = list((tmp_path / "test-model").glob("results_*.json"))
-    assert len(packages) == 1
-    saved = EvalResults.load(str(packages[0]))
+    saved = EvalResults.load_archive(str(tmp_path / "archive"))
     assert saved.task_outcomes["contract_task"].failure.category is FailureCategory.GRADER_INFRASTRUCTURE
     assert saved.task_outcomes["contract_task"].status is TaskStatus.FAILED
     assert saved.results == {}
@@ -529,14 +528,13 @@ def test_one_task_infrastructure_failure_does_not_stop_other_tasks(monkeypatch):
         },
     ],
 )
-def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result):
-    args = Namespace(log_samples=False, show_config=False, wandb_args=None, finestore_output_path=None)
-    tracker = SimpleNamespace(
-        save_results_aggregated=lambda **_kwargs: pytest.fail("invalid results must not be persisted")
-    )
+def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result, tmp_path):
+    args = Namespace(log_samples=False, show_config=False, wandb_args=None, finestore_output_path=str(tmp_path / "archive"))
+    tracker = DCEvaluationTracker()
 
     with pytest.raises(EvaluationRunError):
         handle_evaluation_output(result, args, tracker)
+    assert not (tmp_path / "archive").exists()
 
 
 def test_persisted_result_reader_retains_typed_task_outcomes():

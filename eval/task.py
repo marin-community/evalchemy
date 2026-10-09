@@ -247,13 +247,7 @@ class BaseBenchmark(ABC):
         return limited_inputs
 
     def attach_resume_manager(self, manager) -> None:
-        """Attach a ResumeManager so ``compute`` skips already-done problems.
-
-        A ``None`` manager (the default) leaves ``compute`` byte-identical to
-        today (global invariant #1). The driver constructs the manager from the
-        run fingerprint and attaches it here (Stage 4); Stage 3a only wires the
-        consumption side.
-        """
+        """Attach the FineStore manager that restores completed requests."""
         self._resume_manager = manager
 
     def generate_n_samples(
@@ -351,7 +345,7 @@ class BaseBenchmark(ABC):
         """
         manager = getattr(self, "_resume_manager", None)
         n = int(num_samples if num_samples is not None else self.num_samples)
-        # No manager (or off-mode) -> the Stage-2b path verbatim (byte-identical).
+        # Direct callers may use this benchmark without the evaluation driver.
         if manager is None:
             return self.generate_n_samples(model, build_instances, n)
 

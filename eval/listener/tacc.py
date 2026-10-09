@@ -142,7 +142,7 @@ export MASTER_PORT={port}
     --annotator_model gpt-4o-mini-2024-07-18 \\
     --model_id {uuid} \\
     --batch_size "auto" \\
-    --output_path logs \\
+    --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \\
     --use_database &
     """
             )

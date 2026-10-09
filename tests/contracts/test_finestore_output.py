@@ -1,4 +1,4 @@
-"""Contract tests for Evalchemy's native FineStore output."""
+"""Contract tests for Evalchemy's FineStore output."""
 
 from argparse import Namespace
 from pathlib import Path
@@ -7,15 +7,14 @@ import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
-from eval.contracts.finestore_output import completed_finestore_output, write_finestore_output
-from eval.contracts.finestore_resume import FineStoreResumeManager
+from eval.contracts.finestore_output import completed_finestore_output, read_finestore_output, write_finestore_output
+from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
 from eval.eval import cli_evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.native_serialization import results_json, samples_jsonl
+from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
-from eval.resume.manager import ResumeRefused
 from eval.resume.wiring import build_resume_wiring
 
 
@@ -152,7 +151,7 @@ def test_finestore_output_preserves_repeated_trials(tmp_path: Path):
     assert [sample_from_archive_row(row).correct for row in rows] == [True, False, True]
 
 
-def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
+def test_finestore_output_expands_filter_variants(
     tmp_path: Path,
 ):
     root = str(tmp_path / "archive")
@@ -193,12 +192,8 @@ def test_finestore_output_preserves_jsonl_and_expands_filter_variants(
     assert samples["strict-match"].correct is False
     assert samples["flexible-extract"].correct is True
 
-    source = view.read_blob("sources/evalchemy/gsm8k_5shot/native/samples_gsm8k_native.jsonl")
-    assert source is not None
-    assert source.decode() == samples_jsonl([record])
-    aggregate = view.read_blob("sources/evalchemy/gsm8k_5shot/native/results_gsm8k.json")
-    assert aggregate is not None
-    assert aggregate.decode() == results_json(results)
+    assert read_finestore_output(root, "gsm8k_5shot") == results
+    assert view.read_blob("sources/evalchemy/gsm8k_5shot/native/samples_gsm8k_native.jsonl") is None
 
 
 def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: Path):
@@ -247,6 +242,18 @@ def test_finestore_resume_restores_committed_units(tmp_path: Path):
         (('problem_idx', 1), ('task', 'gsm8k')): {"output": "43"},
     }
 
+def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    fingerprint = RunFingerprint(inputs={"task_name": "gsm8k"})
+    first = FineStoreResumeManager(root, "run", "gsm8k", fingerprint)
+    assert first.decide() == "fresh"
+    first.finalize()
+
+    with pytest.raises(ResumeRefused, match="fingerprint changed"):
+        FineStoreResumeManager(root, "run", "gsm8k", fingerprint, world_size=2).decide()
+    with pytest.raises(ResumeRefused, match="already exists"):
+        FineStoreResumeManager(root, "run", "gsm8k", fingerprint, mode="force-fresh").decide()
+
 
 def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
     root = str(tmp_path / "archive")
@@ -256,12 +263,57 @@ def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_pat
     assert completed_finestore_output(root, "gsm8k_0shot")
     assert sealed.is_sealed()
     write_finestore_output(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
+    write_finestore_output(
+        root,
+        "gsm8k_0shot",
+        {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}},
+        {},
+    )
+    assert read_finestore_output(root, "gsm8k_0shot") == results
     assert ReadView(root).token == sealed.token
     other_task = FineStoreResumeManager(root, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
     other_task.record({"task": "arc", "problem_idx": 0}, {"output": "A"})
     other_task.finalize()
     assert not ReadView(root).is_sealed()
     assert completed_finestore_output(root, "gsm8k_0shot")
+
+def test_failed_finestore_result_can_be_replaced_by_success(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    failure = {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}}
+    success = {"results": {"gsm8k": {"exact_match": 0.5}}}
+
+    write_finestore_output(root, "gsm8k_0shot", failure, {})
+    assert not completed_finestore_output(root, "gsm8k_0shot")
+    write_finestore_output(root, "gsm8k_0shot", success, {})
+
+    assert completed_finestore_output(root, "gsm8k_0shot")
+    assert read_finestore_output(root, "gsm8k_0shot") == success
+
+def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, monkeypatch):
+    root = str(tmp_path / "archive")
+    result = {"results": {"gsm8k": {"exact_match": 1.0}}}
+
+    def fail_normalization(task_name, record):
+        raise ValueError("invalid sample")
+
+    monkeypatch.setattr("eval.contracts.finestore_output.samples_from_lm_eval", fail_normalization)
+    with pytest.raises(ValueError, match="invalid sample"):
+        write_finestore_output(root, "gsm8k_0shot", result, {"gsm8k": [{}]})
+
+    assert read_finestore_output(root, "gsm8k_0shot") is None
+
+def test_cli_skips_completed_finestore_result_before_model_setup(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    result = {"results": {"gsm8k": {"exact_match": 0.5}}}
+    write_finestore_output(root, "gsm8k_0shot", result, {})
+
+    cli_evaluate(Namespace(
+        finestore_output_path=root,
+        finestore_output_prefix="gsm8k_0shot",
+        resume_mode="auto",
+    ))
+
+    assert read_finestore_output(root, "gsm8k_0shot") == result
 
 
 def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
@@ -350,5 +402,6 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
 
     assert list(tmp_path.rglob("samples_*.jsonl")) == []
     assert list(tmp_path.rglob("results_*.json")) == []
-    source = ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl")
-    assert source == samples_jsonl([record]).encode()
+    loaded = EvalResults.load_archive(str(archive_root), "gsm8k_0shot")
+    assert loaded.results == {"gsm8k": {"exact_match,none": 1.0}}
+    assert ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl") is None

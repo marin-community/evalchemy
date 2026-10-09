@@ -26,6 +26,7 @@ import zstandard
 from click.testing import CliRunner
 from pydantic import ValidationError
 
+from eval.contracts.finestore_output import read_finestore_output
 from eval.contracts.failures import FailureCategory
 from eval.contracts.task_outcome import EvaluationRunError
 from eval.serve_eval.config import RunConfig
@@ -377,15 +378,11 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
         textwrap.dedent(
             f"""\
             #!{sys.executable}
-            import json
-            import pathlib
             import sys
-
             if {exit_code}:
                 raise SystemExit({exit_code})
-            output_dir = pathlib.Path(sys.argv[sys.argv.index("--output_path") + 1])
-            results_dir = output_dir / "served-model"
-            results_dir.mkdir(parents=True, exist_ok=True)
+            from eval.contracts.finestore_output import write_finestore_output
+            output_dir = sys.argv[sys.argv.index("--finestore_output_path") + 1]
             payload = {{
                 "results": {{
                     "gsm8k": {{
@@ -411,7 +408,7 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
                     }}
                 }},
             }}
-            (results_dir / "results_test.json").write_text(json.dumps(payload))
+            write_finestore_output(output_dir, "run", payload, {{}})
             """
         )
     )
@@ -474,7 +471,7 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
         server.shutdown()
 
     assert result.exit_code == 0, result.output
-    assert (output_dir / "served-model" / "results_test.json").is_file()
+    assert read_finestore_output(str(output_dir), "run") is not None
 
     records = _telemetry_records()
     resources = {json.dumps(batch["resource"], sort_keys=True) for batch in _RunnerHandler.telemetry_batches}

@@ -1,36 +1,13 @@
-"""lm-eval-native (gsm8k) resume integration — supersede `--use_cache` (Stage 3b).
+"""Resume lm-eval requests from committed FineStore rows.
 
-The lm-eval-native path (gsm8k via the plain `lm_eval` CLI / `simple_evaluate`,
-`eval/eval.py`) is the ONLY path with any pre-existing resume: lm-eval's
-`--use_cache` wraps the LM in `CachingLM` (`lm_eval/api/model.py:235`), which keys
-a per-request SQLite cache on `hash_args("generate_until", req.args)`. That cache:
-
-  * is **greedy-only** — it explicitly SKIPS caching any request whose
-    `req.args[1].get("do_sample")` is truthy (`api/model.py:271-280`) so repeated
-    sampled draws are not collapsed to one identical completion;
-  * has **no sample index** in its key (the `do_sample` skip is its workaround);
-  * is reachable only through `simple_evaluate`.
-
-This module **supersedes** `--use_cache` with the unified `ResumeManager`
-(decision #5): one interface (`should_skip`/`record`/`restore`/`finalize`) shared
-with the chat_benchmark (3a) and pass@k (3c) paths, a per-problem completion
-marker that **also works for `do_sample=True`** (the case `CachingLM` bypasses),
-and a per-rank manifest that matches lm-eval's `_rank<R>.db` layout. The manager
-still **READS** any pre-existing `_rank<R>.db` so a run that already has one keeps
-its prior completions (interop, not removal).
-
-With no manager and no sample manifest, `resume_simple_evaluate` calls upstream
-`simple_evaluate(**kwargs)` verbatim. The evaluation driver supplies a manifest,
-which activates request accounting but writes no resume state.
-
-New unit key: `{task, sample_id}`, where `sample_id` is the shared opaque unit identity.
-The legacy problem/sample-index form remains read-only for existing resume directories.
+The sample manifest assigns stable unit keys, including distinct keys for
+repeated sampled requests. The wrapped LM restores completed requests before
+calling the model and commits new responses through the FineStore manager.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from eval.robust_api import configure_generation_overrides, parse_generation_overrides
@@ -43,7 +20,6 @@ from eval.contracts.sample_manifest import (
     canonical_json_identity,
 )
 
-from .manager import ResumeManager
 
 logger = logging.getLogger(__name__)
 
@@ -154,30 +130,25 @@ def _make_resume_caching_lm_cls():
     from lm_eval.api.model import LM
 
     class ResumeCachingLM(LM):
-        """A `CachingLM`-shaped LM wrapper backed by the unified `ResumeManager`.
+        """An LM wrapper that restores completed FineStore requests.
 
         Mirrors `CachingLM`'s shape (`lm_eval/api/model.py:235`): `generate_until` is
         intercepted to (a) restore already-done problems from the manifest, (b)
         generate ONLY the remaining requests, (c) record each new completion;
-        everything else delegates to the underlying LM. Unlike `CachingLM` it resumes
-        **sampled** requests too (via the `sample_idx` unit-key component) and can read
-        a pre-existing `_rank<R>.db` for interop.
+        everything else delegates to the underlying LM. Sampled requests use
+        distinct unit keys, so each draw can resume independently.
         """
 
-        def __init__(self, lm, manager, task_name, sample_manifest=None, interop_db=None):
+        def __init__(self, lm, manager, task_name, sample_manifest=None):
             super().__init__()
             self.lm = lm
             self._manager = manager
             self._task_name = task_name
             self._sample_manifest = sample_manifest or SampleManifest(task_name)
-            self._interop_db = interop_db
-            self._interop_cache: Dict[str, Any] = {}
             if manager is not None:
                 manager.decide()  # refuse loudly on a material delta before any generation
-            if interop_db:
-                self._load_interop_db(interop_db)
 
-        # rank / world_size delegate to the underlying LM (per-rank manifest layout).
+        # Rank and world size determine the FineStore resume namespace.
         @property
         def rank(self):
             return getattr(self.lm, "rank", 0)
@@ -228,93 +199,11 @@ def _make_resume_caching_lm_cls():
                 raise AttributeError(attr)
             return getattr(lm, attr)
 
-        _load_interop_db = _impl_load_interop_db
-        _interop_lookup = _impl_interop_lookup
         generate_until = _impl_generate_until
 
     return ResumeCachingLM
 
 # -- method implementations (module-level so the lazy LM subclass can adopt them) ----
-def _impl_load_interop_db(self, path: str) -> None:
-    """Load a legacy lm-eval `_rank<R>.db` so a run that already has one keeps its
-    completions. READ-only — we never write back to the SQLite db (the manager owns
-    resume now). Best-effort: a missing/unreadable db is simply ignored.
-    """
-    if not os.path.exists(path):
-        return
-    # Reject a non-SQLite / partially-written file by its header magic BEFORE handing it to
-    # SqliteDict — SqliteDict opens a background writer thread that would raise
-    # `sqlite3.DatabaseError: file is not a database` off-thread (uncatchable here) on garbage.
-    # A valid SQLite file begins with the 16-byte magic "SQLite format 3\000".
-    try:
-        with open(path, "rb") as fh:
-            header = fh.read(16)
-    except OSError as exc:  # pragma: no cover - defensive
-        logger.warning("resume[%s]: could not open legacy cache %s (%s); ignoring", self._task_name, path, exc)
-        return
-    if header != b"SQLite format 3\x00":
-        logger.warning(
-            "resume[%s]: legacy cache %s is not a valid SQLite db (bad header); ignoring (read-only interop)",
-            self._task_name,
-            path,
-        )
-        return
-    try:
-        from sqlitedict import SqliteDict  # lazy: only when a db is actually present
-
-        with SqliteDict(path) as db:
-            # CachingLM stores under hash_args("generate_until", req.args); we cannot
-            # reverse the hash to a doc_id, so the interop cache is consulted by the
-            # SAME per-request hash CachingLM would use (see _impl_interop_lookup).
-            self._interop_cache = dict(db)
-        logger.info(
-            "resume[%s]: loaded %d entries from legacy lm-eval cache %s (interop, read-only)",
-            self._task_name,
-            len(self._interop_cache),
-            path,
-        )
-    except Exception as exc:  # pragma: no cover - defensive interop
-        logger.warning(
-            "resume[%s]: could not read legacy lm-eval cache %s for interop (%s); ignoring",
-            self._task_name,
-            path,
-            exc,
-        )
-
-
-def _impl_interop_lookup(self, req: Any) -> Optional[Any]:
-    """Look a request up in the legacy `_rank<R>.db` by the SAME key CachingLM used.
-
-    Returns the cached completion if present, else None. Sampled requests were never
-    cached by CachingLM (it skips `do_sample=True`), so this only ever hits greedy.
-    """
-    if not self._interop_cache:
-        return None
-    try:
-        from lm_eval.api.model import hash_args  # lazy import; lm_eval-only env
-
-        hsh = hash_args("generate_until", req.args)
-    except Exception:  # pragma: no cover - lm_eval shape drift
-        return None
-    cached = self._interop_cache.get(hsh)
-    # Inconsistent / partially-written legacy entries (None, or a not-yet-resolved
-    # placeholder) must NOT be adopted as a completed unit — treat them as a miss so the
-    # request is regenerated rather than recorded as a corrupt "done" payload.
-    if cached is None:
-        return None
-    # CachingLM stores the generate_until response, which is a plain completion string.
-    # Anything else (a stray list/dict from a different cache schema) is not a trustworthy
-    # completion -> ignore it (read-only interop, never crash, never writeback).
-    if not isinstance(cached, str):
-        logger.warning(
-            "resume[%s]: legacy cache entry has unexpected type %s; ignoring (regenerating)",
-            self._task_name,
-            type(cached).__name__,
-        )
-        return None
-    return cached
-
-
 def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -> List[str]:
     """Resume-aware `generate_until`.
 
@@ -337,53 +226,29 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
         entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {})
         for req, entry in zip(requests, request_entries)
     ]
-    legacy_sample_seen: Dict[Any, int] = {}
-    legacy_keys = [
-        _request_unit_key(self._task_name, req, legacy_sample_seen) for req in requests
-    ]
-
     restored = manager.restore()  # {canonical_key: payload}
     self._sample_manifest.validate_prior_entries(list(restored.values()), unique_entries)
-    from .manifest import find_restored_payload
+    from .unit_keys import find_restored_payload
 
     remaining_reqs: List[Any] = []
     remaining_positions: List[int] = []
     skipped = 0
-    interop_hits = 0
-
-    for pos, (req, unit, legacy_unit) in enumerate(zip(requests, keys, legacy_keys)):
-        restored_match = find_restored_payload(restored, [unit, legacy_unit])
+    for pos, (req, unit) in enumerate(zip(requests, keys)):
+        restored_match = find_restored_payload(restored, [unit])
         if restored_match is not None:
-            # Read pre-schema resume records, then write only the shared opaque
-            # identity for all newly completed work.
             _, payload = restored_match
             results[pos] = payload["output"]
             skipped += 1
             continue
-        # Interop: a pre-existing lm-eval `_rank<R>.db` may already hold this
-        # (greedy) completion; adopt it into the manifest so the manager owns it
-        # going forward (decision #5 — read the legacy db, then supersede it).
-        cached = self._interop_lookup(req)
-        if cached is not None:
-            results[pos] = cached
-            if request_entries[pos] is not None:
-                manager.record(
-                    unit,
-                    {"output": cached, "sample": request_entries[pos].to_dict()},
-                )
-            interop_hits += 1
-            continue
         remaining_reqs.append(req)
         remaining_positions.append(pos)
 
-    if skipped or interop_hits:
+    if skipped:
         logger.info(
-            "resume[%s] rank=%s: skipped %d done units (%d from legacy _rank<R>.db), "
-            "generating %d remaining",
+            "resume[%s] rank=%s: skipped %d done units, generating %d remaining",
             self._task_name,
             getattr(self.lm, "rank", 0),
-            skipped + interop_hits,
-            interop_hits,
+            skipped,
             len(remaining_reqs),
         )
 
@@ -410,26 +275,8 @@ def resume_simple_evaluate(
     sample_manifest: SampleManifest | None = None,
     **kwargs,
 ):
-    """Thin wrapper around lm-eval `simple_evaluate` that wires the ResumeManager.
-
-    With neither a resume manager nor a sample manifest this remains an exact
-    passthrough for callers outside the evaluation driver. The driver always
-    supplies a manifest, so every lm-eval request crosses the same identity and
-    coverage boundary as custom benchmarks without writing resume state.
-
-    When a factory is provided, it is called as ``factory(task_name) -> ResumeManager``
-    (the manager already knows its run_dir / mode / fingerprint). We construct the LM
-    the way upstream ``simple_evaluate`` does, wrap it in :class:`ResumeCachingLM`
-    (passing the legacy ``<use_cache>_rank<R>.db`` for read-only interop), and hand
-    the wrapped LM to upstream as a pre-initialized ``model`` object. This is a
-    wrapper at the call site, NOT a rewrite of ``simple_evaluate``.
-
-    Mode ``off``: the factory returns a manager with ``mode='off'`` (a pure no-op —
-    never skips, never writes); we still pass the wrapped LM but its manager records
-    nothing, so behavior matches today (the manager is inert).
-    """
+    """Wrap lm-eval's model with FineStore request restoration and sample accounting."""
     if resume_manager_factory is None and sample_manifest is None:
-        # No manager — verbatim passthrough. Byte-identical to today (invariant #1).
         return simple_evaluate_fn(**kwargs)
 
     import lm_eval
@@ -440,7 +287,6 @@ def resume_simple_evaluate(
     max_batch_size = kwargs.get("max_batch_size")
     device = kwargs.get("device")
     tasks = kwargs.get("tasks") or []
-    use_cache = kwargs.pop("use_cache", None)
 
     # Construct the LM exactly as upstream simple_evaluate does when `model` is a str
     # (`lm_eval/evaluator.py:221-252`). If `model` is already an LM object, use it.
@@ -469,25 +315,12 @@ def resume_simple_evaluate(
     manager = resume_manager_factory(task_name) if resume_manager_factory is not None else None
     sample_manifest = sample_manifest or SampleManifest(task_name)
 
-    # Legacy lm-eval `_rank<R>.db` for READ-only interop (decision #5).
-    interop_db = None
-    if use_cache is not None:
-        cache_db = use_cache + "_rank" + str(getattr(lm, "rank", 0)) + ".db"
-        if manager is None:
-            # Keep stock lm-eval caching inside the manifest wrapper so cache
-            # hits are still observed as generated sample units.
-            lm = lm_eval.api.model.CachingLM(lm, cache_db)
-        else:
-            interop_db = cache_db
-
     ResumeCachingLM = _make_resume_caching_lm_cls()
     wrapped = ResumeCachingLM(
         lm,
         manager,
         task_name,
         sample_manifest,
-        interop_db=interop_db,
     )
-    # Pass the wrapped LM as a pre-initialized model object; upstream will NOT re-wrap
-    # in CachingLM because we drop `use_cache` (the manager supersedes it).
+    # Upstream accepts the pre-initialized model without adding its own cache.
     return simple_evaluate_fn(model=wrapped, **kwargs)

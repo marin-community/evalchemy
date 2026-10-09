@@ -1,4 +1,4 @@
-"""Regression coverage for the uniform ``eval --log_samples`` artifact contract."""
+"""Regression coverage for normalized samples written to FineStore."""
 
 import json
 from argparse import Namespace
@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
+from finestore.reader import ReadView
 
 from eval.contracts.sample_results import record_sample_metrics
 from eval.eval import evaluate, handle_evaluation_output
@@ -68,12 +70,16 @@ def _args(**overrides) -> Namespace:
     return Namespace(**values)
 
 
-def _write_output(tmp_path: Path, results: dict[str, Any], args: Namespace) -> list[Path]:
+def _write_output(tmp_path: Path, results: dict[str, Any], args: Namespace):
     results["config"] = {"batch_sizes": [1]}
-    tracker = DCEvaluationTracker(str(tmp_path))
+    args.finestore_output_path = str(tmp_path / "archive")
+    args.finestore_output_prefix = next(iter(results["results"]))
+    tracker = DCEvaluationTracker()
     tracker.general_config_tracker.model_name_sanitized = "test-model"
     handle_evaluation_output(results, args, tracker)
-    return list((tmp_path / "test-model").glob("samples_*.jsonl"))
+    table = ReadView(args.finestore_output_path).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    return [sample_from_archive_row(row) for row in table.to_pylist(maps_as_pydicts="strict")]
 
 
 @pytest.mark.parametrize(
@@ -114,29 +120,13 @@ def test_log_samples_custom_scored_tasks_write_one_canonical_nonempty_artifact(
     )
 
     assert "examples" not in results["results"][task_name]
-    artifacts = _write_output(tmp_path, results, _args())
-    assert len(artifacts) == 1
-    assert artifacts[0].stat().st_size > 0
-
-    record = json.loads(artifacts[0].read_text().strip())
-    assert record["schema_version"] == 1
-    assert record["task_name"] == task_name
-    assert {
-        "doc_id",
-        "doc",
-        "target",
-        "arguments",
-        "resps",
-        "filtered_resps",
-        "doc_hash",
-        "prompt_hash",
-        "target_hash",
-        "metrics",
-    } <= record.keys()
-    assert record["metrics"] == ["accuracy"]
-    assert record["accuracy"] == 1.0
+    samples = _write_output(tmp_path, results, _args())
+    assert len(samples) == 1
+    sample = samples[0]
+    assert sample.task == task_name
+    assert sample.metrics == {"accuracy": 1.0}
     assert all(
-        key not in record["doc"] for key in {"model_output", "model_outputs", "gpt_completion", "response", "output"}
+        key not in json.loads(sample.doc) for key in {"model_output", "model_outputs", "gpt_completion", "response", "output"}
     )
 
 
@@ -185,10 +175,10 @@ def test_log_samples_lm_eval_native_task_uses_the_same_artifact_contract(tmp_pat
         args=args,
     )
 
-    artifacts = _write_output(tmp_path, results, args)
-    assert len(artifacts) == 1
-    assert artifacts[0].stat().st_size > 0
-    assert json.loads(artifacts[0].read_text())["task_name"] == "gsm8k"
+    samples = _write_output(tmp_path, results, args)
+    assert len(samples) == 1
+    assert samples[0].task == "gsm8k"
+    assert samples[0].metrics == {"exact_match": 1.0}
 
 
 def test_log_samples_unscored_task_reports_failure():

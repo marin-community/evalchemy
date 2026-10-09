@@ -4,9 +4,8 @@ import subprocess
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run torch-free
@@ -15,11 +14,10 @@ except ModuleNotFoundError:
     torch = None
 from huggingface_hub import model_info
 from lm_eval.loggers.evaluation_tracker import GeneralConfigTracker
-from lm_eval.utils import hash_string, simple_parse_args_string
+from lm_eval.utils import simple_parse_args_string
 
 # lm_eval.utils.eval_logger was removed upstream (>=0.4.8); use the vendored shim.
 from eval.lm_eval_compat import eval_logger
-from eval.native_serialization import results_json, safe_artifact_name, samples_jsonl
 
 from database.models import Dataset, EvalResult, EvalSetting, Model
 from database.utils import create_db_engine, create_tables, get_model_from_db, get_or_add_model_by_name, sessionmaker
@@ -69,33 +67,26 @@ class DCEvaluationTracker:
     """
     Tracks and saves evaluation information for language models.
 
-    This class handles tracking evaluation metrics, saving results to files,
-    and managing database operations for storing evaluation results. It provides
-    functionality for both real-time tracking during evaluation and persistent
-    storage of results.
+    This class tracks evaluation metadata and optional database updates. FineStore
+    owns durable evaluation output.
 
     Attributes:
         general_config_tracker: Tracks general configuration information
-        output_path: Path where results files will be saved
         engine: SQLAlchemy database engine
         SessionMaker: Factory for creating database sessions
     """
 
     def __init__(
         self,
-        output_path: str = None,
         use_database: bool = False,
     ) -> None:
         """
         Initialize the evaluation tracker.
 
         Args:
-            output_path: Directory path where evaluation results will be saved.
-                       If None, results will not be saved to disk.
             use_database: Whether logging to the database is enabled
         """
         self.general_config_tracker = GeneralConfigTracker()
-        self.output_path = output_path
         self.use_database = use_database
         if self.use_database:
             self.engine, self.SessionMaker = create_db_engine()
@@ -123,86 +114,6 @@ class DCEvaluationTracker:
             raise
         finally:
             session.close()
-
-    def save_results_aggregated(
-        self,
-        results: dict,
-        samples: dict,
-    ) -> None:
-        """
-        Save aggregated evaluation results and samples to disk.
-
-        Args:
-            results: Dictionary containing evaluation results
-            samples: Dictionary containing evaluation samples
-
-        Note:
-            Results are saved only if output_path was specified during initialization.
-            Files are saved under a directory named after the model, with timestamps.
-        """
-        self.general_config_tracker.log_end_time()
-
-        if self.output_path:
-            try:
-                eval_logger.info("Saving results aggregated")
-
-                # calculate cumulative hash for each task - only if samples are provided
-                task_hashes = {}
-                if samples:
-                    for task_name, task_samples in samples.items():
-                        sample_hashes = [s["doc_hash"] + s["prompt_hash"] + s["target_hash"] for s in task_samples]
-                        task_hashes[task_name] = hash_string("".join(sample_hashes))
-
-                # update initial results dict
-                results.update({"task_hashes": task_hashes})
-                results.update(asdict(self.general_config_tracker))
-                dumped = results_json(results)
-
-                path = Path(self.output_path if self.output_path else Path.cwd())
-                path = path.joinpath(self.general_config_tracker.model_name_sanitized)
-                path.mkdir(parents=True, exist_ok=True)
-                self.date_id = datetime.now().isoformat().replace(":", "-")
-                file_results_aggregated = path.joinpath(f"results_{self.date_id}.json")
-                file_results_aggregated.open("w", encoding="utf-8").write(dumped)
-
-                eval_logger.info(f"Wrote aggregated results to: {file_results_aggregated}")
-
-            except Exception as e:
-                eval_logger.warning("Could not save results aggregated")
-                eval_logger.info(repr(e))
-        else:
-            eval_logger.info("Output path not provided, skipping saving results aggregated")
-
-    def save_results_samples(
-        self,
-        task_name: str,
-        samples: list,
-    ) -> None:
-        """Write a task's per-doc sample records to a JSONL under the model dir.
-
-        ``--log_samples`` writes exactly one non-empty file per scored task. Empty
-        records mean a task was unscored or could not be serialized, so no misleading
-        zero-byte placeholder is created. A write failure never changes a score.
-        """
-        if not self.output_path:
-            eval_logger.info("Output path not provided, skipping saving samples")
-            return
-        if not samples:
-            eval_logger.warning("No sample records for scored task %s; not writing an empty artifact", task_name)
-            return
-        try:
-            path = Path(self.output_path).joinpath(self.general_config_tracker.model_name_sanitized)
-            path.mkdir(parents=True, exist_ok=True)
-            # Reuse the aggregated-results timestamp when present so the samples
-            # files sit alongside the matching results_<date>.json.
-            date_id = getattr(self, "date_id", None) or datetime.now().isoformat().replace(":", "-")
-            safe_task = safe_artifact_name(str(task_name))
-            file_samples = path.joinpath(f"samples_{safe_task}_{date_id}.jsonl")
-            file_samples.write_text(samples_jsonl(samples), encoding="utf-8")
-            eval_logger.info(f"Wrote {len(samples or [])} samples for {task_name} to: {file_samples}")
-        except Exception as e:
-            eval_logger.warning(f"Could not save samples for {task_name}")
-            eval_logger.info(repr(e))
 
     def get_or_create_model(
         self, model_name: str, model_id: Optional[str], model_source: str = "hf"

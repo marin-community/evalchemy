@@ -47,7 +47,8 @@ in one command on a CPU box — name the extras for the benchmarks you want:
 ```bash
 uvx --from "git+https://github.com/marin-community/evalchemy[mbpp,ifeval]" eval \
     --model local-completions --tasks MBPP,IFEval \
-    --model_args model=served,base_url=http://localhost:8000/v1/completions
+    --model_args model=served,base_url=http://localhost:8000/v1/completions \
+    --finestore_output_path logs/my-run
 ```
 
 `marin-serve` is **not** an extra. It cannot co-resolve with evalchemy's dependencies,
@@ -64,8 +65,8 @@ make test                       # uv run pytest (testpaths = tests/)
 uv run --with zstandard python -m pytest tests/e2e -q  # no model, no cluster, seconds
 ```
 
-`tests/e2e/` covers the runner and the gate against a stdlib HTTP stub and a PTY, and
-needs no evalchemy install — CI runs it in an ephemeral env (`uv run --no-project`).
+`tests/e2e/` covers the runner and the gate against a stdlib HTTP stub and a PTY.
+CI installs the FineStore-backed evaluator and runner for these tests.
 
 ## Lint
 
@@ -92,7 +93,7 @@ interface; the short version:
   all of evalchemy's task/scoring/pass@k machinery runs as-is. The `endpoint` provider is
   the hardware-free path.
 - **`eval/regression/`** — [README](eval/regression/README.md). Gates a run's
-  `results_*.json` against a checked-in spec (`specs/*.json`), or records a new one. The
+  FineStore result against a checked-in spec (`specs/*.json`), or records a new one. The
   gate is a connectivity + coarse-quality smoke check — it asserts the endpoint answered
   the expected number of queries and that each metric clears a wide floor, because scores
   swing run-to-run at small `--limit`. Do not tighten a floor into a two-sided band

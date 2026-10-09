@@ -1,4 +1,4 @@
-"""Native FineStore output for Evalchemy samples and source artifacts."""
+"""FineStore result and sample tables for Evalchemy evaluations."""
 
 from __future__ import annotations
 
@@ -7,21 +7,28 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from eval.native_serialization import results_json, safe_artifact_name, samples_jsonl
+import pyarrow as pa
+from finestore.eval import (
+    ARCHIVE_SAMPLES_TABLE,
+    SAMPLES_MERGE_KEY,
+    SCHEMA_VERSION,
+    sample_to_archive_row,
+    samples_schema,
+)
+from finestore.layout import OnConflict
+from finestore.reader import ReadView
+from finestore.store import DataStore
+from lm_eval.utils import handle_non_serializable
 
-try:
-    from finestore.eval import EvaluationStore
-    from finestore.reader import ReadView
-    from rigging.filesystem.storage_path import prefix_join
+from eval.contracts.lm_eval_normalization import samples_from_lm_eval
 
-    from eval.contracts.lm_eval_normalization import samples_from_lm_eval
-
-    _FINESTORE_IMPORT_ERROR: ImportError | None = None
-except ImportError as error:
-    _FINESTORE_IMPORT_ERROR = error
-
-_SAMPLE_CONTENT_TYPE = "application/x-ndjson"
-_COMPLETION_FILE = "completed.json"
+RESULTS_TABLE = "evalchemy_results"
+_SOURCE_PREFIX = "source_prefix"
+_DOCUMENT = "document"
+_SCORED = "scored"
+_RESULTS_SCHEMA = pa.schema(
+    [pa.field(_SOURCE_PREFIX, pa.string()), pa.field(_DOCUMENT, pa.large_string()), pa.field(_SCORED, pa.bool_())]
+)
 
 
 def _scored_results(results: Mapping[str, Any]) -> bool:
@@ -31,21 +38,18 @@ def _scored_results(results: Mapping[str, Any]) -> bool:
     )
 
 
+def read_finestore_output(root: str, source_prefix: str) -> dict[str, Any] | None:
+    """Read one Evalchemy result document from the FineStore results table."""
+    rows = list(ReadView(root).iter_rows(RESULTS_TABLE, where=[(_SOURCE_PREFIX, "==", source_prefix)]))
+    row = rows[0] if rows else None
+    return None if row is None else json.loads(row[_DOCUMENT])
+
+
 def completed_finestore_output(root: str, source_prefix: str) -> bool:
-    """Whether this task's native results and completion marker share a committed archive view."""
-    require_finestore_output()
-    view = ReadView(root)
-    source_root = prefix_join(prefix_join("evalchemy", safe_artifact_name(source_prefix)), "native")
-    marker = view.read_blob(prefix_join("sources", prefix_join(source_root, _COMPLETION_FILE)))
-    return marker is not None and json.loads(marker)["scored"] is True
-
-
-def require_finestore_output() -> None:
-    """Fail before evaluation when the FineStore output dependencies are unavailable."""
-    if _FINESTORE_IMPORT_ERROR is not None:
-        raise RuntimeError(
-            "--finestore_output_path requires the evalchemy[serve-eval] extra"
-        ) from _FINESTORE_IMPORT_ERROR
+    """Whether this task has a committed successful result in FineStore."""
+    rows = list(ReadView(root).iter_rows(RESULTS_TABLE, where=[(_SOURCE_PREFIX, "==", source_prefix)]))
+    row = rows[0] if rows else None
+    return row is not None and row[_SCORED]
 
 
 def write_finestore_output(
@@ -54,39 +58,43 @@ def write_finestore_output(
     results: Mapping[str, Any],
     samples_by_task: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> None:
-    """Write Evalchemy's native sources and normalized samples to a FineStore run."""
-    require_finestore_output()
+    """Commit aggregate results and normalized samples in the same FineStore archive."""
     if completed_finestore_output(root, source_prefix):
         return
 
-    store = EvaluationStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
+    scored = _scored_results(results)
+    store = DataStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
     try:
-        source_root = prefix_join(prefix_join("evalchemy", safe_artifact_name(source_prefix)), "native")
-        result_name = "__".join(safe_artifact_name(task_name) for task_name in sorted(samples_by_task))
-        store.add_source_artifact(
-            prefix_join(source_root, f"results_{result_name or 'run'}.json"),
-            results_json(results).encode(),
-            content_type="application/json",
+        store.table(
+            RESULTS_TABLE,
+            primary_key=(_SOURCE_PREFIX,),
+            schema=_RESULTS_SCHEMA,
+            on_conflict=OnConflict.SUPERSEDE,
         )
-        for task_name, task_samples in samples_by_task.items():
-            if not task_samples:
-                continue
-            safe_task_name = safe_artifact_name(task_name)
-            normalized_task = source_prefix if len(samples_by_task) == 1 else f"{source_prefix}/{task_name}"
-            store.add_source_artifact(
-                prefix_join(source_root, f"samples_{safe_task_name}_native.jsonl"),
-                samples_jsonl(task_samples).encode(),
-                content_type=_SAMPLE_CONTENT_TYPE,
+        if scored:
+            store.table(
+                ARCHIVE_SAMPLES_TABLE,
+                primary_key=SAMPLES_MERGE_KEY,
+                schema=samples_schema(),
+                schema_version=SCHEMA_VERSION,
             )
-            for record in task_samples:
-                for sample in samples_from_lm_eval(normalized_task, dict(record)):
-                    repeat = record.get("sample_repeat")
-                    store.add_sample(sample, trial_id="" if repeat is None else str(repeat))
-        store.add_source_artifact(
-            prefix_join(source_root, _COMPLETION_FILE),
-            json.dumps({"scored": _scored_results(results)}).encode(),
-            content_type="application/json",
-        )
-        store.seal()
+        with store.unbounded_transaction() as transaction:
+            if scored:
+                sample_rows = transaction.table(ARCHIVE_SAMPLES_TABLE)
+                for task_name, task_samples in samples_by_task.items():
+                    normalized_task = source_prefix if len(samples_by_task) == 1 else f"{source_prefix}/{task_name}"
+                    for record in task_samples:
+                        for sample in samples_from_lm_eval(normalized_task, dict(record)):
+                            repeat = record.get("sample_repeat")
+                            sample_rows.add(sample_to_archive_row(sample, trial_id="" if repeat is None else str(repeat)))
+            transaction.table(RESULTS_TABLE).add(
+                {
+                    _SOURCE_PREFIX: source_prefix,
+                    _DOCUMENT: json.dumps(results, default=handle_non_serializable, ensure_ascii=False),
+                    _SCORED: scored,
+                }
+            )
+        if scored:
+            store.seal()
     finally:
         store.close()

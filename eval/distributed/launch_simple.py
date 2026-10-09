@@ -103,7 +103,7 @@ def create_evaluation_dataset(tasks, eval_dataset_hash, system_instruction=None)
     else:
         print("Creating new evaluation dataset...")
         tasks_str = ",".join(tasks)
-        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --output_path logs"
+        cmd = f"python -m eval.eval --model upload_to_hf --tasks {tasks_str} --model_args repo_id={cached_dataset_id} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$"
         if system_instruction:
             cmd += f" --system_instruction '{system_instruction}'"
         execute_command(cmd)

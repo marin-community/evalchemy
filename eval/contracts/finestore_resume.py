@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import pyarrow as pa
 from finestore.layout import OnConflict
@@ -14,10 +15,8 @@ from finestore.store import DataStore
 from rigging.filesystem.storage_path import prefix_join
 
 from eval.contracts.resume_values import decode_resume_value, encode_resume_value
-from eval.native_serialization import safe_artifact_name
 from eval.resume.fingerprint import RunFingerprint
-from eval.resume.manager import ResumeMode, ResumeRefused
-from eval.resume.manifest import UnitKey, canonical_unit_key
+from eval.resume.unit_keys import UnitKey, canonical_unit_key
 
 RESUME_TABLE = "evalchemy_resume"
 _FLUSH_EVERY = 32
@@ -27,6 +26,15 @@ _PAYLOAD = "payload"
 _RESUME_SCHEMA = pa.schema(
     [pa.field(_NAMESPACE, pa.string()), pa.field(_UNIT_KEY, pa.string()), pa.field(_PAYLOAD, pa.string())]
 )
+ResumeMode = Literal["auto", "force-fresh"]
+
+
+class ResumeRefused(RuntimeError):
+    """Raised when committed FineStore state cannot safely be resumed."""
+
+
+def _path_component(value: str) -> str:
+    return re.sub(r"[^\w.-]", "_", value) or "task"
 
 
 @dataclass
@@ -47,7 +55,7 @@ class FineStoreResumeManager:
 
     @property
     def _namespace(self) -> str:
-        return prefix_join(safe_artifact_name(self.source_prefix), safe_artifact_name(self.task_name))
+        return prefix_join(_path_component(self.source_prefix), _path_component(self.task_name))
 
     @property
     def _fingerprint_blob(self) -> str:
@@ -57,11 +65,6 @@ class FineStoreResumeManager:
         """Return fresh or resume after validating the stored fingerprint; refuse material changes."""
         if self._decision is not None:
             return self._decision
-        if self.mode == "off":
-            self._decision = "fresh"
-            self._states = {}
-            return self._decision
-
         view = ReadView(self.root)
         stored = view.read_blob(self._fingerprint_blob)
         if stored is None:
@@ -118,11 +121,9 @@ class FineStoreResumeManager:
         return dict(self._load_states())
 
     def should_skip(self, unit: dict[str, Any]) -> bool:
-        return self.mode != "off" and canonical_unit_key(unit) in self.done_units()
+        return canonical_unit_key(unit) in self.done_units()
 
     def record(self, unit: dict[str, Any], payload: dict[str, Any]) -> None:
-        if self.mode == "off":
-            return
         if self._decision is None:
             self.decide()
         key = canonical_unit_key(unit)

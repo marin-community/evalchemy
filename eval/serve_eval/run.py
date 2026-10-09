@@ -220,9 +220,8 @@ def build_eval_argv(
     # task, whereas the portable config preserves the original requested value.
     argv += materialize_eval_args(cfg.evaluation.model_copy(update={"limit": limit}))
     argv += [
-        "--output_path",
+        "--finestore_output_path",
         output_dir,
-        "--log_samples",
     ]
     argv += list(extra_args)  # verbatim eval.eval passthrough (last => can override)
     return argv
@@ -277,7 +276,7 @@ def summarize(results: EvalResults, tasks: List[str]) -> str:
     default=None,
     help="Per-task sample cap. Default: config 'limit'. Pass 0 (or negative) to run the FULL task.",
 )
-@click.option("--output-dir", default=None, help="Where eval.eval writes results (default: a stamped dir under runs/).")
+@click.option("--output-dir", default=None, help="FineStore archive root (default: a stamped dir under runs/).")
 @click.option("--python", "python_bin", default=sys.executable, help="Python used to run eval.eval.")
 @click.option(
     "--telemetry-endpoint",
@@ -391,7 +390,6 @@ def main(
         tasks=cfg.tasks,
     )
     try:
-        os.makedirs(output_dir, exist_ok=True)
         prov = build_provider(
             provider,
             cfg.model,
@@ -418,12 +416,11 @@ def main(
                 build_eval_argv(served, cfg, output_dir, limit, extra_eval_args, python_bin)
             )
 
-        results_path = EvalResults.find_latest_path(output_dir)
-        results = EvalResults.load(results_path)
+        results = EvalResults.load_archive(output_dir)
         _record_completed_work(results, cfg.tasks, evaluation_duration)
         click.echo("\n" + summarize(results, cfg.tasks))
-        click.echo(f"\nresults: {results_path}")
-        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
+        click.echo(f"\nfinestore: {output_dir}")
+        click.echo(f"to gate: python -m eval.regression.validate check --finestore-root {output_dir} --spec <spec.json>")
     finally:
         shutdown_telemetry()
 

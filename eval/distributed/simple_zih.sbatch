@@ -43,4 +43,4 @@ srun --output={logs_dir}/%x/%j_%t.out bash -c 'echo -e "GLOBAL_SIZE: ${SLURM_STE
 srun --output={logs_dir}/%x/%j_%t.out bash -c 'CUDA_VISIBLE_DEVICES=${SLURM_LOCALID} python $EVALCHEMY/eval/distributed/process_shard.py --global_size ${SLURM_STEP_NUM_TASKS} --rank ${SLURM_PROCID} --input_dataset '${INPUT_DATASET}' --model_name '${MODEL_NAME}' --output_dataset '${OUTPUT_DATASET}' --upload'
 
 # COMPUTE SCORES
-srun --nodes=1 --ntasks=1 python -m eval.eval --model precomputed_hf --model_args "repo_id={output_dataset}",model="{model_name}" --tasks {tasks_str} --output_path logs --use_database
+srun --nodes=1 --ntasks=1 python -m eval.eval --model precomputed_hf --model_args "repo_id={output_dataset}",model="{model_name}" --tasks {tasks_str} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --use_database

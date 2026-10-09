@@ -34,4 +34,4 @@ srun --output={logs_dir}/%x_%j_%n.out bash -c 'echo -e "GLOBAL_SIZE: ${SLURM_JOB
 srun --output={logs_dir}/%x_%j_%n.out bash -c 'python $EVALCHEMY/eval/distributed/process_shard.py --global_size ${SLURM_JOB_NUM_NODES} --rank ${SLURM_NODEID} --input_dataset '${INPUT_DATASET}' --model_name '${MODEL_NAME}' --output_dataset '${OUTPUT_DATASET}' --upload'
 
 # COMPUTE SCORES
-srun --nodes=1 python -m eval.eval --model precomputed_hf --model_args "repo_id={output_dataset}",model="{model_name}" --tasks {tasks_str} --output_path logs --use_database
+srun --nodes=1 python -m eval.eval --model precomputed_hf --model_args "repo_id={output_dataset}",model="{model_name}" --tasks {tasks_str} --finestore_output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --use_database

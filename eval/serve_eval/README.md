@@ -9,7 +9,7 @@ as-is.
 This is the runner; it prints scores. Gating a run against a checked-in threshold spec
 is the regression gate's job — see `eval/regression/`.
 
-The saved `results_*.json` includes one `task_outcomes` entry per requested task.
+The FineStore result includes one `task_outcomes` entry per requested task.
 Each entry records its status, coverage, classified task failure (if any),
 `failure_counts` for endpoint failures, and `completion_response_summary` for chat
 responses. A failed task is retained in the package without a score; a malformed
@@ -116,9 +116,9 @@ Marin must inject a reachable, authorized endpoint; Evalchemy does not discover 
 or credentials. Export and the two-second shutdown are best-effort and cannot change
 evaluation output or exit status.
 
-To gate a run's scores against a checked-in spec, hand the output dir to the gate:
+To gate a run's scores against a checked-in spec, hand its FineStore root to the gate:
 
 ```bash
-uv run python -m eval.regression.validate check --results <output-dir> \
+uv run python -m eval.regression.validate check --finestore-root <output-dir> \
     --spec eval/regression/specs/qwen3-0.6b.json
 ```

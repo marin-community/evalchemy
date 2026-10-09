@@ -7,7 +7,7 @@
 Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bespoke Labs](https://bespokelabs.ai)  and builds on the [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
 
-## 🎉 What's New 
+## 🎉 What's New
 
 #### [2025.02.24] New Reasoning Benchmarks
 
@@ -15,7 +15,7 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
 
 #### [2025.01.30] API Model Support
 
-- [API models via Curator](https://github.com/bespokelabsai/curator/): With `--model curator` you can now evaluate with even more API based models via [Curator](https://github.com/bespokelabsai/curator/), including all those supported by [LiteLLM](https://docs.litellm.ai/docs/providers) 
+- [API models via Curator](https://github.com/bespokelabsai/curator/): With `--model curator` you can now evaluate with even more API based models via [Curator](https://github.com/bespokelabsai/curator/), including all those supported by [LiteLLM](https://docs.litellm.ai/docs/providers)
 
 ```
   python -m eval.eval \
@@ -24,11 +24,11 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
         --model_name "gemini/gemini-2.0-flash-thinking-exp-01-21" \
         --apply_chat_template False \
         --model_args 'tokenized_requests=False' \
-        --output_path logs
+        --finestore_output_path logs/my-run
 ```
 #### [2025.01.29] New Reasoning Benchmarks
 
-- AIME24, AMC23, MATH500, LiveCodeBench, GPQADiamond, HumanEvalPlus, MBPPPlus, BigCodeBench, MultiPL-E, and CRUXEval have been added to our growing list of [available benchmarks](https://github.com/mlfoundations/evalchemy?tab=readme-ov-file#built-in-benchmarks). This is part of the effort in the [Open Thoughts](https://github.com/open-thoughts/open-thoughts) project. See the [our blog post](https://www.open-thoughts.ai/blog/measure) on using Evalchemy for measuring reasoning models. 
+- AIME24, AMC23, MATH500, LiveCodeBench, GPQADiamond, HumanEvalPlus, MBPPPlus, BigCodeBench, MultiPL-E, and CRUXEval have been added to our growing list of [available benchmarks](https://github.com/mlfoundations/evalchemy?tab=readme-ov-file#built-in-benchmarks). This is part of the effort in the [Open Thoughts](https://github.com/open-thoughts/open-thoughts) project. See the [our blog post](https://www.open-thoughts.ai/blog/measure) on using Evalchemy for measuring reasoning models.
 
 #### [2025.01.28] New Model Support
 - [vLLM models](https://blog.vllm.ai/2023/06/20/vllm.html): High-performance inference and serving engine with PagedAttention technology
@@ -38,7 +38,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "pretrained=meta-llama/Meta-Llama-3-8B-Instruct" \
     --batch_size 16 \
-    --output_path logs
+    --finestore_output_path logs/my-run
 ```
 - [OpenAI models](https://openai.com/): Full support for OpenAI's model lineup
 ```bash
@@ -47,7 +47,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "model=gpt-4o-mini-2024-07-18,num_concurrent=32" \
     --batch_size 16 \
-    --output_path logs 
+    --finestore_output_path logs/my-run
 ```
 
 ### Key Features
@@ -57,7 +57,7 @@ python -m eval.eval \
   - Data-Parallel: Distribute evaluations across multiple GPUs for faster results
   - Model-Parallel: Handle large models that don't fit on a single GPU
 - **Simplified Usage**: Run any benchmark with a consistent command-line interface
-- **Results Management**: 
+- **Results Management**:
   - Local results tracking with standardized output format
   - Optional database integration for systematic tracking
   - Leaderboard submission capability (requires database setup)
@@ -135,7 +135,7 @@ uv run huggingface-cli login
   - **SafetyBench** (Coming soon): [Evaluating the safety of LLMs](https://github.com/thu-coai/SafetyBench)
   - **SciCode Bench** (Coming soon): [Evaluate language models in generating code for solving realistic scientific research problems](https://github.com/scicode-bench/SciCode)
   - **Berkeley Function Calling Leaderboard** (Coming soon): [Evaluating ability of LLMs to use APIs](https://gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html)
-  
+
 
 We have recorded reproduced results against published numbers for these benchmarks in [`reproduced_benchmarks.md`](reproduced_benchmarks.md).
 
@@ -158,22 +158,26 @@ python -m eval.eval \
     --tasks HumanEval,mmlu \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs
+    --finestore_output_path logs/my-run
 ```
 
-The results will be written out in `output_path`. If you have `jq` [installed](https://jqlang.github.io/jq/download/), you can view the results easily after evaluation. Example: `jq '.results' logs/Qwen__Qwen2.5-7B-Instruct/results_2024-11-17T17-12-28.668908.json`
+Results, samples, and request resume state are stored in the FineStore archive at
+`logs/my-run`. Reuse that path to resume the same evaluation; choose a new path
+to start a different run. To inspect the aggregate result:
 
-**Args**: 
+```bash
+uv run python -c 'from eval.serve_eval.results import EvalResults; print(EvalResults.load_archive("logs/my-run").results)'
+```
+
+**Args**:
 
 - `--model`: Which model type or provider is evaluated (example: hf)
 - `--tasks`: Comma-separated list of tasks to be evaluated.
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
-- `--output_path`: Directory to save evaluation results
-- `--finestore_output_path`: FineStore run root for native JSON/JSONL source objects, normalized
-  samples, and request-level resume state. Per-task sample JSONL is written only to FineStore when
-  this is set. Requires `--log_samples` and the `serve-eval` extra.
-- `--finestore_output_prefix`: Stable task-group name for organizing source objects in FineStore.
+- `--finestore_output_path`: Required FineStore archive root for aggregate results,
+  normalized samples, and request-level resume state.
+- `--finestore_output_prefix`: Stable task-group name inside the archive.
 - `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
 - `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
 
@@ -190,10 +194,10 @@ python -m eval.eval \
     --tasks MTBench,WildBench,alpaca_eval \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs
+    --finestore_output_path logs/my-run
 ```
 
-**Config shortcuts**: 
+**Config shortcuts**:
 
 To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments, and may set the canonical `max_length` and `max_tokens` fields. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
 
@@ -201,7 +205,7 @@ To be able to reuse commonly used settings without having to manually supply ful
 python -m eval.eval \
     --model hf \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
-    --output_path logs \
+    --finestore_output_path logs/my-run \
     --config configs/light_gpt4omini0718.yaml
 ```
 
@@ -213,7 +217,7 @@ task:
 evalchemy validate-config evaluation.yaml
 ```
 
-We add several more command examples in [`eval/examples`](https://github.com/mlfoundations/Evalchemy/tree/main/eval/examples) to help you start using Evalchemy. 
+We add several more command examples in [`eval/examples`](https://github.com/mlfoundations/Evalchemy/tree/main/eval/examples) to help you start using Evalchemy.
 
 ## 🔧 Advanced Usage
 
@@ -221,12 +225,12 @@ We add several more command examples in [`eval/examples`](https://github.com/mlf
 
 Through LM-Eval-Harness, we support all HuggingFace models and are currently adding support for all LM-Eval-Harness models, such as OpenAI and VLLM. For more information on such models, please check out the [models page](https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/models).
 
-To choose a model, simply set 'pretrained=<name of hf model>' where the model name can either be a HuggingFace model name or a path to a local model. 
+To choose a model, simply set 'pretrained=<name of hf model>' where the model name can either be a HuggingFace model name or a path to a local model.
 
 
 ### HPC Distributed Evaluation
 
-For even faster evaluation, use full data parallelism and launch a vLLM process for each GPU. 
+For even faster evaluation, use full data parallelism and launch a vLLM process for each GPU.
 
 We have made also made this easy to do at scale across multiple nodes on HPC (High-Performance Computing) clusters:
 
@@ -241,12 +245,12 @@ Key features:
 - Automatic cluster detection and configuration
 - Efficient result collection and scoring
 
-Refer to the [distributed README](eval/distributed/README.md) for more details. 
+Refer to the [distributed README](eval/distributed/README.md) for more details.
 
-NOTE: This is configured for specific HPC clusters, but can easily be adapted. Furthermore it can be adapted for a non-HPC setup using `CUDA_VISIBLE_DEVICES` instead of SLURM job arrays. 
+NOTE: This is configured for specific HPC clusters, but can easily be adapted. Furthermore it can be adapted for a non-HPC setup using `CUDA_VISIBLE_DEVICES` instead of SLURM job arrays.
 
 
-### Multi-GPU Evaluation 
+### Multi-GPU Evaluation
 
 NOTE: this is slower than doing fully data parallel evaluation (see previous section)
 
@@ -257,7 +261,7 @@ accelerate launch --num-processes <num-gpus> --num-machines <num-nodes> \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3' \
     --batch_size 2 \
-    --output_path logs
+    --finestore_output_path logs/my-run
 ```
 
 ### Large Model Evaluation
@@ -270,14 +274,14 @@ python -m eval.eval \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3,parallelize=True' \
     --batch_size 2 \
-    --output_path logs
+    --finestore_output_path logs/my-run
 ```
 
 > **💡 Note**: While "auto" batch size is supported, we recommend manually tuning the batch size for optimal performance. The optimal batch size depends on the model size, GPU memory, and the specific benchmark. We used a maximum of 32 and a minimum of 4 (for RepoBench) to evaluate Llama-3-8B-Instruct on 8xH100 GPUs.
 
 ### Output Log Structure
 
-Our generated logs include critical information about each evaluation to help inform your experiments. We highlight important items in our generated logs. 
+Our generated logs include critical information about each evaluation to help inform your experiments. We highlight important items in our generated logs.
 
 - Model Configuration
   - `model`: Model framework used
@@ -412,7 +416,7 @@ python -m eval.eval \
     --tasks MTBench \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs \
+    --finestore_output_path logs/my-run \
     --debug
 ```
 
@@ -472,27 +476,16 @@ If you find Evalchemy useful, please consider citing us!
 }
 ```
 
-## Sample logs
+## Sample records
 
-`eval --log_samples --output_path DIR` writes one canonical, non-empty JSONL
-artifact for every task that completed scoring:
-`DIR/<model>/samples_<task>_<timestamp>.jsonl`. The aggregate
-`results_<timestamp>.json` contains metrics only while sample logging is enabled;
-custom-benchmark examples are not duplicated there.
-
-Every JSONL line has `schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
+Each scored task writes normalized rows to FineStore's `samples` table. The
+aggregate result is stored in the `evalchemy_results` table. Sample rows contain
+`schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
 `arguments`, `resps`, `filtered_resps`, `filter`, `doc_hash`, `prompt_hash`, and
 `target_hash`. These are lm-eval-compatible records with a stable Evalchemy
 envelope. Custom benchmarks retain their input document in `doc` and their raw
 and normalized completion in `resps` and `filtered_resps`; lm-eval-native tasks
-retain their native fields unchanged. An unscored task (including one returning
-an `error`) writes no sample artifact, and a serialization failure never changes
-the task's score or creates a zero-byte placeholder.
-
-With `--finestore_output_path`, FineStore stores completed request payloads for resume, each task's
-canonical JSONL and aggregate JSON as source artifacts, and one normalized sample per extraction
-filter. The task completion marker is committed after its results and samples, so a retry can skip a
-completed task even when another task has reopened the archive. `--output_path` is optional in this
-mode; when omitted, Evalchemy writes no local aggregate or sample files. A changed resume fingerprint
-raises an error. FineStore output does not accept `--resume-mode off`. Use a new FineStore path for an
-intentional fresh evaluation.
+retain their native fields unchanged. FineStore's `evalchemy_resume` table
+stores completed request payloads; retries restore them by default. A completed
+result is reused without rerunning the task. A changed fingerprint raises an
+error. Use a new archive path for an intentional fresh evaluation.
