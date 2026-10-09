@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from math_verify import parse, verify
 from openai import AsyncOpenAI
+from sympy.core.relational import Relational
 
 from eval.graders.minerva_math import is_equiv as minerva_is_equiv
 from eval.graders.minerva_math import normalize_final_answer
@@ -122,6 +123,12 @@ class EquivalenceResult:
     judgment: EquivalenceJudgment | None = None
 
 
+def _is_symbol_free_relation(parsed: Sequence[object]) -> bool:
+    """Return whether every non-string parsed value is a relation over no free symbols."""
+    relations = [value for value in parsed if not isinstance(value, str)]
+    return bool(relations) and all(isinstance(value, Relational) and not value.free_symbols for value in relations)
+
+
 def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[str]) -> bool:
     """Return whether the candidate is mathematically equivalent to any reference."""
     candidate = normalize_final_answer(candidate_answer)
@@ -129,6 +136,8 @@ def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[s
     for reference in reference_answers:
         parsed_reference = parse(f"\\boxed{{{reference}}}")
         if parsed_candidate and parsed_reference:
+            if _is_symbol_free_relation(parsed_candidate) and _is_symbol_free_relation(parsed_reference):
+                continue
             if verify(gold=parsed_reference, target=parsed_candidate):
                 return True
             continue
