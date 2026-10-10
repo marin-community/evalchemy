@@ -118,7 +118,7 @@ jobs:
             --tasks "${{ github.event.inputs.tasks || 'gsm8k' }}" \
             --limit "${{ github.event.inputs.limit || '100' }}" \
             --output-dir e2e-out
-          uv run python -m eval.regression.validate check --results e2e-out \
+          uv run python -m eval.regression.validate check --finestore-root e2e-out \
             --spec eval/regression/specs/qwen3-0.6b.json
 
       - name: Collect Iris logs after a serving failure

@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check an eval run against a regression gate spec, or record a new one.
 
-``check`` compares a run's ``results_*.json`` to a spec and exits non-zero on
+``check`` compares a run's FineStore results to a spec and exits non-zero on
 regression; ``record`` writes a spec from a run. The gate is a coarse smoke check: a
 small ``--limit`` run of a 0.6B model moves in coarse steps (gsm8k strict-match swings
 ~3/20 run-to-run even greedy), so it asserts the endpoint answered the expected sample
 count and each metric clears a floor -- plus, optionally, stays within ``tolerance`` of
 a recorded ``reference``. See ``eval/regression/README.md``.
 
-    python -m eval.regression.validate check  --results <run-dir> --spec eval/regression/specs/qwen3-0.6b.json
-    python -m eval.regression.validate record --results <run-dir> --spec eval/regression/specs/qwen3-0.6b.json
+    python -m eval.regression.validate check  --finestore-root <run-dir> --spec eval/regression/specs/qwen3-0.6b.json
+    python -m eval.regression.validate record --finestore-root <run-dir> --spec eval/regression/specs/qwen3-0.6b.json
 """
 
 from __future__ import annotations
@@ -298,19 +298,19 @@ def cli() -> None:
 
 
 @cli.command()
-@click.option("--results", "results_path", required=True, help="A results_*.json file OR a run dir to search.")
+@click.option("--finestore-root", required=True, help="The evaluation's FineStore archive root.")
 @click.option("--spec", "spec_path", default=DEFAULT_SPEC, help="Golden gate spec json.")
-def check(results_path: str, spec_path: str) -> None:
+def check(finestore_root: str, spec_path: str) -> None:
     """Gate a run against a spec. Exit 0 = pass, 1 = fail."""
     if not spec_path or not os.path.exists(spec_path):
         raise click.UsageError(f"no spec to gate against ({spec_path!r}); pass --spec")
-    report = evaluate_gate(EvalResults.load_path_or_dir(results_path), GateSpec.load(spec_path))
+    report = evaluate_gate(EvalResults.load_archive(finestore_root), GateSpec.load(spec_path))
     click.echo(report.render())
     raise SystemExit(0 if report.ok else 1)
 
 
 @cli.command()
-@click.option("--results", "results_path", required=True, help="A results_*.json file OR a run dir to search.")
+@click.option("--finestore-root", required=True, help="The evaluation's FineStore archive root.")
 @click.option("--spec", "spec_path", default=DEFAULT_SPEC, help="Where to write the spec.")
 @click.option("--model", default=None, help="Model id for provenance (default: read from results).")
 @click.option("--model-revision", default=None, help="Model revision for provenance (pin it; the Hub tag is mutable).")
@@ -337,7 +337,7 @@ def check(results_path: str, spec_path: str) -> None:
     "Set it to the run-to-run variance you measured; omit for a floor-only smoke spec.",
 )
 def record(
-    results_path: str,
+    finestore_root: str,
     spec_path: str,
     model: Optional[str],
     model_revision: Optional[str],
@@ -350,7 +350,7 @@ def record(
     tolerance: Optional[float],
 ) -> None:
     """Write a golden gate spec from a real run's results."""
-    results = EvalResults.load_path_or_dir(results_path)
+    results = EvalResults.load_archive(finestore_root)
     task_list = tasks.split(",") if tasks else list(results.results.keys())
     spec = build_spec(
         results,

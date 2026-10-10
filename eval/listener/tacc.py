@@ -48,7 +48,7 @@ CACHE_DIR = "/tmp/hf_home/"  # Match HF_HOME from original script
 class AutoEvalManager:
     def __init__(self):
         self.setup_directories()
-        self.tracker = DCEvaluationTracker("logs", use_database=True)
+        self.tracker = DCEvaluationTracker(use_database=True)
         self.completed_tasks = {}  # type: Dict[str, Set[str]]
         self.submitted_jobs = set()  # type: Set[tuple]
         self.active_models = dict()  # type: Dict[str, str]  # UUID -> HF model path
@@ -142,7 +142,7 @@ export MASTER_PORT={port}
     --annotator_model gpt-4o-mini-2024-07-18 \\
     --model_id {uuid} \\
     --batch_size "auto" \\
-    --output_path logs \\
+    --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ \\
     --use_database &
     """
             )

@@ -185,7 +185,7 @@ def _multiple_choice_fields(arguments: list, responses: list, doc: object, targe
 
 
 def sample_from_lm_eval(task: str, raw: Mapping[str, object]) -> EvalSample:
-    """Normalize one lm-eval ``--log_samples`` filter row."""
+    """Normalize one lm-eval sample filter row."""
     arguments = raw.get("arguments")
     responses = raw.get("resps")
     doc = raw.get("doc")

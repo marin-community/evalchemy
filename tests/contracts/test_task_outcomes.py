@@ -13,6 +13,7 @@ from eval.completion_response import CompletionClassification, CompletionContent
 from eval.contracts.failures import ModelRequestValidationError
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
+from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.task_outcome import (
     EvaluationRunError,
     FailureCategory,
@@ -51,6 +52,11 @@ class _Benchmark(BaseBenchmark):
     def evaluate_responses(self, results):
         if self.grading_error is not None:
             raise self.grading_error
+        if self.scored_result and "accuracy" in self.scored_result:
+            examples = results.get("examples", [])
+            correct_count = round(self.scored_result["accuracy"] * len(examples))
+            for index, example in enumerate(examples):
+                record_sample_metrics(example, accuracy=index < correct_count)
         return self.scored_result
 
 
@@ -70,7 +76,6 @@ class _NoCustomTasks:
 def _args(**overrides):
     values = {
         "model": "local-completions",
-        "log_samples": False,
         "model_args": "model=test-model",
         "gen_kwargs": None,
         "num_fewshot": 0,
@@ -79,7 +84,6 @@ def _args(**overrides):
         "evaluation_tracker": None,
         "max_batch_size": None,
         "device": None,
-        "use_cache": None,
         "check_integrity": False,
         "write_out": False,
         "system_instruction": None,
@@ -89,6 +93,7 @@ def _args(**overrides):
         "predict_only": False,
         "confirm_run_unsafe_code": False,
         "seed": [0, 1234, 1234, 1234],
+        "finestore_output_prefix": "run",
     }
     values.update(overrides)
     return Namespace(**values)
@@ -186,10 +191,10 @@ def test_custom_grader_infrastructure_failure_is_reported_without_a_score():
 def test_failed_task_is_saved_in_the_results_package(tmp_path):
     result = _custom_evaluate(_Benchmark({"examples": [{"prompt": "x"}]}, grading_error=RuntimeError("sandbox failed")))
     result["config"] = {"batch_sizes": [1]}
-    tracker = DCEvaluationTracker(str(tmp_path))
+    tracker = DCEvaluationTracker()
     tracker.general_config_tracker.model_name_sanitized = "test-model"
     args = _args(
-        finestore_output_path=None,
+        finestore_output_path=str(tmp_path / "archive"),
         show_config=False,
         use_database=False,
         debug=False,
@@ -199,9 +204,7 @@ def test_failed_task_is_saved_in_the_results_package(tmp_path):
 
     handle_evaluation_output(result, args, tracker)
 
-    packages = list((tmp_path / "test-model").glob("results_*.json"))
-    assert len(packages) == 1
-    saved = EvalResults.load(str(packages[0]))
+    saved = EvalResults.load_archive(str(tmp_path / "archive"))
     assert saved.task_outcomes["contract_task"].failure.category is FailureCategory.GRADER_INFRASTRUCTURE
     assert saved.task_outcomes["contract_task"].status is TaskStatus.FAILED
     assert saved.results == {}
@@ -214,9 +217,9 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
             return {"examples": [{"output": ""}]}
 
         def evaluate_responses(self, results):
-            return {"accuracy": 0.0}
+            return super().evaluate_responses(results)
 
-    benchmark = _TransportFailureBenchmark({})
+    benchmark = _TransportFailureBenchmark({}, scored_result={"accuracy": 0.0})
 
     result = _custom_evaluate(benchmark)
 
@@ -287,7 +290,7 @@ def test_requested_sample_serialization_failure_is_typed_and_reported():
         scored_result={"accuracy": 1.0},
     )
 
-    result = _custom_evaluate(benchmark, log_samples=True)
+    result = _custom_evaluate(benchmark)
 
     assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.SERIALIZATION
 
@@ -299,7 +302,7 @@ def test_scored_task_without_sample_records_keeps_its_aggregate():
 
     benchmark = _AggregateOnlyBenchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 1.0})
 
-    result = _custom_evaluate(benchmark, log_samples=True)
+    result = _custom_evaluate(benchmark)
 
     assert result["results"]["contract_task"]["accuracy"] == 1.0
     assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.SUCCEEDED
@@ -385,7 +388,7 @@ def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatc
             },
         }
 
-    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses, log_samples=True)
+    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
 
     assert result["results"]["arc_easy"]["acc,none"] == 2 / 3
     assert result["task_outcomes"]["arc_easy"]["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 1}
@@ -529,14 +532,13 @@ def test_one_task_infrastructure_failure_does_not_stop_other_tasks(monkeypatch):
         },
     ],
 )
-def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result):
-    args = Namespace(log_samples=False, show_config=False, wandb_args=None, finestore_output_path=None)
-    tracker = SimpleNamespace(
-        save_results_aggregated=lambda **_kwargs: pytest.fail("invalid results must not be persisted")
-    )
+def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result, tmp_path):
+    args = Namespace(show_config=False, wandb_args=None, finestore_output_path=str(tmp_path / "archive"))
+    tracker = DCEvaluationTracker()
 
     with pytest.raises(EvaluationRunError):
         handle_evaluation_output(result, args, tracker)
+    assert not (tmp_path / "archive").exists()
 
 
 def test_persisted_result_reader_retains_typed_task_outcomes():

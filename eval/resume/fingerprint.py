@@ -58,10 +58,9 @@ MATERIAL_FIELDS = (
 )
 
 # Structurally EXCLUDED from the hashed set — cosmetic; changing them still resumes.
-# (TP / world_size is excluded here for *comparability* but a rank-layout mismatch refuses via
-#  the per-rank manifest file naming — decision #3, handled in the manager, not the fingerprint.)
+# (TP / world_size is excluded here for comparability; the FineStore manager checks
+#  world_size separately before restoring rank-local request rows.)
 IGNORED_FIELDS = (
-    "output_path",
     "job_name",
     "run_tag",
     "started_at",

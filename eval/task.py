@@ -247,13 +247,7 @@ class BaseBenchmark(ABC):
         return limited_inputs
 
     def attach_resume_manager(self, manager) -> None:
-        """Attach a ResumeManager so ``compute`` skips already-done problems.
-
-        A ``None`` manager (the default) leaves ``compute`` byte-identical to
-        today (global invariant #1). The driver constructs the manager from the
-        run fingerprint and attaches it here (Stage 4); Stage 3a only wires the
-        consumption side.
-        """
+        """Attach the FineStore manager that restores completed requests."""
         self._resume_manager = manager
 
     def generate_n_samples(
@@ -351,7 +345,7 @@ class BaseBenchmark(ABC):
         """
         manager = getattr(self, "_resume_manager", None)
         n = int(num_samples if num_samples is not None else self.num_samples)
-        # No manager (or off-mode) -> the Stage-2b path verbatim (byte-identical).
+        # Direct callers may use this benchmark without the evaluation driver.
         if manager is None:
             return self.generate_n_samples(model, build_instances, n)
 
@@ -787,9 +781,7 @@ class BaseBenchmark(ABC):
         return evaluation_results
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Reshape generated examples into canonical lm-eval-compatible records.
-        lm-eval per-doc sample records (the schema ``save_results_samples`` /
-        ``save_results_aggregated`` / ``wandb.log_eval_samples`` consume).
+        """Reshape generated examples into canonical lm-eval-compatible sample records.
 
         Default implementation reads the ``{"examples": [...]}`` convention shared
         by the math chat_benchmarks (MATH500/AIME24/AMC23): each ``example`` is the
@@ -802,9 +794,8 @@ class BaseBenchmark(ABC):
         ``doc_id``, ``doc``, ``target``, ``arguments`` (a list of
         ``[prompt_str, gen_kwargs]`` pairs, so ``save_results_samples``'s
         ``enumerate(sample["arguments"])`` → ``enumerate(arg)`` unpacking works),
-        ``resps``/``filtered_resps`` (lists), and the MANDATORY ``doc_hash`` /
-        ``prompt_hash`` / ``target_hash`` (``eval_tracker.save_results_aggregated``
-        reads all three to build the cumulative task hash).
+        ``resps``/``filtered_resps`` (lists), and the ``doc_hash``,
+        ``prompt_hash``, and ``target_hash`` fields.
         """
         import json as _json
 
