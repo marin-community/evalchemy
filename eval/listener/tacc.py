@@ -48,7 +48,7 @@ CACHE_DIR = "/tmp/hf_home/"  # Match HF_HOME from original script
 class AutoEvalManager:
     def __init__(self):
         self.setup_directories()
-        self.tracker = DCEvaluationTracker("logs", use_database=True)
+        self.tracker = DCEvaluationTracker(use_database=True)
         self.completed_tasks = {}  # type: Dict[str, Set[str]]
         self.submitted_jobs = set()  # type: Set[tuple]
         self.active_models = dict()  # type: Dict[str, str]  # UUID -> HF model path
