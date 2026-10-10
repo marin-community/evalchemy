@@ -264,6 +264,14 @@ def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: P
         FineStoreResumeManager(root, "run", "gsm8k", fingerprint, mode="force-fresh").decide()
 
 
+def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    write_finestore_output(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
+
+    with pytest.raises(ResumeRefused, match="without a resume fingerprint"):
+        FineStoreResumeManager(root, "run", "gsm8k", RunFingerprint(inputs={"task_name": "gsm8k"})).decide()
+
+
 def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
     root = str(tmp_path / "archive")
     results = {"results": {"gsm8k": {"exact_match": 0.5}}}

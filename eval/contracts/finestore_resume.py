@@ -14,6 +14,7 @@ from finestore.reader import ReadView
 from finestore.store import DataStore
 from rigging.filesystem.storage_path import prefix_join
 
+from eval.contracts.finestore_output import read_finestore_output
 from eval.contracts.resume_values import decode_resume_value, encode_resume_value
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.unit_keys import UnitKey, canonical_unit_key
@@ -68,6 +69,8 @@ class FineStoreResumeManager:
         view = ReadView(self.root)
         stored = view.read_blob(self._fingerprint_blob)
         if stored is None:
+            if read_finestore_output(self.root, self.source_prefix) is not None:
+                raise ResumeRefused(f"FineStore result exists without a resume fingerprint for {self._namespace}")
             store = self._open_store()
             document = {**self.fingerprint.to_json(), "world_size": self.world_size}
             with store.transaction() as transaction:
