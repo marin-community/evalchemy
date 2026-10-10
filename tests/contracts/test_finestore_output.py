@@ -2,6 +2,7 @@
 
 from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
@@ -11,7 +12,7 @@ from eval.contracts.finestore_output import completed_finestore_output, read_fin
 from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
-from eval.eval import cli_evaluate, handle_evaluation_output
+from eval.eval import cli_evaluate, handle_evaluation_output, setup_custom_parser
 from eval.eval_tracker import DCEvaluationTracker
 from eval.lm_eval_compat import setup_parser
 from eval.serve_eval.results import EvalResults
@@ -310,18 +311,44 @@ def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, mo
 
     assert read_finestore_output(root, "gsm8k_0shot") is None
 
-def test_cli_skips_completed_finestore_result_before_model_setup(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("changed_field", "changed_value", "message"),
+    [
+        ("model_args", "model=other", "fingerprint changed"),
+        ("gen_kwargs", "temperature=0.5", "fingerprint changed"),
+        ("tasks", "arc_easy", "task list changed"),
+        ("resume_mode", "force-fresh", "already exists"),
+    ],
+)
+def test_cli_refuses_reuse_of_completed_finestore_result(
+    tmp_path: Path, monkeypatch, changed_field: str, changed_value: str, message: str
+):
     root = str(tmp_path / "archive")
-    result = {"results": {"gsm8k": {"exact_match": 0.5}}}
-    write_finestore_output(root, "gsm8k_0shot", result, {})
+    args = setup_custom_parser().parse_args(
+        ["--model", "local-completions", "--tasks", "arc_challenge", "--model_args", "model=served", "--output_path", root]
+    )
+    model = SimpleNamespace(world_size=1, rank=0)
+    manager = build_resume_wiring(args, model)("arc_challenge")
+    assert manager.decide() == "fresh"
+    manager.finalize()
+    result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
+    write_finestore_output(root, args.finestore_output_prefix, result, {})
 
-    cli_evaluate(Namespace(
-        finestore_output_path=root,
-        finestore_output_prefix="gsm8k_0shot",
-        resume_mode="auto",
-    ))
+    setattr(args, changed_field, changed_value)
+    monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}))
+    monkeypatch.setattr(
+        "eval.eval.PretrainTaskManager",
+        lambda *_args, **_kwargs: SimpleNamespace(all_tasks={"arc_challenge": object(), "arc_easy": object()}),
+    )
+    monkeypatch.setattr("eval.eval.prepare_requested_tasks", lambda *_args: [])
+    monkeypatch.setattr("eval.eval.describe_benchmarks", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr("eval.eval.initialize_model", lambda *_args, **_kwargs: model)
+    monkeypatch.setattr("eval.eval.setup_evaluation_tracker", lambda *_args: None)
+    monkeypatch.setattr("eval.eval.evaluate", lambda **_kwargs: pytest.fail("evaluation started before resume validation"))
 
-    assert read_finestore_output(root, "gsm8k_0shot") == result
+    with pytest.raises(ResumeRefused, match=message):
+        cli_evaluate(args)
+    assert read_finestore_output(root, args.finestore_output_prefix) == result
 
 
 def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):

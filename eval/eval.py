@@ -63,7 +63,8 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.finestore_output import completed_finestore_output, write_finestore_output
+from eval.contracts.finestore_output import read_finestore_output, write_finestore_output
+from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.sample_manifest import SampleManifest
@@ -737,10 +738,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         raise ValueError("--finestore_output_path is required")
     if args.resume_mode == "off":
         raise ValueError("FineStore output requires --resume-mode auto or force-fresh")
-    if completed_finestore_output(args.finestore_output_path, args.finestore_output_prefix):
-        utils.eval_logger.info("Evaluation already completed in %s", args.finestore_output_path)
-        return
-
     if args.config is not None:
         # This overwrites `--tasks` and `--batch_size`
         with open(args.config, "r") as file:
@@ -754,6 +751,13 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             int(args.batch_size) if args.batch_size != "auto" else args.batch_size
             for _ in range(len(args.tasks.split(",")))
         ]
+
+    prior_result = read_finestore_output(args.finestore_output_path, args.finestore_output_prefix)
+    if prior_result is not None:
+        if args.resume_mode == "force-fresh":
+            raise ResumeRefused("FineStore output already exists; use a new output path for a fresh evaluation")
+        if prior_result.get("config", {}).get("tasks") != args.tasks:
+            raise ResumeRefused("FineStore result task list changed; use a new output path")
 
     evaluation_tracker = setup_evaluation_tracker(args.use_database)
 
@@ -884,6 +888,12 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
 
     # One per-task factory feeds the native lm-eval and chat benchmark resume paths.
     _resume_factory = build_resume_wiring(args, lm)
+    for task in task_list:
+        manager = _resume_factory(task)
+        try:
+            manager.decide()
+        finally:
+            manager.finalize()
     attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
 
     # Initialize logging and environment
