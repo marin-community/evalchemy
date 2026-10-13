@@ -9,6 +9,12 @@
       "longest_prompt_tokens": 446,
       "sha256": "5e9089f283358fc503925c4b2731ecab5ed49b8ad98105e7f476c60ba5c67b16"
     },
+    "AIME24OneRepeat": {
+      "distinct_prompt_count": 30,
+      "longest_prompt_chars": 1071,
+      "longest_prompt_tokens": 446,
+      "sha256": "5e9089f283358fc503925c4b2731ecab5ed49b8ad98105e7f476c60ba5c67b16"
+    },
     "AIME25": {
       "distinct_prompt_count": 30,
       "longest_prompt_chars": 1076,

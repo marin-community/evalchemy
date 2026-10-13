@@ -27,6 +27,7 @@ class AIME24Benchmark(BaseBenchmark):
 
     METRICS = ("accuracy_avg",)
     PRIMARY_METRIC = "accuracy_avg"
+    DEFAULT_REPEATS = 10
 
     def benchmark_size(self) -> int:
         return len(self.load_questions())
@@ -55,7 +56,7 @@ class AIME24Benchmark(BaseBenchmark):
         self.debug = debug
         self.max_new_tokens = max_tokens
         self.seed = seed
-        self.n_repeat = 10
+        self.n_repeat = self.DEFAULT_REPEATS
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """

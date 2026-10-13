@@ -20,6 +20,7 @@ from lm_eval.utils import simple_parse_args_string
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
+from eval.chat_benchmarks.AIME24OneRepeat.eval_instruct import AIME24OneRepeatBenchmark
 from eval.chat_benchmarks.GPQADiamond import eval_instruct as gpqa_module
 from eval.chat_benchmarks.GPQADiamond.eval_instruct import GPQADiamondBenchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
@@ -237,6 +238,18 @@ def test_aime24_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):
 
     assert len(result["examples"][0]["model_outputs"]) == 10
     _assert_seeded_requests(endpoint.requests, 42, 10)
+
+
+def test_aime24_one_repeat_uses_same_prompt_and_grader_with_one_request(endpoint, tmp_path):
+    data_file = tmp_path / "aime24.jsonl"
+    data_file.write_text(json.dumps({"id": "one", "problem": "What is 6 times 7?", "expected_answer": "42"}) + "\n")
+    benchmark = AIME24OneRepeatBenchmark(data_file=str(data_file), seed=[42, 42, 42, 42])
+
+    score = benchmark.evaluate_responses(benchmark.generate_responses(_model(endpoint, LocalChatCompletion)))
+
+    assert len(endpoint.requests) == 1
+    assert score["num_repeat"] == 1
+    assert score["accuracy_avg"] == 1.0
 
 
 def test_gpqa_repeats_use_distinct_sampling_seeds(endpoint, monkeypatch):
