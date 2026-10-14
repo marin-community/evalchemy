@@ -7,7 +7,7 @@
 Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bespoke Labs](https://bespokelabs.ai)  and builds on the [LM-Eval-Harness](https://github.com/EleutherAI/lm-evaluation-harness).
 
 
-## 🎉 What's New
+## 🎉 What's New 
 
 #### [2025.02.24] New Reasoning Benchmarks
 
@@ -15,7 +15,7 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
 
 #### [2025.01.30] API Model Support
 
-- [API models via Curator](https://github.com/bespokelabsai/curator/): With `--model curator` you can now evaluate with even more API based models via [Curator](https://github.com/bespokelabsai/curator/), including all those supported by [LiteLLM](https://docs.litellm.ai/docs/providers)
+- [API models via Curator](https://github.com/bespokelabsai/curator/): With `--model curator` you can now evaluate with even more API based models via [Curator](https://github.com/bespokelabsai/curator/), including all those supported by [LiteLLM](https://docs.litellm.ai/docs/providers) 
 
 ```
   python -m eval.eval \
@@ -28,7 +28,7 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
 ```
 #### [2025.01.29] New Reasoning Benchmarks
 
-- AIME24, AMC23, MATH500, LiveCodeBench, GPQADiamond, HumanEvalPlus, MBPPPlus, BigCodeBench, MultiPL-E, and CRUXEval have been added to our growing list of [available benchmarks](https://github.com/mlfoundations/evalchemy?tab=readme-ov-file#built-in-benchmarks). This is part of the effort in the [Open Thoughts](https://github.com/open-thoughts/open-thoughts) project. See the [our blog post](https://www.open-thoughts.ai/blog/measure) on using Evalchemy for measuring reasoning models.
+- AIME24, AMC23, MATH500, LiveCodeBench, GPQADiamond, HumanEvalPlus, MBPPPlus, BigCodeBench, MultiPL-E, and CRUXEval have been added to our growing list of [available benchmarks](https://github.com/mlfoundations/evalchemy?tab=readme-ov-file#built-in-benchmarks). This is part of the effort in the [Open Thoughts](https://github.com/open-thoughts/open-thoughts) project. See the [our blog post](https://www.open-thoughts.ai/blog/measure) on using Evalchemy for measuring reasoning models. 
 
 #### [2025.01.28] New Model Support
 - [vLLM models](https://blog.vllm.ai/2023/06/20/vllm.html): High-performance inference and serving engine with PagedAttention technology
@@ -57,7 +57,7 @@ python -m eval.eval \
   - Data-Parallel: Distribute evaluations across multiple GPUs for faster results
   - Model-Parallel: Handle large models that don't fit on a single GPU
 - **Simplified Usage**: Run any benchmark with a consistent command-line interface
-- **Results Management**:
+- **Results Management**: 
   - Local results tracking with standardized output format
   - Optional database integration for systematic tracking
   - Leaderboard submission capability (requires database setup)
@@ -135,7 +135,7 @@ uv run huggingface-cli login
   - **SafetyBench** (Coming soon): [Evaluating the safety of LLMs](https://github.com/thu-coai/SafetyBench)
   - **SciCode Bench** (Coming soon): [Evaluate language models in generating code for solving realistic scientific research problems](https://github.com/scicode-bench/SciCode)
   - **Berkeley Function Calling Leaderboard** (Coming soon): [Evaluating ability of LLMs to use APIs](https://gorilla.cs.berkeley.edu/blogs/13_bfcl_v3_multi_turn.html)
-
+  
 
 We have recorded reproduced results against published numbers for these benchmarks in [`reproduced_benchmarks.md`](reproduced_benchmarks.md).
 
@@ -169,7 +169,7 @@ to start a different run. To inspect the aggregate result:
 uv run python -c 'from eval.serve_eval.results import EvalResults; print(EvalResults.load_archive("logs/my-run").results)'
 ```
 
-**Args**:
+**Args**: 
 
 - `--model`: Which model type or provider is evaluated (example: hf)
 - `--tasks`: Comma-separated list of tasks to be evaluated.
@@ -198,7 +198,7 @@ python -m eval.eval \
     --output_path logs/my-run
 ```
 
-**Config shortcuts**:
+**Config shortcuts**: 
 
 To be able to reuse commonly used settings without having to manually supply full arguments every time, we support reading eval configs from YAML files. These configs replace the `--batch_size`, `--tasks`, and `--annoator_model` arguments, and may set the canonical `max_length` and `max_tokens` fields. Some example config files can be found in `./configs`. To use these configs, you can use the `--config` flag as shown below:
 
@@ -218,7 +218,7 @@ task:
 evalchemy validate-config evaluation.yaml
 ```
 
-We add several more command examples in [`eval/examples`](https://github.com/mlfoundations/Evalchemy/tree/main/eval/examples) to help you start using Evalchemy.
+We add several more command examples in [`eval/examples`](https://github.com/mlfoundations/Evalchemy/tree/main/eval/examples) to help you start using Evalchemy. 
 
 ## 🔧 Advanced Usage
 
@@ -226,12 +226,12 @@ We add several more command examples in [`eval/examples`](https://github.com/mlf
 
 Through LM-Eval-Harness, we support all HuggingFace models and are currently adding support for all LM-Eval-Harness models, such as OpenAI and VLLM. For more information on such models, please check out the [models page](https://github.com/EleutherAI/lm-evaluation-harness/tree/main/lm_eval/models).
 
-To choose a model, simply set 'pretrained=<name of hf model>' where the model name can either be a HuggingFace model name or a path to a local model.
+To choose a model, simply set 'pretrained=<name of hf model>' where the model name can either be a HuggingFace model name or a path to a local model. 
 
 
 ### HPC Distributed Evaluation
 
-For even faster evaluation, use full data parallelism and launch a vLLM process for each GPU.
+For even faster evaluation, use full data parallelism and launch a vLLM process for each GPU. 
 
 We have made also made this easy to do at scale across multiple nodes on HPC (High-Performance Computing) clusters:
 
@@ -246,12 +246,12 @@ Key features:
 - Automatic cluster detection and configuration
 - Efficient result collection and scoring
 
-Refer to the [distributed README](eval/distributed/README.md) for more details.
+Refer to the [distributed README](eval/distributed/README.md) for more details. 
 
-NOTE: This is configured for specific HPC clusters, but can easily be adapted. Furthermore it can be adapted for a non-HPC setup using `CUDA_VISIBLE_DEVICES` instead of SLURM job arrays.
+NOTE: This is configured for specific HPC clusters, but can easily be adapted. Furthermore it can be adapted for a non-HPC setup using `CUDA_VISIBLE_DEVICES` instead of SLURM job arrays. 
 
 
-### Multi-GPU Evaluation
+### Multi-GPU Evaluation 
 
 NOTE: this is slower than doing fully data parallel evaluation (see previous section)
 
@@ -282,7 +282,7 @@ python -m eval.eval \
 
 ### Output Log Structure
 
-Our generated logs include critical information about each evaluation to help inform your experiments. We highlight important items in our generated logs.
+Our generated logs include critical information about each evaluation to help inform your experiments. We highlight important items in our generated logs. 
 
 - Model Configuration
   - `model`: Model framework used
