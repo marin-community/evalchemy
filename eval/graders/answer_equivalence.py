@@ -18,7 +18,7 @@ from eval.graders.minerva_math import normalize_final_answer
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_NUM_WORKERS = 16
-JUDGE_TOKEN_BUDGETS = (128, 512, 2048)
+JUDGE_MAX_TOKENS = 2048
 
 _Judgment = TypeVar("_Judgment")
 
@@ -149,29 +149,20 @@ async def _complete_judge_prompt(
     prompt: str,
     config: JudgeConfig,
     client: AsyncOpenAI,
-    labels: Sequence[str],
 ) -> str:
-    raw = ""
-    for max_tokens in JUDGE_TOKEN_BUDGETS:
-        response = await client.chat.completions.create(
-            model=config.model,
-            max_tokens=max_tokens,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        normalized = raw.lower()
-        if not raw or (normalized not in labels and any(label.startswith(normalized) for label in labels)):
-            continue
-        return raw
-    return raw
+    response = await client.chat.completions.create(
+        model=config.model,
+        max_tokens=JUDGE_MAX_TOKENS,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 async def judge_prompts(
     prompts: Sequence[str],
     config: JudgeConfig,
     parse_response: Callable[[str], _Judgment],
-    labels: Sequence[str],
     num_workers: int = DEFAULT_NUM_WORKERS,
 ) -> list[_Judgment | BaseException]:
     """Complete and parse independent judge prompts while preserving input order."""
@@ -180,7 +171,6 @@ async def judge_prompts(
     if num_workers < 1:
         raise ValueError("num_workers must be positive")
     semaphore = asyncio.Semaphore(num_workers)
-    normalized_labels = tuple(label.lower() for label in labels)
     async with AsyncOpenAI(
         api_key=config.api_key,
         base_url=config.base_url,
@@ -190,7 +180,7 @@ async def judge_prompts(
 
         async def bound(prompt: str) -> _Judgment:
             async with semaphore:
-                raw = await _complete_judge_prompt(prompt, config, client, normalized_labels)
+                raw = await _complete_judge_prompt(prompt, config, client)
                 return parse_response(raw)
 
         return await asyncio.gather(*(bound(prompt) for prompt in prompts), return_exceptions=True)
@@ -214,7 +204,6 @@ async def judge_equivalence(
         prompts,
         config,
         lambda raw: EquivalenceJudgment(_parse_judgment(raw), raw),
-        labels=tuple(JudgeLabel),
         num_workers=num_workers,
     )
 
