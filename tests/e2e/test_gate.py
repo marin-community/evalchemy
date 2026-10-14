@@ -178,10 +178,10 @@ def _write_results(tmp_path, name, results):
 def test_validate_record_then_check_round_trips(tmp_path):
     res = _write_results(tmp_path, "results_x", _RESULTS)
     out = str(tmp_path / "spec.json")
-    recorded = CliRunner().invoke(cli, ["record", "--finestore-root", res, "--spec", out, "--model", "m"])
+    recorded = CliRunner().invoke(cli, ["record", "--results", res, "--spec", out, "--model", "m"])
     assert recorded.exit_code == 0, recorded.output
     # The run that produced the spec must pass its own gate.
-    checked = CliRunner().invoke(cli, ["check", "--finestore-root", res, "--spec", out])
+    checked = CliRunner().invoke(cli, ["check", "--results", res, "--spec", out])
     assert checked.exit_code == 0, checked.output
 
 
@@ -192,7 +192,7 @@ def test_validate_check_exits_nonzero_on_broken_run(tmp_path):
     }
     res = _write_results(tmp_path, "results_x", broken)
     spec = _write(tmp_path, "spec.json", _SPEC)
-    result = CliRunner().invoke(cli, ["check", "--finestore-root", res, "--spec", spec])
+    result = CliRunner().invoke(cli, ["check", "--results", res, "--spec", spec])
     assert result.exit_code == 1
 
 
@@ -201,13 +201,13 @@ def test_recorded_tolerance_band_catches_drift_a_floor_would_miss(tmp_path):
     # (here 0.30 -> 0.40) must FAIL even though it clears the wide floor.
     res = _write_results(tmp_path, "results_x", _RESULTS)  # strict 0.30, flexible 0.50
     out = str(tmp_path / "spec.json")
-    rec = CliRunner().invoke(cli, ["record", "--finestore-root", res, "--spec", out, "--model", "m", "--tolerance", "0.02"])
+    rec = CliRunner().invoke(cli, ["record", "--results", res, "--spec", out, "--model", "m", "--tolerance", "0.02"])
     assert rec.exit_code == 0, rec.output
-    assert CliRunner().invoke(cli, ["check", "--finestore-root", res, "--spec", out]).exit_code == 0  # its own run passes
+    assert CliRunner().invoke(cli, ["check", "--results", res, "--spec", out]).exit_code == 0  # its own run passes
 
     drifted = dict(_RESULTS)
     drifted["results"] = {
         "gsm8k": {"exact_match,strict-match": 0.40, "exact_match,flexible-extract": 0.50, "sample_len": 20}
     }
     res2 = _write_results(tmp_path, "results_y", drifted)
-    assert CliRunner().invoke(cli, ["check", "--finestore-root", res2, "--spec", out]).exit_code == 1
+    assert CliRunner().invoke(cli, ["check", "--results", res2, "--spec", out]).exit_code == 1

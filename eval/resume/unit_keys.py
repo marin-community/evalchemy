@@ -21,10 +21,9 @@ def find_restored_payload(
     for unit in candidate_units:
         key = canonical_unit_key(unit)
         try:
-            hash(key)
+            payload = restored.get(key)
         except TypeError:
             continue
-        payload = restored.get(key)
         if payload is not None:
             return unit, payload
     return None

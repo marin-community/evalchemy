@@ -423,7 +423,7 @@ def main(
         _record_completed_work(results, cfg.tasks, evaluation_duration)
         click.echo("\n" + summarize(results, cfg.tasks))
         click.echo(f"\nfinestore: {output_dir}")
-        click.echo(f"to gate: python -m eval.regression.validate check --finestore-root {output_dir} --spec <spec.json>")
+        click.echo(f"to gate: python -m eval.regression.validate check --results {output_dir} --spec <spec.json>")
     finally:
         shutdown_telemetry()
 

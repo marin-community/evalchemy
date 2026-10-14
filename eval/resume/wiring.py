@@ -76,11 +76,11 @@ def build_resume_wiring(args: Any, lm: Any) -> Callable[[str], FineStoreResumeMa
     Returns the factory (also set as ``args.resume_manager_factory``) so the
     caller can ``attach_resume_manager`` to chat benchmark instances.
     """
-    mode = getattr(args, "resume_mode", "auto") or "auto"
+    mode = args.resume_mode
     if mode == "off":
         raise ValueError("FineStore resume cannot be disabled")
 
-    finestore_output_path = getattr(args, "finestore_output_path", None)
+    finestore_output_path = args.finestore_output_path
     if not finestore_output_path:
         raise ValueError("--finestore_output_path is required for resume")
 

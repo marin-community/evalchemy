@@ -119,6 +119,6 @@ evaluation output or exit status.
 To gate a run's scores against a checked-in spec, hand its FineStore root to the gate:
 
 ```bash
-uv run python -m eval.regression.validate check --finestore-root <output-dir> \
+uv run python -m eval.regression.validate check --results <output-dir> \
     --spec eval/regression/specs/qwen3-0.6b.json
 ```
