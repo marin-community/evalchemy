@@ -488,5 +488,5 @@ envelope. Custom benchmarks retain their input document in `doc` and their raw
 and normalized completion in `resps` and `filtered_resps`; lm-eval-native tasks
 retain their native fields unchanged. FineStore's `evalchemy_resume` table
 stores completed request payloads; retries restore them by default. A completed
-result is reused without rerunning the task. A changed fingerprint raises an
+result is preserved on retry. A changed fingerprint raises an
 error. Use a new archive path for an intentional fresh evaluation.
