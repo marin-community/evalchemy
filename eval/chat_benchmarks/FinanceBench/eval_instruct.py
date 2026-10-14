@@ -73,6 +73,9 @@ class FinanceBenchBenchmark(BaseBenchmark):
         judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
+        verifyit_judge_policy: str = "source_whole_label_nontext_empty_v1",
+        verifyit_timeout: float = 300,
     ):
         """
         Initialize FinanceBench benchmark.
@@ -94,6 +97,9 @@ class FinanceBenchBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model.
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
+        self.verifyit_judge_policy = verifyit_judge_policy
+        self.verifyit_timeout = verifyit_timeout
         self.data_file = data_file
         self.debug = debug
         self.seed = seed
@@ -176,17 +182,22 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.logger.info(
             f"Judging {total} FinanceBench responses with {judge_model}..."
         )
+        equivalence_judge = judge_equivalence
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import judge_equivalence as verifyit_judge
+            equivalence_judge = verifyit_judge
         judgments = asyncio.run(
-            judge_equivalence(
+            equivalence_judge(
                 [
                     EquivalenceRequest(
-                        question=example["question"],
-                        reference_answers=(str(example["answer"]),),
-                        candidate_answer=example.get("model_output", "") or "",
+                        question=(example.get("question") if self.verifyit_enabled else example["question"]),
+                        reference_answers=((example.get("answer") if self.verifyit_enabled else str(example["answer"])),),
+                        candidate_answer=(example.get("model_output") if self.verifyit_enabled else example.get("model_output", "") or ""),
                     )
                     for example in examples
                 ],
                 judge_config,
+                **({"policy": self.verifyit_judge_policy, "timeout": self.verifyit_timeout} if self.verifyit_enabled else {}),
             )
         )
 
@@ -216,15 +227,17 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
             assert isinstance(judgment, EquivalenceJudgment)
             label = judgment.label
+            if self.verifyit_enabled:
+                example["verifyit_grade"] = asdict(judgment)
             example["judge_label"] = label.value
             example["judge_raw"] = judgment.raw
             record_sample_metrics(
                 example,
-                accuracy=label == JudgeLabel.CORRECT,
+                accuracy=(judgment.verdict.reward if self.verifyit_enabled else label == JudgeLabel.CORRECT),
                 not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
                 judge_failed=False,
             )
-            if label == JudgeLabel.CORRECT:
+            if (judgment.verdict.reward == 1 if self.verifyit_enabled else label == JudgeLabel.CORRECT):
                 num_correct += 1
             elif label == JudgeLabel.NOT_ATTEMPTED:
                 num_not_attempted += 1

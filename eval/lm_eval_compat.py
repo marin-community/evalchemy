@@ -76,6 +76,11 @@ def setup_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--model", "-m", type=str, default="hf", help="Name of model e.g. `hf`")
     parser.add_argument(
+        "--verifyit_harness",
+        action="store_true",
+        help="Use native verifyit grading for harness tasks; reject unsupported contracts.",
+    )
+    parser.add_argument(
         "--tasks",
         "-t",
         default=None,

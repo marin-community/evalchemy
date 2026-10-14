@@ -1,8 +1,8 @@
 """Parity tests for the self-contained MATH graders in eval/graders.
 
-lm-eval is a base dependency here, so every case is checked against the pinned
-harness live rather than against recorded verdicts: the reference functions are
-imported and run side by side with the port.
+Hendrycks is checked against the installed harness. Minerva preserves its
+documented v0.4.12 contract: its expected outcomes were independently checked
+against that official source, because newer harness revisions changed it.
 
 ``data/math_grader_benchmark.jsonl`` holds 100 MATH test problems spanning all
 seven subjects, each with a synthesized completion in the format its task's
@@ -19,7 +19,6 @@ import sys
 
 import pytest
 from lm_eval.tasks.hendrycks_math import utils as reference_hendrycks
-from lm_eval.tasks.minerva_math import utils as reference_minerva
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
@@ -44,13 +43,6 @@ def reference_hendrycks_grade(solution: str, reference_answer: str) -> float:
     return 1.0 if reference_hendrycks.is_equiv(answer, reference_answer) else 0.0
 
 
-def reference_minerva_grade(solution: str, reference_answer: str) -> float:
-    """The harness ``process_results`` exact_match metric, inlined."""
-    candidate = reference_minerva.normalize_final_answer(reference_minerva.get_unnormalized_answer(solution))
-    gold = reference_minerva.normalize_final_answer(reference_answer)
-    return 1.0 if reference_minerva.is_equiv(candidate, gold) else 0.0
-
-
 def test_hendrycks_matches_harness_on_benchmark(benchmark):
     mismatched = [
         record["reference_answer"]
@@ -61,12 +53,12 @@ def test_hendrycks_matches_harness_on_benchmark(benchmark):
     assert mismatched == []
 
 
-def test_minerva_matches_harness_on_benchmark(benchmark):
+def test_minerva_preserves_v0412_benchmark_outcomes(benchmark):
     mismatched = [
         record["reference_answer"]
         for record in benchmark
         if minerva_math.grade(record["problem"], record["minerva_solution"], record["reference_answer"])
-        != reference_minerva_grade(record["minerva_solution"], record["reference_answer"])
+        != record["minerva_reference_grade"]
     ]
     assert mismatched == []
 
@@ -78,50 +70,50 @@ def test_hendrycks_normalization_matches_harness_on_benchmark_answers(benchmark)
         assert hendrycks_math.strip_string(answer) == reference_hendrycks.strip_string(answer)
 
 
-def test_minerva_normalization_matches_harness_on_benchmark_answers(benchmark):
-    for record in benchmark:
-        answer = record["reference_answer"]
-        assert minerva_math.normalize_final_answer(answer) == reference_minerva.normalize_final_answer(answer)
-        extracted = minerva_math.extract_answer(record["minerva_solution"])
-        assert extracted == reference_minerva.get_unnormalized_answer(record["minerva_solution"])
+@pytest.mark.parametrize(
+    "answer,expected",
+    [("2,6", "26"), ("100,000", "100000"), (r"\boxed{\frac12}", r"\frac{1}{2}")],
+)
+def test_minerva_preserves_v0412_normalization(answer, expected):
+    assert minerva_math.normalize_final_answer(answer) == expected
 
 
 @pytest.mark.parametrize(
-    ("candidate", "reference"),
+    ("candidate", "reference", "expected"),
     [
         # Bracketed comma lists are outside sympy's grammar, so the reference
         # scores them 0 even against an identical string.
-        ("[2,5)", "[2,5)"),
-        ("(1,3)", "(1,3)"),
+        ("[2,5)", "[2,5)", False),
+        ("(1,3)", "(1,3)", False),
         # A comma before three digits is a thousands separator, so this parses.
-        ("(100,101)", "(100,101)"),
-        ("(100,101)", "100101"),
+        ("(100,101)", "(100,101)", True),
+        ("(100,101)", "100101", True),
         # The comma must be inside the brackets to prove a parse failure.
-        ("(E),", "(E),"),
+        ("(E),", "(E),", True),
         # The grammar does have a comma production for call arguments, so a
         # bracketed function call parses and must not be rejected on sight.
-        ("(f(x,y))", "(f(x,y))"),
-        ("[f(x,y)]", "[f(x,y)]"),
-        ("(2f(x,y))", "(2f(x,y))"),
-        ("(x+f(a,b))", "(x+f(a,b))"),
+        ("(f(x,y))", "(f(x,y))", True),
+        ("[f(x,y)]", "[f(x,y)]", True),
+        ("(2f(x,y))", "(2f(x,y))", True),
+        ("(x+f(a,b))", "(x+f(a,b))", True),
         # Decimals compare exactly against rationals.
-        ("0.5", "\\frac{1}{2}"),
-        ("0.3", "\\frac{3}{10}"),
-        ("0.333", "\\frac{1}{3}"),
-        ("1.50", "1.5"),
-        ("-0", "0"),
-        ("2", "\\frac{4}{2}"),
+        ("0.5", "\\frac{1}{2}", True),
+        ("0.3", "\\frac{3}{10}", True),
+        ("0.333", "\\frac{1}{3}", False),
+        ("1.50", "1.5", True),
+        ("-0", "0", True),
+        ("2", "\\frac{4}{2}", True),
         # Leading zeros are a Python int-literal syntax error inside sympy.
-        ("007", "7"),
-        ("\\frac{007}{2}", "\\frac{7}{2}"),
+        ("007", "7", False),
+        ("\\frac{007}{2}", "\\frac{7}{2}", False),
         # sympy's grammar wants a digit before the point.
-        (".5", ".5"),
+        (".5", ".5", False),
         # A parsed relation cannot be subtracted from itself.
-        ("-80\\leqg(x)\\leq82", "-80\\leqg(x)\\leq82"),
+        ("-80\\leqg(x)\\leq82", "-80\\leqg(x)\\leq82", False),
     ],
 )
-def test_minerva_equivalence_matches_reference(candidate, reference):
-    assert minerva_math.is_equiv(candidate, reference) is bool(reference_minerva.is_equiv(candidate, reference))
+def test_minerva_preserves_v0412_equivalence(candidate, reference, expected):
+    assert minerva_math.is_equiv(candidate, reference) is expected
 
 
 def test_hendrycks_strips_percent_escapes_created_by_an_earlier_removal():

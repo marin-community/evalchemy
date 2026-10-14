@@ -75,8 +75,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
+      - name: Build the pinned LiveBench candidate runtime
+        run: docker build -t verifyit-evalchemy-livebench:source-v1 -f eval/graders/livebench_runtime/Dockerfile .
       - name: Run grader parity tests
-        run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
+        run: uv run --python 3.12 --extra dev --extra verifyit --extra ifeval --extra ifbench --extra livebench pytest tests/graders/ -q
 
   contracts:
     # The framework-wide task contracts, including the per-sample metrics every

@@ -37,6 +37,7 @@ class IFBenchBenchmark(BaseBenchmark):
         max_tokens: int = 1024,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """Initialize the IFBench instruction-following benchmark.
 
@@ -48,6 +49,7 @@ class IFBenchBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model.
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.num_examples = num_examples
         self.debug = debug
         self.max_tokens = max_tokens
@@ -161,7 +163,12 @@ class IFBenchBenchmark(BaseBenchmark):
         """
         temp_dir_obj = results["temp_dir_obj"]
         try:
-            result = evaluate_accuracy(results["output_path"])
+            if self.verifyit_enabled:
+                from eval.graders.verifyit_instructions import evaluate_accuracy as verifyit_accuracy
+
+                result = verifyit_accuracy(results["output_path"], "IFBench")
+            else:
+                result = evaluate_accuracy(results["output_path"])
             per_prompt = result.pop(PER_PROMPT_OUTCOMES)
             examples = results["examples"]
             if len(per_prompt) != len(examples):

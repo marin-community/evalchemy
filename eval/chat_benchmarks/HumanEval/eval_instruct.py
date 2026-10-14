@@ -29,6 +29,8 @@ class HumanEvalBenchmark(BaseBenchmark):
         debug: bool = False,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_shell_enabled: bool = False,
+        verifyit_shell_policy: str = "isolated_first_shell_function_v2",
     ):
         """
         Initialize HumanEval benchmark.
@@ -46,6 +48,8 @@ class HumanEvalBenchmark(BaseBenchmark):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.languages = languages
         self.data_dir = data_dir
+        self.verifyit_shell_enabled = verifyit_shell_enabled
+        self.verifyit_shell_policy = verifyit_shell_policy
         self.max_tokens = max_tokens
         self.num_workers = num_workers
         self.timeout = timeout
@@ -160,21 +164,29 @@ Please continue to complete the function. You are not allowed to modify the give
         evaluation_results = {}
 
         for lang in self.languages:
+            shell_enabled = self.verifyit_shell_enabled and lang == "sh"
+            grader = evaluate_functional_correctness
+            if shell_enabled:
+                from eval.graders.verifyit_shell_evaluation import evaluate_functional_correctness as grade_shell
+                grader = grade_shell
             try:
                 problem_file = os.path.join(self.data_dir, f"humaneval-{lang}.jsonl")
                 temp_file_path = os.path.join(temp_dir, f"generated_{lang}.jsonl")
 
                 if not os.path.exists(temp_file_path):
+                    if shell_enabled:
+                        raise ValueError("Missing generated source language file")
                     self.logger.warning(f"Generated file not found: {temp_file_path}")
                     continue
 
-                result = evaluate_functional_correctness(
+                result = grader(
                     input_file=temp_file_path,
                     tmp_dir=temp_dir,
                     n_workers=self.num_workers,
                     timeout=self.timeout,
                     problem_file=problem_file,
                     language=lang,
+                    **({"shell_policy": self.verifyit_shell_policy} if shell_enabled else {}),
                 )
 
                 # HumanEval persists no sample records, so the per-task outcomes its
@@ -187,6 +199,9 @@ Please continue to complete the function. You are not allowed to modify the give
                 self.logger.info(f"Completed evaluation for {lang}")
 
             except Exception as e:
+                if shell_enabled:
+                    temp_dir_obj.cleanup()
+                    raise
                 self.logger.error(f"Error evaluating {lang}: {str(e)}")
                 continue
 

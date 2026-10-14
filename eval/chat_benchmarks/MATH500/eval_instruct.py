@@ -41,6 +41,7 @@ class MATH500Benchmark(BaseBenchmark):
         system_instruction: Optional[str] = None,
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize MATH500 benchmark.
@@ -55,11 +56,9 @@ class MATH500Benchmark(BaseBenchmark):
             pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
         """
         super().__init__(
-            logger=logger,
-            system_instruction=system_instruction,
-            num_samples=num_samples,
-            pass_at_k=pass_at_k,
+            logger=logger, system_instruction=system_instruction, num_samples=num_samples, pass_at_k=pass_at_k
         )
+        self.verifyit_enabled = verifyit_enabled
         self.data_file = data_file
         self.debug = debug
         self.seed = seed
@@ -173,39 +172,39 @@ class MATH500Benchmark(BaseBenchmark):
         if results is None:
             return None
 
+        equivalent = math_answers_equivalent
+        if self.verifyit_enabled:
+            from eval.graders.answer_equivalence import verifyit_math_answers_equivalent
+
+            equivalent = verifyit_math_answers_equivalent
         examples = results["examples"]
+        if self.verifyit_enabled:
+            from verifyit.grade import InvalidTask
+
+            if not examples or any(type(example.get("answer")) not in (str, int) for example in examples):
+                raise InvalidTask("MATH500 requires nonempty examples with trusted string or integer references")
+            for example in examples:
+                equivalent("", [str(example["answer"])])
+
         total = len(examples)
 
         # ---- native pass@k aggregation (Stage 2b) ----
         if results.get("pass_at_k"):
-            num_correct = [
-                sum(math_answers_equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"]) for ex in examples
-            ]
+            num_correct = [sum(equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"]) for ex in examples]
             self.record_pass_at_k_metrics(examples, num_correct)
             pass_at_k_table = self.aggregate_pass_at_k(num_correct)
             results.update(
-                {
-                    "num_total": total,
-                    "num_samples": self.num_samples,
-                    "num_correct": num_correct,
-                    **pass_at_k_table,
-                }
+                {"num_total": total, "num_samples": self.num_samples, "num_correct": num_correct, **pass_at_k_table}
             )
             return results
 
         solved = 0
         for example in examples:
-            correct = math_answers_equivalent(example["model_answer"], [str(example["answer"])])
+            correct = equivalent(example["model_answer"], [str(example["answer"])])
             record_sample_metrics(example, accuracy=correct)
             solved += correct
 
-        results.update(
-            {
-                "num_total": total,
-                "num_solved": solved,
-                "accuracy": solved / total,
-            }
-        )
+        results.update({"num_total": total, "num_solved": solved, "accuracy": solved / total})
 
         return results
 

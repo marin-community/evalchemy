@@ -81,6 +81,10 @@ class JEEBenchBenchmark(BaseBenchmark):
         max_tokens: int = 32768,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
+        verifyit_policy: str = "source_case_sensitive_ad_membership_python_float_abs_001_v1",
+        verifyit_boxed_policy: str = "source_last_boxed_remove_boxed_nontext_empty_v1",
+        verifyit_timeout: float = 30,
     ):
         """
         Initialize JEEBench benchmark.
@@ -95,6 +99,12 @@ class JEEBenchBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.seed = seed
         self.n_repeat = 3
+        if not isinstance(verifyit_enabled, bool):
+            raise ValueError("verifyit_enabled must be a boolean")
+        self.verifyit_enabled = verifyit_enabled
+        self.verifyit_policy = verifyit_policy
+        self.verifyit_boxed_policy = verifyit_boxed_policy
+        self.verifyit_timeout = verifyit_timeout
 
         self.prompt_library = prompt_for_boxed_answer(PROMPT_LIBRARY)
 
@@ -178,15 +188,24 @@ class JEEBenchBenchmark(BaseBenchmark):
         if results is None:
             return None
 
-        examples = results["examples"]
-        num_questions = len(examples)
+        examples = results.get("examples") if self.verifyit_enabled else results["examples"]
 
-        # Calculate accuracy for each example and repetition
-        for example in examples:
-            example["score"] = [
-                compute_score(example["gold"], example["model_answers"][i], example["type"])
-                for i in range(self.n_repeat)
-            ]
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_jee import grade_batch
+            records = grade_batch(examples, self.n_repeat, policy=self.verifyit_policy,
+                                  boxed_policy=self.verifyit_boxed_policy, timeout=self.verifyit_timeout)
+            for example, record in zip(examples, records, strict=True):
+                example["score"] = [verdict["reward"] for verdict in record["verdicts"]]
+                example["verifyit_grades"] = record
+        else:
+            # Calculate accuracy for each example and repetition
+            for example in examples:
+                example["score"] = [
+                    compute_score(example["gold"], example["model_answers"][i], example["type"])
+                    for i in range(self.n_repeat)
+                ]
+
+        num_questions = len(examples)
 
         # Calculate accuracy for each repetition
         all_results = []

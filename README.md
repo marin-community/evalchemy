@@ -98,6 +98,84 @@ uv run huggingface-cli login
 > Prefer conda/pip? `pip install -e .` still works from an activated environment,
 > but `uv sync` is the supported path and is what CI uses.
 
+### Opt-in instruction grading with verifyit
+
+Install the pinned core and instruction dependencies with
+`uv sync --python 3.12 --extra verifyit --extra ifeval --extra ifbench`.
+Pass `verifyit_enabled=True` when constructing the IFEval or IFBench evaluator;
+leaving it unset preserves the source grading path. Existing response files can
+also be graded with
+`eval.graders.verifyit_instructions.evaluate_accuracy(path, "IFEval")` (or
+`"IFBench"`). This returns the same strict/loose protocol metrics.
+
+IFEval observations use shared core preparation and Schema/IFEval comparisons;
+IFBench retains its 58 observation mappings and delegates comparisons to core
+primitives. Language detection failure and malformed candidate JSON cannot earn
+credit. The `verifyit` extra and committed `uv.lock` pin the immutable core revision
+declared in `pyproject.toml`.
+
+Other custom benchmarks accept the same `verifyit_enabled=True` constructor option:
+
+| Benchmarks | Enabled comparison |
+| --- | --- |
+| AIW, AMC23 | Source-normalized Exact |
+| GSM8K-Perturbed | Numeric with zero tolerance |
+| AIME24, AIME25, MATH500 | Math with strict extraction and MAX alternatives |
+| JEEBench | Source boxed preparation, choice credit and Numeric |
+| OlympiadBenchDeterministic | Math/MAX with no judge |
+| FinanceBench, SimpleQA/Mini, OlympiadBench/Full | [Judge and Math policies](eval/graders/verifyit_judges.md) |
+| LiveBench | [Pinned runtime and supported source routes](eval/graders/livebench_runtime/README.md) |
+
+Omitting the option preserves native grading. Invalid trusted references abort
+before metrics are committed; candidate zero scores remain successful results.
+The separate CLI flag `--verifyit_harness` selects the pinned harness's supported
+native mappings and rejects unsupported contracts.
+
+### Opt-in HumanEval shell grading
+
+Install `evalchemy[humaneval,verifyit]` and build the candidate image:
+
+```bash
+docker build -t verifyit-code:python-v1 eval/graders/code_runtime
+```
+
+Enable shell grading through the task manager's Python API:
+
+```python
+from eval.task import TaskManager
+
+manager = TaskManager(
+    task_list=["HumanEval"],
+    languages=["sh"],
+    verifyit_shell_enabled=True,
+    verifyit_shell_policy="isolated_first_shell_function_v2",
+)
+benchmark = manager.benchmark_instances["HumanEval"]
+results = benchmark.run_benchmark(model)  # An existing lm_eval LM instance.
+```
+
+The default `verifyit_shell_enabled=False` retains native grading. The flag
+changes only `sh`; other selected languages continue through the native grader.
+It is a Python configuration option, not the CLI's separate `--verifyit_harness`
+flag. Unknown shell policies fail before candidate execution. Each sample shares its
+timeout across reference preparation, image inspection and protected execution;
+container cleanup has its separate bounded allowance. Time spent queued behind
+other samples does not consume that sample's budget.
+
+The v2 policy parses the entire extracted source with Bash, imports its first
+entry-function definition, and invokes that function in a fresh isolated shell
+for each trusted call. It ignores newline-separated trailing helpers, global
+assignments and redefinitions; same-line trailing commands are rejected. Helpers
+inside the entry function remain available. Source initialization never runs.
+Shell startup variables are sanitized. Function output bytes and exit status are
+returned to protected trusted Bash assertions; a function's `exit 125` is an
+observable status rather than an exit from the trusted test process.
+
+This policy changes native source semantics, including shared state between
+calls. Syntax/import failures score zero even if trusted tests ignore shell
+errors. Invalid trusted references and infrastructure failures remain errors.
+One completion per task and pass@1 are supported; other k requests are rejected.
+
 ## 📚 Available Tasks
 
 ### Built-in Benchmarks

@@ -53,6 +53,7 @@ class LiveBenchBenchmark(BaseBenchmark):
         max_tokens: int = 4096,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize LiveBench benchmark.
@@ -63,6 +64,7 @@ class LiveBenchBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.dataset_name = dataset_name
         self.question_source = question_source
         self.do_sample = do_sample
@@ -288,6 +290,14 @@ class LiveBenchBenchmark(BaseBenchmark):
         Returns:
             Dictionary containing evaluation metrics
         """
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_livebench import JudgmentBatch
+
+            with JudgmentBatch(results) as batch:
+                return self._evaluate_responses(results, batch)
+        return self._evaluate_responses(results, gen_judgments)
+
+    def _evaluate_responses(self, results, grade_judgments):
         model_name = results[0]["model_id"]
         all_results = []
         question_to_date = {}
@@ -309,6 +319,10 @@ class LiveBenchBenchmark(BaseBenchmark):
                     task_full_name = f"{LIVE_BENCH_DATA_SUPER_PATH}/{category_name}/{task_name}"
                     output_file = f"{self.data_path}/{task_full_name}/model_judgment/ground_truth_judgment.jsonl"
                     answer_dir = f"{self.data_path}/{task_full_name}/model_answer/"
+                    if self.verifyit_enabled and not questions:
+                        if os.path.exists(output_file):
+                            os.remove(output_file)
+                        continue
                     if len(questions) > 0:
                         for question in questions:
                             question_to_date[question["question_id"]] = {
@@ -316,7 +330,7 @@ class LiveBenchBenchmark(BaseBenchmark):
                                 "livebench_release_date": question["livebench_release_date"],
                             }
                         print(f"Judgmenet file wrote: {output_file}")
-                        gen_judgments(
+                        grade_judgments(
                             parallel=self.num_workers,
                             questions=questions,
                             output_file=output_file,
@@ -359,7 +373,7 @@ class LiveBenchBenchmark(BaseBenchmark):
                 answer_dir = f"{self.data_path}/{bench_name}/model_answer/"
 
                 if len(questions) > 0:
-                    gen_judgments(
+                    grade_judgments(
                         parallel=self.num_workers,
                         questions=questions,
                         output_file=output_file,
@@ -374,6 +388,10 @@ class LiveBenchBenchmark(BaseBenchmark):
         else:
             raise ValueError(f"Bad question source {self.question_source}.")
 
+        if self.verifyit_enabled and not all_results:
+            from verifyit.grade import InvalidTask
+
+            raise InvalidTask("LiveBench has no eligible questions")
         print("Finished evaluating, calculating metrics")
         # After getting all results, calculate metrics
         metrics = {}

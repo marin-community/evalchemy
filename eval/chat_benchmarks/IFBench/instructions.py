@@ -80,6 +80,11 @@ _NUM_INCREMENT = 5
 _NUM_CONJUNCTIONS = 6
 
 
+PERSON_NAMES = ['Emma', 'Liam', 'Sophia', 'Jackson', 'Olivia', 'Noah', 'Ava', 'Lucas', 'Isabella', 'Mason', 'Mia', 'Ethan', 'Charlotte', 'Alexander', 'Amelia', 'Benjamin', 'Harper', 'Leo', 'Zoe', 'Daniel', 'Chloe', 'Samuel', 'Lily', 'Matthew', 'Grace', 'Owen', 'Abigail', 'Gabriel', 'Ella', 'Jacob', 'Scarlett', 'Nathan', 'Victoria', 'Elijah', 'Layla', 'Nicholas', 'Audrey', 'David', 'Hannah', 'Christopher', 'Penelope', 'Thomas', 'Nora', 'Andrew', 'Aria', 'Joseph', 'Claire', 'Ryan', 'Stella', 'Jonathan']
+PRONOUNS = frozenset(['all', 'any', 'anybody', 'anyone', 'anything', 'both', 'each', 'either', 'everybody', 'everyone', 'everything', 'he', 'her', 'hers', 'herself', 'him', 'himself', 'his', 'i', 'it', 'its', 'itself', 'me', 'mine', 'my', 'myself', 'neither', 'nobody', 'none', 'nothing', 'our', 'ours', 'ourselves', 'she', 'some', 'somebody', 'someone', 'something', 'that', 'their', 'theirs', 'them', 'themselves', 'these', 'they', 'this', 'those', 'us', 'we', 'what', 'whatever', 'which', 'whichever', 'who', 'whoever', 'whom', 'whomever', 'whose', 'you', 'your', 'yours', 'yourself', 'yourselves'])
+EUROPEAN_CAPITALS = ['Reykjavik', 'Helsinki', 'Oslo', 'Tallinn', 'Stockholm', 'Riga', 'Moscow', 'Copenhagen', 'Vilnius', 'Minsk', 'Dublin', 'Berlin', 'Amsterdam', 'Warsaw', 'London', 'Brussels', 'Prague', 'Luxembourg', 'Paris', 'Vienna', 'Bratislava', 'Budapest', 'Vaduz', 'Chisinau', 'Bern', 'Ljubljana', 'Zagreb']
+
+
 class Instruction:
 	"""An instruction template."""
 
@@ -352,46 +357,7 @@ class PersonNameCountChecker(Instruction):
 
 	def check_following(self, value):
 		"""Checks if the response contains at least the expected number of unique person names."""
-		person_name_list = ["Emma", "Liam", "Sophia", "Jackson", "Olivia", "Noah", "Ava", "Lucas", "Isabella", "Mason",
-							"Mia", "Ethan", "Charlotte",
-							"Alexander",
-							"Amelia",
-							"Benjamin",
-							"Harper",
-							"Leo",
-							"Zoe",
-							"Daniel",
-							"Chloe",
-							"Samuel",
-							"Lily",
-							"Matthew",
-							"Grace",
-							"Owen",
-							"Abigail",
-							"Gabriel",
-							"Ella",
-							"Jacob",
-							"Scarlett",
-							"Nathan",
-							"Victoria",
-							"Elijah",
-							"Layla",
-							"Nicholas",
-							"Audrey",
-							"David",
-							"Hannah",
-							"Christopher",
-							"Penelope",
-							"Thomas",
-							"Nora",
-							"Andrew",
-							"Aria",
-							"Joseph",
-							"Claire",
-							"Ryan",
-							"Stella",
-							"Jonathan"
-							]
+		person_name_list = PERSON_NAMES
 		# Extract the named entities
 		person_names = []
 		for name in person_name_list:
@@ -1132,23 +1098,7 @@ class PronounCountChecker(Instruction):
 
 	def check_following(self, value):
 		"""Checks if the response includes at least {N} pronouns."""
-		pronouns = set([
-			# Personal (subject / object)
-			'i', 'me', 'we', 'us', 'you', 'he', 'him', 'she', 'her', 'it', 'they', 'them',
-			# Possessive (determiner + independent)
-			'my', 'mine', 'our', 'ours', 'your', 'yours', 'his', 'her', 'hers', 'its', 'their', 'theirs',
-			# Reflexive
-			'myself', 'ourselves', 'yourself', 'yourselves', 'himself', 'herself', 'itself', 'themselves',
-			# Demonstrative
-			'this', 'that', 'these', 'those',
-			# Interrogative
-			'who', 'whom', 'whose', 'which', 'what',
-			# Relative / compound interrogative
-			'whoever', 'whomever', 'whatever', 'whichever',
-			# Indefinite
-			'anybody', 'anyone', 'anything', 'everybody', 'everyone', 'everything',
-			'nobody', 'nothing', 'somebody', 'someone', 'something',
-			'each', 'either', 'neither', 'both', 'all', 'some', 'any', 'none'])
+		pronouns = PRONOUNS
 		value = value.replace('/',
 							  ' ')  # to correctly count pronoun sets like she/her/hers, a common use case of pronouns
 		# Use NLTK word_tokenize for better tokenization
@@ -1727,9 +1677,7 @@ class EuropeanCapitalsSortChecker(Instruction):
 
 	def check_following(self, value):
 		"""Checks if the response lists the relevant capitals of Europe in correct order."""
-		order = ["Reykjavik", "Helsinki", "Oslo", "Tallinn", "Stockholm", "Riga", "Moscow", "Copenhagen", "Vilnius",
-				 "Minsk", "Dublin", "Berlin", "Amsterdam", "Warsaw", "London", "Brussels", "Prague", "Luxembourg",
-				 "Paris", "Vienna", "Bratislava", "Budapest", "Vaduz", "Chisinau", "Bern", "Ljubljana", "Zagreb"]
+		order = EUROPEAN_CAPITALS
 
 		def normalize_text(text):
 			"""

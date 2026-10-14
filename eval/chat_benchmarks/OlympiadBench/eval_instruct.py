@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import asdict
@@ -136,6 +137,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         annotator_model: Optional[str] = None,
         judge_api_key: Optional[str] = None,
         judge_base_url: Optional[str] = None,
+        verifyit_enabled: bool = False,
+        verifyit_judge_policy: str = "source_whole_label_nontext_empty_v1",
+        verifyit_timeout: float = 300,
     ):
         """
         Initialize OlympiadBench benchmark.
@@ -164,6 +168,9 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             pass_at_k=pass_at_k,
         )
         self.data_file = data_file
+        self.verifyit_enabled = verifyit_enabled
+        self.verifyit_judge_policy = verifyit_judge_policy
+        self.verifyit_timeout = verifyit_timeout
         self.dataset_name = dataset_name
         self.dataset_revision = dataset_revision
         self.dataset_split = dataset_split
@@ -419,18 +426,31 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         requests = []
         positions = []
         for example_index, (example, answers) in enumerate(zip(examples, answers_by_example, strict=True)):
-            references = tuple(_flatten_reference_answers(example["answer"]))
+            references = example.get("answer") if self.verifyit_enabled else tuple(_flatten_reference_answers(example["answer"]))
             for answer_index, answer in enumerate(answers):
-                requests.append(
-                    EquivalenceRequest(
+                if self.verifyit_enabled:
+                    from eval.graders.verifyit_judges import capture_judge_input
+                    outputs = example.get("model_outputs")
+                    raw_output = (outputs[answer_index] if outputs is not None else example.get("model_output"))
+                    has_response = outputs is not None or "model_output" in example
+                    requests.append(capture_judge_input(
+                        example.get("problem", example.get("question")), references,
+                        raw_output if has_response else answer,
+                        candidate_stage="response" if has_response else "extracted_answer",
+                    ))
+                else:
+                    requests.append(EquivalenceRequest(
                         question=str(example.get("problem", example.get("question", ""))),
-                        reference_answers=references,
-                        candidate_answer=answer,
-                    )
-                )
+                        reference_answers=references, candidate_answer=answer,
+                    ))
                 positions.append((example_index, answer_index))
 
-        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
+        if self.verifyit_enabled:
+            from eval.graders.verifyit_judges import grade_raw
+            outcomes = asyncio.run(grade_raw(requests, self.judge_config, "olympiad",
+                                             policy=self.verifyit_judge_policy, timeout=self.verifyit_timeout))
+        else:
+            outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
         correct_by_example = [[False] * len(answers) for answers in answers_by_example]
         grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
         num_graded_by_minerva = 0
@@ -457,6 +477,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 continue
 
             assert isinstance(outcome, EquivalenceResult)
+            if self.verifyit_enabled:
+                examples[example_index].setdefault("verifyit_grades", []).append(asdict(outcome))
             correct_by_example[example_index][answer_index] = outcome.equivalent
             if outcome.method == EquivalenceMethod.MINERVA:
                 num_graded_by_minerva += 1

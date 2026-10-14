@@ -30,11 +30,21 @@ class FailureCategory(StrEnum):
     GENERATION_POLICY = "generation_policy"
     GENERATION = "generation"
     GRADER_INFRASTRUCTURE = "grader_infrastructure"
+    INVALID_TASK = "invalid_task"
     SAMPLE_EXECUTION = "sample_execution"
     GRADING = "grading"
     INCOMPLETE_EVALUATION = "incomplete_evaluation"
     SERIALIZATION = "serialization"
     INVALID_RESULT = "invalid_result"
+
+
+class GradingBoundaryError(RuntimeError):
+    """Owned grading failure preserving the primitive terminal verdict."""
+
+    def __init__(self, failure: dict, verdict: dict):
+        super().__init__(failure["message"])
+        self.failure = failure
+        self.verdict = verdict
 
 
 class ModelRequestValidationError(ValueError):
@@ -71,6 +81,9 @@ def transport_error_types() -> tuple[type[BaseException], ...]:
 
 def classify_task_exception(phase: FailurePhase, exception: BaseException) -> FailureCategory:
     """Map escaped exceptions onto the benchmark-independent failure taxonomy."""
+    if isinstance(exception, GradingBoundaryError):
+        return (FailureCategory.INVALID_TASK if exception.verdict["status"] == "invalid_task"
+                else FailureCategory.GRADER_INFRASTRUCTURE)
     if phase is FailurePhase.PREPARATION:
         if isinstance(exception, (FileNotFoundError, ModuleNotFoundError, ImportError)):
             return FailureCategory.RESOURCE

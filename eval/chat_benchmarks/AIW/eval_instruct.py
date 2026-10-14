@@ -1,16 +1,27 @@
 import json
 import logging
 import os
-import numpy as np
 import re
 from typing import Any, Dict, List, Optional
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv
-
+import numpy as np
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
+from lm_eval.api.instance import Instance
+from lm_eval.api.model import LM
+from lm_eval.tasks.hendrycks_math.utils import is_equiv, strip_string
+
+
+def verifyit_equivalent(reference, candidate):
+    from verifyit.adapters.harness_math_literal import grade_normalized_math, validate_hendrycks_normalizer
+    from verifyit.grade import InvalidTask, Status
+
+    if not validate_hendrycks_normalizer(strip_string):
+        raise InvalidTask("AIW source normalizer differs from the pinned contract")
+    verdict = grade_normalized_math(reference, candidate, strip_string)
+    if verdict.status is not Status.SCORED:
+        raise InvalidTask(str(verdict.detail))
+    return verdict.reward == 1
 
 
 class AIWBenchmark(BaseBenchmark):
@@ -18,7 +29,26 @@ class AIWBenchmark(BaseBenchmark):
     AIW Benchmark for evaluating the math reasoning of LLMs.
     """
 
-    TARGET_IDS = {577, 580, 581, 582, 583, 584, 559, 560, 561, 562, 563, 564, 637, 638, 639, 640, 641, 642}
+    TARGET_IDS = {
+        577,
+        580,
+        581,
+        582,
+        583,
+        584,
+        559,
+        560,
+        561,
+        562,
+        563,
+        564,
+        637,
+        638,
+        639,
+        640,
+        641,
+        642,
+    }
 
     def __init__(
         self,
@@ -29,6 +59,7 @@ class AIWBenchmark(BaseBenchmark):
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
         n_trials: int = 100,  # Run 100 trials
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize AIW benchmark.
@@ -46,6 +77,7 @@ class AIWBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.seed = seed
         self.n_trials = n_trials
+        self.verifyit_enabled = verifyit_enabled
 
     def generate_responses(self, model: LM) -> Dict[str, Any]:
         """
@@ -115,11 +147,11 @@ class AIWBenchmark(BaseBenchmark):
         """Load AIW questions from the data file."""
         with open(self.data_file, "r") as f:
             questions = json.load(f)
-            
+
         if self.debug:
             questions = questions[:2]
             self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
- 
+
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
 
@@ -143,10 +175,18 @@ class AIWBenchmark(BaseBenchmark):
         if results is None:
             return None
 
+        equivalent = verifyit_equivalent if self.verifyit_enabled else is_equiv
+        if self.verifyit_enabled:
+            for example in results["examples"]:
+                verifyit_equivalent(example["right_answer"], None)
+
         # Every generated example is graded, including the ones the reported
         # aggregate excludes, so each persisted sample carries its own score.
         for example in results["examples"]:
-            record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
+            record_sample_metrics(
+                example,
+                accuracy=equivalent(str(example["right_answer"]), example["model_answer"]),
+            )
 
         # Filter only the target IDs
         examples = [ex for ex in results["examples"] if ex["id"] in self.TARGET_IDS]
@@ -160,7 +200,7 @@ class AIWBenchmark(BaseBenchmark):
         for _ in range(self.n_trials):
             trial_results = []
             for example in examples:
-                correct = is_equiv(str(example["right_answer"]), example["model_answer"])
+                correct = equivalent(str(example["right_answer"]), example["model_answer"])
                 id_results[example["id"]].append(correct)
                 trial_results.append(correct)
 

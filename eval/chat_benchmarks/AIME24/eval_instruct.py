@@ -39,6 +39,7 @@ class AIME24Benchmark(BaseBenchmark):
         max_tokens: int = 32768,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize AIME24 benchmark.
@@ -51,6 +52,7 @@ class AIME24Benchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.data_file = data_file
         self.debug = debug
         self.max_new_tokens = max_tokens
@@ -119,7 +121,20 @@ class AIME24Benchmark(BaseBenchmark):
         if results is None:
             return None
 
+        equivalent = math_answers_equivalent
+        if self.verifyit_enabled:
+            from eval.graders.answer_equivalence import verifyit_math_answers_equivalent
+
+            equivalent = verifyit_math_answers_equivalent
         examples = results["examples"]
+        if self.verifyit_enabled:
+            from verifyit.grade import InvalidTask
+
+            if not examples or any(type(example.get("expected_answer")) not in (str, int) for example in examples):
+                raise InvalidTask("AIME24 requires nonempty examples with trusted string or integer references")
+            for example in examples:
+                equivalent("", [str(example["expected_answer"])])
+
         num_questions = len(examples)
 
         # Calculate accuracy for each repetition
@@ -127,7 +142,10 @@ class AIME24Benchmark(BaseBenchmark):
         correct_by_repeat = []
         for i in range(self.n_repeat):
             correct = [
-                math_answers_equivalent(str(example["model_answers"][i]), [str(example["expected_answer"])])
+                equivalent(
+                    example["model_answers"][i] if self.verifyit_enabled else str(example["model_answers"][i]),
+                    [str(example["expected_answer"])],
+                )
                 for example in examples
             ]
             correct_by_repeat.append(correct)

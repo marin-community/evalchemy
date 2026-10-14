@@ -32,6 +32,7 @@ class AIME25Benchmark(BaseBenchmark):
         max_tokens: int = 32768,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
+        verifyit_enabled: bool = False,
     ):
         """
         Initialize AIME25 benchmark.
@@ -43,6 +44,7 @@ class AIME25Benchmark(BaseBenchmark):
             logger: Optional logger instance
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
+        self.verifyit_enabled = verifyit_enabled
         self.data_file = data_file
         self.debug = debug
         self.max_new_tokens = max_tokens
@@ -121,16 +123,27 @@ class AIME25Benchmark(BaseBenchmark):
         if results is None:
             return None
 
+        equivalent = math_answers_equivalent
+        if self.verifyit_enabled:
+            from eval.graders.answer_equivalence import verifyit_math_answers_equivalent
+
+            equivalent = verifyit_math_answers_equivalent
         examples = results["examples"]
+        if self.verifyit_enabled:
+            from verifyit.grade import InvalidTask
+
+            if not examples or any(type(example.get("answer")) not in (str, int) for example in examples):
+                raise InvalidTask("AIME25 requires nonempty examples with trusted string or integer references")
+            for example in examples:
+                equivalent("", [str(example["answer"])])
+
         num_questions = len(examples)
 
         # Calculate accuracy for each repetition
         all_results = []
         correct_by_repeat = []
         for i in range(self.n_repeat):
-            correct = [
-                math_answers_equivalent(example["model_answers"][i], [str(example["answer"])]) for example in examples
-            ]
+            correct = [equivalent(example["model_answers"][i], [str(example["answer"])]) for example in examples]
             correct_by_repeat.append(correct)
             solved = sum(correct)
             all_results.append(
