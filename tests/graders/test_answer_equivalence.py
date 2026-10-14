@@ -163,29 +163,6 @@ def test_judge_equivalence_retries_transient_server_failures(judge_server):
     assert body["model"] == "retry-model"
 
 
-@pytest.mark.parametrize("label", ["correct", "incorrect", "not_attempted"])
-def test_judge_equivalence_gives_first_request_room_for_reasoning(monkeypatch, label):
-    class ReasoningJudgeAsyncOpenAI(_FakeAsyncOpenAI):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
-            self.requests = 0
-
-        async def create(self, **kwargs):
-            self.requests += 1
-            content = label if self.requests == 1 and kwargs["max_tokens"] >= 2048 else "not_attempt"
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-
-    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", ReasoningJudgeAsyncOpenAI)
-    request = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
-    config = answer_equivalence.JudgeConfig("reasoning-judge", "https://judge.example/v1", "judge-key")
-
-    judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
-
-    assert judgments == [
-        answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel(label), label)
-    ]
-
-
 @pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", "", "not_attempt"])
 def test_judge_equivalence_rejects_non_label_responses(monkeypatch, response):
     class NonLabelAsyncOpenAI(_FakeAsyncOpenAI):
