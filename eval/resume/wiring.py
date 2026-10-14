@@ -100,10 +100,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Callable[[str], FineStoreResumeMa
 
     gen = _parse_gen_kwargs(getattr(args, "gen_kwargs", None))
     max_tokens = getattr(args, "max_tokens", None)
-    decoding: dict = {}
-    for k in ("temperature", "top_p", "do_sample"):
-        if k in gen:
-            decoding[k] = gen[k]
+    decoding = dict(gen)
     # max generation length: prefer the explicit --max_tokens, else gen_kwargs alias.
     if max_tokens is not None:
         try:

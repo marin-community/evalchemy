@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
+from sympy import Integer
 
 from eval.contracts.finestore_output import completed_finestore_output, read_finestore_output, write_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
@@ -306,6 +307,23 @@ def test_failed_finestore_result_can_be_replaced_by_success(tmp_path: Path):
     assert completed_finestore_output(root, "gsm8k_0shot")
     assert read_finestore_output(root, "gsm8k_0shot") == success
 
+
+@pytest.mark.parametrize("bits", [14_500, 15_001])
+def test_finestore_output_serializes_large_sympy_result(tmp_path: Path, bits: int):
+    root = str(tmp_path / "archive")
+    results = {
+        "results": {"gsm8k": {"exact_match": 1.0}},
+        "config": {"large_integer": Integer(2) ** bits},
+    }
+
+    write_finestore_output(root, "gsm8k_0shot", results, {})
+
+    restored = read_finestore_output(root, "gsm8k_0shot")
+    assert restored is not None
+    assert restored["results"] == results["results"]
+    assert restored["config"]["large_integer"].startswith("<Integer ~")
+
+
 def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, monkeypatch):
     root = str(tmp_path / "archive")
     result = {"results": {"gsm8k": {"exact_match": 1.0}}}
@@ -324,6 +342,7 @@ def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, mo
     [
         ("model_args", "model=other", "fingerprint changed"),
         ("gen_kwargs", "temperature=0.5", "fingerprint changed"),
+        ("gen_kwargs", "top_k=50", "fingerprint changed"),
         ("tasks", "arc_easy", "task list changed"),
         ("resume_mode", "force-fresh", "already exists"),
     ],

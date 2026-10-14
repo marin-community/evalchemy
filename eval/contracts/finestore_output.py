@@ -18,9 +18,9 @@ from finestore.eval import (
 from finestore.layout import OnConflict
 from finestore.reader import ReadView
 from finestore.store import DataStore
-from lm_eval.utils import handle_non_serializable
 
 from eval.contracts.lm_eval_normalization import samples_from_lm_eval
+from eval.contracts.result_serialization import handle_non_serializable_extended
 
 RESULTS_TABLE = "evalchemy_results"
 DEFAULT_SOURCE_PREFIX = "run"
@@ -94,7 +94,7 @@ def write_finestore_output(
             transaction.table(RESULTS_TABLE).add(
                 {
                     _SOURCE_PREFIX: source_prefix,
-                    _DOCUMENT: json.dumps(results, default=handle_non_serializable, ensure_ascii=False),
+                    _DOCUMENT: json.dumps(results, default=handle_non_serializable_extended, ensure_ascii=False),
                     _SCORED: scored,
                 }
             )

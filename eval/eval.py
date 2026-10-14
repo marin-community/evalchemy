@@ -2,7 +2,6 @@ import argparse
 import difflib
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -38,7 +37,6 @@ from lm_eval.api.model import LM
 from lm_eval.loggers import EvaluationTracker, WandbLogger
 from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_commit_hash
 from lm_eval.tasks import TaskManager as PretrainTaskManager
-from lm_eval.utils import handle_non_serializable as _orig_handle
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 
@@ -67,6 +65,7 @@ from eval.contracts.finestore_output import read_finestore_output, write_finesto
 from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
+from eval.contracts.result_serialization import handle_non_serializable_extended
 from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
@@ -88,8 +87,6 @@ from eval.resume import lm_eval_native
 from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
-
-_BIT_CAP = 15_000
 
 # Evalchemy-owned lm-eval task overrides (marin-community/evalchemy#31). include_path
 # task configs take precedence over lm-eval's packaged defaults, so shipping
@@ -297,35 +294,6 @@ def resolve_task_routes(
         utils.eval_logger.info("%s -> %s", task, route)
 
     return task_routes
-
-
-def handle_non_serializable_extended(o):
-    """
-    Delegates to the stock helper, but for gigantic SymPy Integer /
-    Rational objects returns a short placeholder *without* calling str().
-    """
-    try:
-        from sympy import Integer, Rational
-
-        if isinstance(o, Integer):
-            if o.p.bit_length() > _BIT_CAP:
-                digits = int(o.p.bit_length() * math.log10(2)) + 1
-                return f"<Integer ~{digits} digits>"
-            return str(int(o))  # safe: fits under the guard
-
-        if isinstance(o, Rational):
-            num_bits = o.p.bit_length()
-            den_bits = o.q.bit_length()
-            if num_bits > _BIT_CAP or den_bits > _BIT_CAP:
-                d_num = int(num_bits * math.log10(2)) + 1
-                d_den = int(den_bits * math.log10(2)) + 1
-                return f"<Rational {d_num}/{d_den} digits>"
-            return str(o)  # small enough
-    except ModuleNotFoundError:
-        pass
-
-    # Everything else: NumPy ints, sets, etc.
-    return _orig_handle(o)
 
 
 def setup_custom_parser():
