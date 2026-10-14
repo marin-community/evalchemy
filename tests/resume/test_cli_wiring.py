@@ -24,6 +24,7 @@ read (one construction site feeds all three — invariant #5).
 
 import argparse
 import json
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,7 @@ def _args(tmp_path, mode="auto", output=True, **overrides):
 
 # ----- GATE 1: off ⇒ no-op, byte-identical -------------------------------------------------
 
+
 def test_off_builds_no_factory_and_attaches_nothing(tmp_path):
     args = _args(tmp_path, mode="off")
     lm = _FakeLM()
@@ -113,14 +115,55 @@ def test_off_builds_no_factory_and_attaches_nothing(tmp_path):
     assert not (tmp_path / ".resume").exists()  # no state dir written
 
 
-def test_no_output_path_disables_resume(tmp_path):
-    args = _args(tmp_path, mode="auto", output=False)
+@pytest.mark.parametrize("finestore_output_path", [None, "gs://bucket/run"])
+def test_resume_disabled_without_a_local_anchor(tmp_path, finestore_output_path):
+    # No --output_path, and either no FineStore root or a remote one: nothing
+    # local to anchor stdlib resume state on.
+    args = _args(tmp_path, mode="auto", output=False, finestore_output_path=finestore_output_path)
     factory = build_resume_wiring(args, _FakeLM())
     assert factory is None
     assert args.resume_manager_factory is None
 
 
+def test_finestore_root_anchors_resume_without_output_path(tmp_path):
+    finestore = tmp_path / "archive"
+    args = _args(tmp_path, mode="auto", output=False, finestore_output_path=str(finestore))
+    lm = _FakeLM()
+    bench = _Bench()
+    factory = build_resume_wiring(args, lm)
+    attach_to_chat_benchmarks(_FakeTaskManager({"_Bench": bench}), ["_Bench"], factory)
+
+    out = bench.compute(lm, _instances(4))
+
+    assert out == [f"out-{i}" for i in range(4)]
+    # State lands in a sibling of the archive root, outside the FineStore layout.
+    fingerprint = Path(f"{finestore}.resume") / "some_model" / "_Bench" / "resume" / "fingerprint.json"
+    assert fingerprint.exists()
+    assert not (finestore / "manifests").exists()  # resume never writes into the archive
+
+
+def test_finestore_anchored_state_resumes_on_second_run(tmp_path):
+    finestore = tmp_path / "archive"
+
+    def run():
+        args = _args(tmp_path, mode="auto", output=False, finestore_output_path=str(finestore))
+        bench = _Bench()
+        factory = build_resume_wiring(args, _FakeLM())
+        attach_to_chat_benchmarks(_FakeTaskManager({"_Bench": bench}), ["_Bench"], factory)
+        lm = _FakeLM()
+        out = bench.compute(lm, _instances(4))
+        return lm, out
+
+    lm1, out1 = run()
+    assert lm1.generated_idxs == [0, 1, 2, 3]
+
+    lm2, out2 = run()
+    assert out2 == out1
+    assert lm2.generated_idxs == []  # every completed response restored, none re-queried
+
+
 # ----- GATE 2: auto first run, no prior state ⇒ pure no-op (byte-identical) -----------------
+
 
 def test_auto_first_run_no_prior_state_is_byte_identical(tmp_path):
     # Manager-ABSENT baseline.
@@ -153,6 +196,7 @@ def test_auto_first_run_no_prior_state_is_byte_identical(tmp_path):
 
 
 # ----- GATE 3: auto second run ⇒ resumes (skipped > 0) -------------------------------------
+
 
 def test_auto_second_run_resumes(tmp_path, caplog):
     import logging
@@ -207,6 +251,7 @@ def test_auto_partial_resume_skips_done_only(tmp_path):
 
 # ----- GATE 4: material delta ⇒ refuses ----------------------------------------------------
 
+
 def test_auto_material_delta_refuses(tmp_path):
     # Run 1: establish state at seed [0,...].
     args1 = _args(tmp_path, mode="auto")
@@ -246,6 +291,7 @@ def test_force_fresh_wipes_prior_state(tmp_path):
 
 
 # ----- the 3b/3c seam: factory is the shared interface -------------------------------------
+
 
 def test_factory_sets_resume_manager_factory_for_lm_eval_native_path(tmp_path):
     args = _args(tmp_path, mode="auto")

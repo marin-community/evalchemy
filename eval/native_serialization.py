@@ -25,8 +25,11 @@ def results_json(results: Mapping[str, Any]) -> str:
     )
 
 
+def sample_line(sample: Mapping[str, Any]) -> str:
+    """Serialize one sample artifact record as a JSONL line (with trailing newline)."""
+    return json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n"
+
+
 def samples_jsonl(samples: Sequence[Mapping[str, Any]]) -> str:
     """Serialize Evalchemy's per-task sample artifact."""
-    return "".join(
-        json.dumps(sample, default=handle_non_serializable, ensure_ascii=False) + "\n" for sample in samples
-    )
+    return "".join(sample_line(sample) for sample in samples)

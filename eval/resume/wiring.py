@@ -19,9 +19,12 @@ invariant #5 — one interface). ``cli_evaluate`` (``eval/eval.py``) calls
     second run with identical inputs resumes; a material delta refuses.
   * ``force-fresh`` — wipe any prior state and start fresh.
 
-When ``output_path`` is unset there is no durable run dir to anchor state on, so
-resume is impossible — we degrade to a no-op (same as ``off``), preserving the
-flag-off invariant.
+Resume state needs a durable anchor directory. ``--output_path`` is the anchor;
+a FineStore-native run without one anchors on a sibling of the FineStore root
+(a remote root cannot anchor stdlib state, so it stays a no-op), so completed
+responses are still checkpointed during generation and a restarted run can
+resume instead of repeating the whole task. When no local anchor exists we
+degrade to a no-op (same as ``off``), preserving the flag-off invariant.
 
 The fingerprint here is built from the run inputs that are *cheaply available
 from ``args`` + the initialized ``lm``* (model repo/revision, decoding params,
@@ -91,12 +94,31 @@ def _sanitize(name: str) -> str:
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name))
 
 
+def _resume_root(args: Any) -> Optional[Path]:
+    """The local directory resume state anchors on, or ``None`` when there is none."""
+    output_path = getattr(args, "output_path", None)
+    if output_path:
+        return Path(output_path) / ".resume"
+    finestore_path = getattr(args, "finestore_output_path", None)
+    if finestore_path:
+        root = str(finestore_path).rstrip("/")
+        if "://" in root:
+            # Resume state is written with the stdlib, so a remote FineStore root
+            # (gs://…, s3://…) has no local sibling to anchor on.
+            logger.info("resume: FineStore root %s is remote; resume disabled (no-op).", root)
+            return None
+        # Anchor beside a local FineStore root, outside the archive layout, so a
+        # run without --output_path still checkpoints completed responses.
+        return Path(f"{root}.resume")
+    return None
+
+
 def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     """Build the per-task ResumeManager factory and stash it on ``args``.
 
     Returns the factory (also set as ``args.resume_manager_factory``) so the
     caller can ``attach_resume_manager`` to chat benchmark instances, or ``None``
-    when resume is disabled (``off`` mode, or no ``output_path``) — in which case
+    when resume is disabled (``off`` mode, or no durable anchor) — in which case
     NOTHING is attached and behavior is byte-identical to today.
     """
     mode = getattr(args, "resume_mode", "auto") or "auto"
@@ -106,10 +128,9 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
         args.resume_manager_factory = None
         return None
 
-    output_path = getattr(args, "output_path", None)
-    if not output_path:
-        # No durable run dir to anchor state -> resume impossible; degrade to no-op.
-        logger.info("resume: --resume-mode=%s but no --output_path; resume disabled (no-op).", mode)
+    resume_root = _resume_root(args)
+    if resume_root is None:
+        logger.info("resume: --resume-mode=%s but no --output_path or --finestore_output_path; disabled (no-op).", mode)
         args.resume_manager_factory = None
         return None
 
@@ -164,7 +185,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     }
 
     model_dir = _sanitize(model_repo or "model")
-    base_run_dir = Path(output_path) / ".resume" / model_dir
+    base_run_dir = resume_root / model_dir
 
     def factory(task_name: str):
         from .manager import ResumeManager

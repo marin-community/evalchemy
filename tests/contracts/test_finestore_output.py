@@ -3,6 +3,7 @@
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
@@ -279,3 +280,73 @@ def test_finestore_mode_does_not_write_a_second_sample_jsonl(tmp_path: Path):
     assert list(local_root.rglob("samples_*.jsonl")) == []
     source = ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl")
     assert source == samples_jsonl([record]).encode()
+
+
+def _generation_record(doc_id: int) -> dict:
+    return {
+        "doc_id": doc_id,
+        "doc": {"question": f"question {doc_id}"},
+        "target": "answer",
+        "arguments": [[f"question {doc_id}", {}]],
+        "resps": [["answer"]],
+        "filtered_resps": ["answer"],
+        "filter": "none",
+        "metrics": ["exact_match"],
+        "exact_match": 1.0,
+    }
+
+
+class _InterruptedSamples(list):
+    """A sample sequence that dies mid-iteration, like an OOM-killed writer."""
+
+    def __init__(self, records, stop_before: int):
+        super().__init__(records)
+        self._stop_before = stop_before
+
+    def __iter__(self):
+        for index, record in enumerate(super().__iter__()):
+            if index == self._stop_before:
+                raise MemoryError("simulated interruption")
+            yield record
+
+
+def test_interrupted_write_keeps_committed_sample_batches_readable(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    records = [_generation_record(index) for index in range(6)]
+    results = {"results": {"triviaqa": {"exact_match": 1.0}}}
+
+    with pytest.raises(MemoryError):
+        write_finestore_output(
+            root,
+            "triviaqa",
+            results,
+            {"triviaqa": _InterruptedSamples(records, stop_before=4)},
+            commit_bytes=1,
+        )
+
+    rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+    assert [row["doc_id"] for row in rows] == ["0", "1", "2", "3"]
+
+
+def test_restarted_write_recovers_all_samples_exactly_once(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    records = [_generation_record(index) for index in range(6)]
+    results = {"results": {"triviaqa": {"exact_match": 1.0}}}
+
+    with pytest.raises(MemoryError):
+        write_finestore_output(
+            root,
+            "triviaqa",
+            results,
+            {"triviaqa": _InterruptedSamples(records, stop_before=4)},
+            commit_bytes=1,
+        )
+    write_finestore_output(root, "triviaqa", results, {"triviaqa": records}, commit_bytes=1)
+
+    view = ReadView(root)
+    rows = view.scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+    assert [row["doc_id"] for row in rows] == [str(index) for index in range(6)]
+    assert all(sample_from_archive_row(row).correct for row in rows)
+    source = view.read_blob("sources/evalchemy/triviaqa/native/samples_triviaqa_native.jsonl")
+    assert source is not None
+    assert source.decode() == samples_jsonl(records)
