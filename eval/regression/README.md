@@ -1,8 +1,7 @@
 # Regression gate for evalchemy runs
 
 `eval.regression.validate` gates an eval run's scores against a checked-in spec, or
-records a new one. It reads a run's `results_*.json` (produced by any evalchemy run —
-typically the `eval/serve_eval` runner) and a spec file.
+records a new one. It reads a run's FineStore archive and a spec file.
 
 ```bash
 # Gate a run against the spec (exit 1 on regression):
@@ -12,8 +11,8 @@ uv run python -m eval.regression.validate check  --results <run-dir> --spec spec
 uv run python -m eval.regression.validate record --results <run-dir> --spec specs/qwen3-0.6b.json
 ```
 
-`--results` accepts a `results_*.json` file or a run dir to search. `--spec` defaults
-to `specs/qwen3-0.6b.json`.
+`--results` accepts the archive root. `--spec` defaults to
+`specs/qwen3-0.6b.json`.
 
 ## The gate
 

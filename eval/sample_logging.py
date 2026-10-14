@@ -1,8 +1,8 @@
-"""Canonical per-example records written by ``eval --log_samples``.
+"""Canonical per-example records written to FineStore.
 
 The evaluators use a variety of internal result shapes.  This module is the
-single serialization boundary: it gives custom benchmarks and lm-eval-native
-tasks the same record envelope before an ``EvaluationTracker`` writes JSONL.
+single normalization boundary: it gives custom benchmarks and lm-eval-native
+tasks the same record envelope before FineStore stores them.
 """
 
 from collections.abc import Mapping, Sequence
@@ -14,7 +14,7 @@ from eval.contracts.sample_results import SampleMetricsError, validate_sample_me
 from eval.lm_eval_tasks.drop.utils import DropAnswer
 
 SAMPLE_SCHEMA_VERSION = 1
-"""Version of the stable JSONL record envelope emitted by ``--log_samples``."""
+"""Version of the stable sample record envelope."""
 DEFAULT_FILTER_NAME = "none"
 _IFEVAL_TASKS = frozenset({"ifeval", "ifeval_ca", "ifeval_es", "leaderboard_ifeval"})
 _IFEVAL_INSTRUCTION_METRICS = {
@@ -38,7 +38,7 @@ def canonicalize_samples(
     With a sample manifest, complete lm-eval filter cohorts become one record
     whose ``filter_variants`` retain every response and metric. The envelope
     makes task identity and schema version explicit, while filling fields that
-    custom benchmark adapters must provide for tracker-compatible JSONL.
+    custom benchmark adapters must provide for FineStore sample rows.
 
     Raises:
         SampleMetricsError: If a record reached this boundary without the

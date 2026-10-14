@@ -13,7 +13,8 @@ from eval.completion_response import (  # noqa: E402
     CompletionText,
     FailedGeneration,
 )
-from eval.resume import ManifestWriter, ResumeManager, RunFingerprint, read_manifest  # noqa: E402
+from eval.contracts.finestore_resume import FineStoreResumeManager  # noqa: E402
+from eval.resume import RunFingerprint, canonical_unit_key  # noqa: E402
 from eval.sample_logging import canonicalize_samples  # noqa: E402
 from eval.task import BaseBenchmark  # noqa: E402
 
@@ -46,7 +47,7 @@ def _instance():
     return Instance("generate_until", {"id": 0}, ("question", {"max_new_tokens": 8}), 0)
 
 
-def test_resume_manifest_round_trips_typed_completion_metadata(tmp_path):
+def test_finestore_resume_round_trips_typed_completion_metadata(tmp_path):
     response = CompletionResponse(
         content="final",
         reasoning_content="reasoning",
@@ -56,13 +57,15 @@ def test_resume_manifest_round_trips_typed_completion_metadata(tmp_path):
         raw_choice={"index": 0},
     )
     output = CompletionText("reasoning\n\nfinal", response, CompletionContentPolicy.COMBINE)
-    path = tmp_path / "manifest.jsonl"
-    ManifestWriter(path).append(
+    manager = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
+    manager.record(
         {"task": "task", "problem_idx": 0},
         {"outputs": [output, FailedGeneration("model_transport")]},
     )
+    manager.finalize()
 
-    restored = read_manifest(path)[0].payload["outputs"]
+    retry = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
+    restored = retry.restore()[canonical_unit_key({"task": "task", "problem_idx": 0})]["outputs"]
 
     assert isinstance(restored[0], CompletionText)
     assert restored[0].artifact() == output.artifact()
@@ -72,11 +75,11 @@ def test_resume_manifest_round_trips_typed_completion_metadata(tmp_path):
 
 def test_resumed_transport_failure_remains_classified_in_sample_artifact(tmp_path):
     first = _Benchmark()
-    first.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=_fingerprint(), mode="auto"))
+    first.attach_resume_manager(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint()))
     first.compute(_Model([FailedGeneration("model_transport")]), [_instance()])
 
     resumed = _Benchmark()
-    resumed.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=_fingerprint(), mode="auto"))
+    resumed.attach_resume_manager(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint()))
     restored = resumed.compute(_Model([]), [_instance()])[0]
     samples = resumed.to_samples(
         {"examples": [{"question": "question", "answer": "answer", "model_output": restored}]},

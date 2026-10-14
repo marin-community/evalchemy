@@ -11,17 +11,16 @@ still exposed three symbols which upstream removed/relocated after v0.4.7:
   subcommand's argument set has diverged (renamed/removed flags) from what
   evalchemy's ``eval/eval.py`` consumes.
 
-To keep evalchemy decoupled from lm-eval CLI churn -- and to preserve the exact
-argument surface and grading behavior the convention guarantees -- we vendor the
-v0.4.7-era parser here verbatim (it is unmodified upstream code) and provide the
-``eval_logger`` singleton. Import these from this module instead of from
-``lm_eval`` directly.
+To keep evalchemy decoupled from lm-eval CLI churn, we maintain the parser
+derived from v0.4.7 here and provide the ``eval_logger`` singleton. Import
+these from this module instead of from ``lm_eval`` directly.
 """
 
 import argparse
 import logging
 from functools import partial
 
+from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
 # ---------------------------------------------------------------------------
 # eval_logger singleton (was lm_eval.utils.eval_logger, removed upstream >=0.4.8)
 # ---------------------------------------------------------------------------
@@ -31,7 +30,7 @@ eval_logger = logging.getLogger("lm-eval")
 # ---------------------------------------------------------------------------
 # CLI parser (was lm_eval.__main__.{setup_parser,parse_eval_args}, refactored
 # into lm_eval._cli.HarnessCLI upstream >=0.4.8). Vendored verbatim from the
-# v0.4.7-era harness so evalchemy's expected flags stay stable.
+# v0.4.7-era harness, adapted to Evalchemy's FineStore output.
 # ---------------------------------------------------------------------------
 def _int_or_none_list_arg_type(min_len: int, max_len: int, defaults: str, value: str, split_char: str = ","):
     def parse_value(item):
@@ -120,29 +119,20 @@ def setup_parser() -> argparse.ArgumentParser:
         help="Device to use (e.g. cuda, cuda:0, cpu).",
     )
     parser.add_argument(
-        "--output_path",
-        "-o",
-        default=None,
-        type=str,
-        metavar="DIR|DIR/file.json",
-        help="The path to the output file where the result metrics will be saved. If the path is a directory and log_samples is true, the results will be saved in the directory. Else the parent directory will be used.",
-    )
-    parser.add_argument(
         "--finestore_output_path",
-        default=None,
+        "--output_path",
+        dest="finestore_output_path",
+        required=True,
         type=str,
         metavar="DIR",
-        help=(
-            "FineStore run root for native JSON/JSONL artifacts and normalized sample tables. "
-            "When set, per-task sample JSONL is written only to FineStore. Requires --log_samples."
-        ),
+        help="FineStore archive for aggregate results, normalized samples, and request resume state.",
     )
     parser.add_argument(
         "--finestore_output_prefix",
-        default="run",
+        default=DEFAULT_SOURCE_PREFIX,
         type=str,
         metavar="NAME",
-        help="Stable task-group name used to organize evaluator-native artifacts inside FineStore.",
+        help="Stable task-group name for results and resume state inside FineStore.",
     )
     parser.add_argument(
         "--limit",
@@ -151,14 +141,6 @@ def setup_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N|0<N<1",
         help="Limit the number of examples per task. If <1, limit is a percentage of the total number of examples.",
-    )
-    parser.add_argument(
-        "--use_cache",
-        "-c",
-        type=str,
-        default=None,
-        metavar="DIR",
-        help="A path to a sqlite db file for caching model responses. `None` if not caching.",
     )
     parser.add_argument(
         "--cache_requests",
@@ -178,13 +160,6 @@ def setup_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Prints the prompt for the first few documents.",
-    )
-    parser.add_argument(
-        "--log_samples",
-        "-s",
-        action="store_true",
-        default=False,
-        help="If True, write out all model outputs and documents for per-sample measurement and post-hoc analysis. Use with --output_path.",
     )
     parser.add_argument(
         "--system_instruction",
@@ -258,7 +233,7 @@ def setup_parser() -> argparse.ArgumentParser:
         "-x",
         action="store_true",
         default=False,
-        help="Use with --log_samples. Only model outputs will be saved and metrics will not be evaluated.",
+        help="Only model outputs will be stored; metrics will not be evaluated.",
     )
     default_seed_string = "0,1234,1234,1234"
     parser.add_argument(

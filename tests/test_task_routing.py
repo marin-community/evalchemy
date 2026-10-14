@@ -11,12 +11,13 @@ from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, cli_evaluate, resolve
 from eval.task import TaskManager
 
 
-def _cli_args(tasks):
+def _cli_args(tasks, archive_root):
     return Namespace(
         config=None,
         batch_size="1",
-        output_path=None,
-        finestore_output_path=None,
+        finestore_output_path=str(archive_root),
+        finestore_output_prefix="run",
+        resume_mode="auto",
         use_database=False,
         tasks=tasks,
         model_id=None,
@@ -58,7 +59,7 @@ def test_task_routing_rejects_unknown_tasks_before_evaluation():
         resolve_task_routes(["arc_challeng"], chat_tasks, lm_eval_tasks)
 
 
-def test_cli_rejects_unknown_tasks_before_model_initialization(monkeypatch):
+def test_cli_rejects_unknown_tasks_before_model_initialization(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "eval.eval.InstructTaskManager",
         lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}),
@@ -70,10 +71,10 @@ def test_cli_rejects_unknown_tasks_before_model_initialization(monkeypatch):
 
     monkeypatch.setattr("eval.eval.initialize_model", fail_if_model_initialization_is_reached)
     with pytest.raises(ValueError, match="Unknown evaluation tasks: arc_challeng"):
-        cli_evaluate(_cli_args("arc_challeng"))
+        cli_evaluate(_cli_args("arc_challeng", tmp_path / "archive"))
 
 
-def test_cli_reports_task_construction_failure_before_model_initialization(monkeypatch):
+def test_cli_reports_task_construction_failure_before_model_initialization(monkeypatch, tmp_path):
     custom_manager = SimpleNamespace(
         tasks={},
         benchmark_instances={},
@@ -88,7 +89,7 @@ def test_cli_reports_task_construction_failure_before_model_initialization(monke
     monkeypatch.setattr("eval.eval.initialize_model", fail_if_model_initialization_is_reached)
 
     with pytest.raises(EvaluationPreflightError) as raised:
-        cli_evaluate(_cli_args("Broken"))
+        cli_evaluate(_cli_args("Broken", tmp_path / "archive"))
 
     assert raised.value.preparations[0].failure.exception_type == "RuntimeError"
 

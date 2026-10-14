@@ -24,7 +24,7 @@ Evalchemy is developed by the [DataComp community](https://datacomp.ai) and [Bes
         --model_name "gemini/gemini-2.0-flash-thinking-exp-01-21" \
         --apply_chat_template False \
         --model_args 'tokenized_requests=False' \
-        --output_path logs
+        --output_path logs/my-run
 ```
 #### [2025.01.29] New Reasoning Benchmarks
 
@@ -38,7 +38,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "pretrained=meta-llama/Meta-Llama-3-8B-Instruct" \
     --batch_size 16 \
-    --output_path logs
+    --output_path logs/my-run
 ```
 - [OpenAI models](https://openai.com/): Full support for OpenAI's model lineup
 ```bash
@@ -47,7 +47,7 @@ python -m eval.eval \
     --tasks alpaca_eval \
     --model_args "model=gpt-4o-mini-2024-07-18,num_concurrent=32" \
     --batch_size 16 \
-    --output_path logs 
+    --output_path logs/my-run
 ```
 
 ### Key Features
@@ -158,10 +158,16 @@ python -m eval.eval \
     --tasks HumanEval,mmlu \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs
+    --output_path logs/my-run
 ```
 
-The results will be written out in `output_path`. If you have `jq` [installed](https://jqlang.github.io/jq/download/), you can view the results easily after evaluation. Example: `jq '.results' logs/Qwen__Qwen2.5-7B-Instruct/results_2024-11-17T17-12-28.668908.json`
+Results, samples, and request resume state are stored in the FineStore archive at
+`logs/my-run`. Reuse that path to resume the same evaluation; choose a new path
+to start a different run. To inspect the aggregate result:
+
+```bash
+uv run python -c 'from eval.serve_eval.results import EvalResults; print(EvalResults.load_archive("logs/my-run").results)'
+```
 
 **Args**: 
 
@@ -169,11 +175,10 @@ The results will be written out in `output_path`. If you have `jq` [installed](h
 - `--tasks`: Comma-separated list of tasks to be evaluated.
 - `--model_args`: Model path and parameters. Comma-separated list of parameters passed to the model constructor. Accepts a string of the format `"arg1=val1,arg2=val2,..."`. You can find the list supported arguments [here](https://github.com/EleutherAI/lm-evaluation-harness/blob/365fcda9b85bbb6e0572d91976b8daf409164500/lm_eval/models/huggingface.py#L66).
 - `--batch_size`: Batch size for inference
-- `--output_path`: Directory to save evaluation results
-- `--finestore_output_path`: FineStore run root for native JSON/JSONL source objects and normalized
-  sample tables. Per-task sample JSONL is written only to FineStore when this is set. Requires
-  `--log_samples` and the `serve-eval` extra.
-- `--finestore_output_prefix`: Stable task-group name for organizing source objects in FineStore.
+- `--output_path` (`--finestore_output_path`): Required FineStore archive root for
+  aggregate results, normalized samples, and request-level resume state. Both
+  spellings select the same archive; neither writes native JSON or JSONL files.
+- `--finestore_output_prefix`: Stable task-group name inside the archive.
 - `--max_length`: Total context-window limit, shared by native lm-eval tasks and custom benchmarks.
 - `--max_tokens`: Maximum generated tokens, shared by native lm-eval tasks and custom benchmarks.
 
@@ -190,7 +195,7 @@ python -m eval.eval \
     --tasks MTBench,WildBench,alpaca_eval \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs
+    --output_path logs/my-run
 ```
 
 **Config shortcuts**: 
@@ -201,7 +206,7 @@ To be able to reuse commonly used settings without having to manually supply ful
 python -m eval.eval \
     --model hf \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
-    --output_path logs \
+    --output_path logs/my-run \
     --config configs/light_gpt4omini0718.yaml
 ```
 
@@ -257,7 +262,7 @@ accelerate launch --num-processes <num-gpus> --num-machines <num-nodes> \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3' \
     --batch_size 2 \
-    --output_path logs
+    --output_path logs/my-run
 ```
 
 ### Large Model Evaluation
@@ -270,7 +275,7 @@ python -m eval.eval \
     --tasks MTBench,alpaca_eval \
     --model_args 'pretrained=mistralai/Mistral-7B-Instruct-v0.3,parallelize=True' \
     --batch_size 2 \
-    --output_path logs
+    --output_path logs/my-run
 ```
 
 > **💡 Note**: While "auto" batch size is supported, we recommend manually tuning the batch size for optimal performance. The optimal batch size depends on the model size, GPU memory, and the specific benchmark. We used a maximum of 32 and a minimum of 4 (for RepoBench) to evaluate Llama-3-8B-Instruct on 8xH100 GPUs.
@@ -412,7 +417,7 @@ python -m eval.eval \
     --tasks MTBench \
     --model_args "pretrained=mistralai/Mistral-7B-Instruct-v0.3" \
     --batch_size 2 \
-    --output_path logs \
+    --output_path logs/my-run \
     --debug
 ```
 
@@ -472,25 +477,16 @@ If you find Evalchemy useful, please consider citing us!
 }
 ```
 
-## Sample logs
+## Sample records
 
-`eval --log_samples --output_path DIR` writes one canonical, non-empty JSONL
-artifact for every task that completed scoring:
-`DIR/<model>/samples_<task>_<timestamp>.jsonl`. The aggregate
-`results_<timestamp>.json` contains metrics only while sample logging is enabled;
-custom-benchmark examples are not duplicated there.
-
-Every JSONL line has `schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
+Each scored task writes normalized rows to FineStore's `samples` table. The
+aggregate result is stored in the `evalchemy_results` table. Sample rows contain
+`schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
 `arguments`, `resps`, `filtered_resps`, `filter`, `doc_hash`, `prompt_hash`, and
 `target_hash`. These are lm-eval-compatible records with a stable Evalchemy
 envelope. Custom benchmarks retain their input document in `doc` and their raw
 and normalized completion in `resps` and `filtered_resps`; lm-eval-native tasks
-retain their native fields unchanged. An unscored task (including one returning
-an `error`) writes no sample artifact, and a serialization failure never changes
-the task's score or creates a zero-byte placeholder.
-
-With `--finestore_output_path`, FineStore becomes the sample-output writer. Evalchemy serializes each
-task's canonical JSONL directly into a FineStore source artifact and writes one normalized evaluation
-sample per extraction filter; it does not create a second `samples_*.jsonl` under `--output_path`.
-The aggregate JSON remains under `--output_path` for the standard CLI contract and is also preserved
-as a FineStore source artifact.
+retain their native fields unchanged. FineStore's `evalchemy_resume` table
+stores completed request payloads; retries restore them by default. A completed
+result is preserved on retry. A changed fingerprint raises an
+error. Use a new archive path for an intentional fresh evaluation.
