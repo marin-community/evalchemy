@@ -7,7 +7,7 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -1082,6 +1082,7 @@ def handle_evaluation_output(
             utils.eval_logger.info(f"Logging to Weights and Biases failed due to {e}")
 
     evaluation_tracker.general_config_tracker.log_end_time()
+    results.update(asdict(evaluation_tracker.general_config_tracker))
     write_finestore_output(args.finestore_output_path, args.finestore_output_prefix, results, samples)
     if args.use_database and not args.debug:
         evaluation_tracker.update_evalresults_db(

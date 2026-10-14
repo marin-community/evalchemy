@@ -457,6 +457,8 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
         finestore_output_prefix="gsm8k_0shot",
     )
     tracker = DCEvaluationTracker(None)
+    tracker.general_config_tracker.model_name = "test-model"
+    tracker.general_config_tracker.model_source = "local-completions"
     tracker.general_config_tracker.model_name_sanitized = "test-model"
 
     handle_evaluation_output(results, args, tracker)
@@ -465,4 +467,6 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
     assert list(tmp_path.rglob("results_*.json")) == []
     loaded = EvalResults.load_archive(str(archive_root), "gsm8k_0shot")
     assert loaded.results == {"gsm8k": {"exact_match,none": 1.0}}
+    assert loaded.model_name == "test-model"
+    assert loaded.model_source == "local-completions"
     assert ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl") is None
