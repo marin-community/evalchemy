@@ -274,6 +274,13 @@ GRADING_CASES: dict[str, GradingCase] = {
         ),
         ("accuracy",),
     ),
+    "AIME24OneRepeat": GradingCase(
+        _examples_case(
+            "AIME24OneRepeat",
+            lambda benchmark: [{"problem": "p", "expected_answer": "4", "model_answers": _repeated("4", benchmark)}],
+        ),
+        ("accuracy",),
+    ),
     "AIME25": GradingCase(
         _examples_case(
             "AIME25",
