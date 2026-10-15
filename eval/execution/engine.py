@@ -97,7 +97,7 @@ class Evaluator:
         self.failures: dict[str, Counter[str]] = defaultdict(Counter)
         self.response_summary: dict[str, Counter[str]] = defaultdict(Counter)
 
-    async def operation(self, admitted, unit, request, backend, phase):
+    async def operation(self, admitted, unit, request, backend, phase, *, allow_failed_response=False):
         spec, checkpoint = admitted.spec, admitted.checkpoint
         try:
             output = await completed_operation(
@@ -107,6 +107,10 @@ class Evaluator:
                 ),
             )
         except Exception as error:
+            if allow_failed_response:
+                category = classify_task_exception(phase, error)
+                self.failures[spec.task][category] += 1
+                return FailedGeneration(category)
             raise ItemFailure(phase, error) from error
         if isinstance(output, CompletionText) and phase is FailurePhase.GENERATION:
             self.response_summary[spec.task][output.response.classification] += 1
@@ -115,6 +119,8 @@ class Evaluator:
             if phase is FailurePhase.GRADING:
                 category = FailureCategory.GRADER_INFRASTRUCTURE
             self.failures[spec.task][category] += 1
+            if allow_failed_response:
+                return output
             self.sink.write_sample(spec.task, canonicalize_sample(spec.task, {
                 "doc_id": spec.ordinal, "doc": spec.doc, "target": spec.target,
                 "arguments": [(request.prompt, dict(request.generation))],
@@ -171,12 +177,27 @@ class Evaluator:
         manifest.mark_generated([entry], [outputs])
         grade = Grade({}) if self.predict_only else await self.score(spec, outputs)
         if isinstance(grade, JudgePlan):
+            plan = grade
             judgments = []
-            for index, request in enumerate(grade.requests):
+            for index, request in enumerate(plan.requests):
                 unit = {"phase": "judge", "request_index": index}
-                judgment = await self.operation(admitted, unit, request, self.judges[spec.task], FailurePhase.GRADING)
+                judgment = await self.operation(
+                    admitted, unit, request, self.judges[spec.task], FailurePhase.GRADING,
+                    allow_failed_response=plan.on_error is not None,
+                )
                 judgments.append(judgment)
-            grade = await self.score(replace(spec, grader=grade.grader), judgments)
+            try:
+                grade = await self.score(replace(spec, grader=plan.grader), judgments)
+            except ItemFailure as error:
+                if plan.on_error is None:
+                    raise
+                fallback = replace(plan.on_error, reference={
+                    **plan.on_error.reference, "judge_error": {
+                        "category": FailureCategory.GRADER_INFRASTRUCTURE.value,
+                        "message": str(error)[:512], "exception_type": type(error.__cause__ or error).__name__,
+                    },
+                })
+                grade = await self.score(replace(spec, grader=fallback), judgments)
             if isinstance(grade, JudgePlan):
                 raise ValueError("a judge parser must produce a grade")
         metrics = grade.metrics

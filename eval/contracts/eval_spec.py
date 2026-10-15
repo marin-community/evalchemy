@@ -101,3 +101,4 @@ class JudgePlan:
 
     requests: tuple[ModelRequest, ...]
     grader: GraderSpec
+    on_error: GraderSpec | None = None

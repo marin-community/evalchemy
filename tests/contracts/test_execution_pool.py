@@ -271,3 +271,39 @@ def test_local_backend_batches_only_work_already_admitted_by_the_pool():
     results = asyncio.run(run())
     assert [item.error for item in results] == [None, None, None]
     assert model.batches == [3]
+
+
+def test_local_backend_applies_trial_rng_without_forwarding_unsupported_seed():
+    import numpy as np
+    from eval.execution.backend import LMBackend
+
+    class LocalModel:
+        world_size = 1
+
+        def apply_chat_template(self, messages):
+            return str(messages)
+
+        def generate_until(self, instances):
+            for instance in instances:
+                if "seed" in instance.args[1]:
+                    raise ValueError("unsupported generation keyword: seed")
+            return [str(np.random.randint(10000))] * len(instances)
+
+    specs = []
+    for index, trial in enumerate((0, 1, 0)):
+        original = _spec()
+        request = replace(original.requests[0], generation={"do_sample": True, "seed": 17 + trial})
+        specs.append(replace(original, source_id=str(index), ordinal=index, trial=trial, requests=(request,)))
+
+    async def run():
+        async with LMBackend(LocalModel(), seeds=(17, 23, 29, 31)) as backend:
+            engine = Evaluator(backend, _grade, CollectSamples(), workers=3)
+            return [item async for item in engine.run(specs)]
+
+    results = asyncio.run(run())
+    assert all(item.error is None for item in results)
+    actual = {item.job.source_id: item.result.responses[0] for item in results}
+    assert actual == {
+        str(index): str(np.random.RandomState(23 + trial).randint(10000))
+        for index, trial in enumerate((0, 1, 0))
+    }

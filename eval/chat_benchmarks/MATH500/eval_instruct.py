@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional  # noqa: F401
 
 
 from eval.task import BaseBenchmark
+from eval.generation_stops import END_OF_TURN_SEQUENCES
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
 # https://github.com/mlfoundations/evalchemy/blob/e70a45e41cb2ada273d6bb98e75dba303ec31f8b/eval/chat_benchmarks/AMC23/eval_instruct.py#L15
@@ -69,7 +70,8 @@ class MATH500Benchmark(BaseBenchmark):
             self.load_questions(), options,
             prompt=lambda example: PROMPT.format(problem=example['problem']),
             target=lambda example: example['answer'], grader="boxed_math",
-            generation={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
+            generation={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens,
+                        "until": list(END_OF_TURN_SEQUENCES)},
             repeats=getattr(self, "n_repeat", 1),
         )
 

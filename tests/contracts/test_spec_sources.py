@@ -126,3 +126,37 @@ def test_codeelo_source_uses_common_dispatch_and_preserves_exact_output(monkeypa
     assert metrics.finish("CodeElo")["results"]["CodeElo"]["accuracy_avg"] == expected
     assert sorted(record["sample_repeat"] for record in samples.samples["CodeElo"]) == [0, 1, 2]
     assert len(samples.samples["CodeElo"]) == 3
+
+
+def test_codeforces_source_normalizes_stdout_newlines(monkeypatch):
+    from eval.chat_benchmarks.CodeForces import eval_instruct as codeforces
+
+    problem = {
+        "id": "example", "title": "Two lines", "description": "Print two values",
+        "input_format": "", "output_format": "", "rating": 800, "time_limit": 1,
+        "interaction_format": "", "note": "", "editorial": "", "examples": [],
+        "official_tests": [{"input": "", "output": "1 2"}],
+    }
+    monkeypatch.setattr(codeforces, "load_dataset", lambda *_args, **_kwargs: {"test": [problem]})
+    source = codeforces.CodeForcesBenchmark()
+    options = SourceOptions("CodeForces", SourceRef("open-r1/codeforces"))
+
+    class Model:
+        async def execute(self, request):
+            return "```python\nprint(1)\nprint(2)\n```"
+
+    samples = CollectSamples()
+    metrics = SourceMetrics(repeated=True, policy=source.REDUCER)
+    grading = Graders(GRADERS)
+    engine = Evaluator(Model(), grading, samples, workers=2)
+
+    async def run():
+        async for result in engine.run(source.iter_specs(options)):
+            assert result.error is None
+            metrics.add(result.result)
+
+    try:
+        asyncio.run(run())
+    finally:
+        grading.close()
+    assert metrics.finish("CodeForces")["results"]["CodeForces"]["accuracy_avg"] == 1.0

@@ -254,7 +254,8 @@ def evaluate(
     model_options = parse_key_value_args(getattr(args, "model_args", ""))
     workers = int(model_options.get("num_concurrent", 1))
     results = asyncio.run(run_evaluations(lm, plans, workers=workers, sink=output_sink, checkpoints=checkpoints,
-                                         predict_only=run.predict_only or isinstance(lm, UploadInstancesToHF)))
+                                         predict_only=run.predict_only or isinstance(lm, UploadInstancesToHF), seeds=run.seeds,
+                                         supports_request_seed=args.model in ("vllm", "upload_to_hf") or isinstance(lm, UploadInstancesToHF)))
     results["task_preparations"] = getattr(args, "task_preparations", {})
     _attach_benchmark_metadata(results, args)
     return results

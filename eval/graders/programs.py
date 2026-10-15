@@ -28,10 +28,11 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     reference = spec.grader.reference
     tests = reference["tests"]
     timeout = float(reference["timeout"])
+    deadline_grace = float(reference.get("deadline_grace", 5))
     code = blocks[-1].split("</code>")[0].replace("<code>", "")
     result = run(
         tests, code, stdin_mode=reference["stdin"], fn_name=reference.get("entry_point"),
-        test_timeout=timeout, deadline=(timeout + 1) * len(tests) + 5,
+        test_timeout=timeout, deadline=(timeout + 1) * len(tests) + deadline_grace,
         comparison=reference["comparison"],
     )
     return Grade({"accuracy": float(bool(tests) and result["passed"])}, {"filtered_resps": [blocks]})

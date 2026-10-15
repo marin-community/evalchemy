@@ -2,6 +2,8 @@ from eval.sources.common import conversation_specs
 from eval.contracts.eval_spec import ReducerSpec, SourceRef
 from dataclasses import dataclass
 from typing import Optional
+import glob
+import json
 import os
 import logging
 from pathlib import Path
@@ -9,7 +11,51 @@ from pathlib import Path
 
 from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.task import BaseBenchmark
-from fastchat.llm_judge.common import load_questions, load_model_answers, load_judge_prompts, NEED_REF_CATS, temperature_config
+
+
+# MT-Bench source construction needs only these bundled data conventions. Keep
+# them here so importing the benchmark does not load FastChat's serving stack.
+NEED_REF_CATS = ["math", "reasoning", "coding", "arena-hard-200"]
+temperature_config = {
+    "writing": 0.7,
+    "roleplay": 0.7,
+    "extraction": 0.0,
+    "math": 0.0,
+    "coding": 0.0,
+    "reasoning": 0.0,
+    "stem": 0.1,
+    "humanities": 0.1,
+    "arena-hard-200": 0.0,
+}
+
+
+def load_questions(question_file: str, begin: Optional[int], end: Optional[int]):
+    """Load the requested contiguous range of bundled MT-Bench questions."""
+    with open(question_file) as questions:
+        return [json.loads(line) for line in questions if line][begin:end]
+
+
+def load_model_answers(answer_dir: str):
+    """Load bundled reference answers indexed by model name and question id."""
+    answers = {}
+    for filename in sorted(glob.glob(os.path.join(answer_dir, "*.jsonl"))):
+        with open(filename) as answer_file:
+            answers[Path(filename).stem] = {
+                record["question_id"]: record
+                for line in answer_file
+                if (record := json.loads(line))
+            }
+    return answers
+
+
+def load_judge_prompts(prompt_file: str):
+    """Load bundled judge prompts indexed by their stable prompt name."""
+    with open(prompt_file) as prompts_file:
+        return {
+            record["name"]: record
+            for line in prompts_file
+            if (record := json.loads(line))
+        }
 
 
 @dataclass
@@ -95,4 +141,5 @@ class MTBenchBenchmark(BaseBenchmark):
             generation=lambda row: {"max_gen_toks": self.config.max_new_token,
                                     "do_sample": temperature_config.get(row["category"], 0.7) >= 1e-4,
                                     "temperature": temperature_config.get(row["category"], 0.7)},
+            seed_repeats=False,
         )

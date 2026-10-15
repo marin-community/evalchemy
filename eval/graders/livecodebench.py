@@ -182,6 +182,8 @@ def _score(value, expected, comparison="coerced"):
     """Compare a candidate output to its expected value, tolerating int/str/float and list/tuple."""
     if comparison == "exact":
         return value == expected
+    if comparison == "stdout_normalized":
+        return _normalize_stdout(value) == _normalize_stdout(expected)
     if value == expected:
         return True
     try:
@@ -193,6 +195,11 @@ def _score(value, expected, comparison="coerced"):
     except (TypeError, ValueError):
         pass
     return False
+
+
+def _normalize_stdout(value):
+    """Match CodeForces' published stdout comparison before exact equality."""
+    return str(value).strip().replace("\n", " ").replace("\r", "")
 
 
 def _run_stdin(completion, test_input):

@@ -112,7 +112,7 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
     return plans
 
 
-async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=None, checkpoints=None, predict_only=False) -> dict:
+async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=None, checkpoints=None, predict_only=False, seeds=RunSpec.seeds, supports_request_seed=False) -> dict:
     samples = CollectSamples() if sink is None else sink
     definitions = dict(GRADERS)
     for plan in plans:
@@ -124,7 +124,7 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
             by_task[task].append(plan)
     scored: dict[str, set[str]] = {task: set() for task in by_task}
     try:
-        async with LMBackend(model) as backend, ClientSession(timeout=ClientTimeout(total=None)) as judge_session:
+        async with LMBackend(model, seeds=seeds, supports_request_seed=supports_request_seed) as backend, ClientSession(timeout=ClientTimeout(total=None)) as judge_session:
             judges = {
                 task: JudgeBackend(plan.judge_config, judge_session)
                 for plan in plans if plan.judge_config is not None for task in plan.task_names

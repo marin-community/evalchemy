@@ -156,6 +156,13 @@ def test_stdin_mode_feeds_input_and_compares_stdout():
     assert result["passed"] is True
 
 
+def test_stdout_normalized_comparison_preserves_codeforces_line_handling():
+    tests = [{"input": "", "output": "1 2"}]
+    completion = "print(1)\nprint(2)\n"
+    assert livecodebench.run(tests, completion, stdin_mode=True, comparison="stdout_normalized")["passed"] is True
+    assert livecodebench.run(tests, completion, stdin_mode=True, comparison="exact")["passed"] is False
+
+
 def test_fn_name_overrides_inferred_name():
     """The caller-supplied fn_name is the function to call, not the inferred one."""
     completion = "def helper(a, b):\n    return a + b\n"

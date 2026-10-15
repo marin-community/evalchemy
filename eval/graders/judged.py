@@ -10,6 +10,7 @@ from typing import Any
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, JudgePlan, ModelRequest, RequestKind
 from eval.graders.answer_equivalence import JUDGE_PROMPT, JudgeLabel
 from eval.graders.simpleqa import SIMPLEQA_GRADER_TEMPLATE, _parse_simpleqa_judgment
+from eval.contracts.failures import FailureCategory
 
 
 @lru_cache
@@ -102,6 +103,7 @@ def simpleqa(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:
     return JudgePlan(
         (ModelRequest(RequestKind.GENERATE, prompt, {"temperature": 0, "max_gen_toks": 2048}),),
         GraderSpec("simpleqa_label"),
+        GraderSpec("judge_failed"),
     )
 
 def simpleqa_label(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
@@ -120,6 +122,7 @@ def equivalence_judge(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:
     return JudgePlan(
         (ModelRequest(RequestKind.GENERATE, prompt, {"temperature": 0, "max_gen_toks": 2048}),),
         GraderSpec("equivalence_label", {"answer": str(responses[-1])}),
+        GraderSpec("judge_failed"),
     )
 
 def equivalence_label(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
@@ -139,3 +142,15 @@ def equivalence_label(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
             "judge_raw": raw,
         },
     )
+
+
+def judge_failed(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
+    """Record an unavailable or invalid judge response without assigning a score."""
+    metrics = {"judge_failed": 1.0}
+    if "accuracy" in spec.grader.reference:
+        metrics["accuracy"] = spec.grader.reference["accuracy"]
+    return Grade(metrics, {
+        "judge_label": None, "judge_raw": None,
+        "failure_category": FailureCategory.GRADER_INFRASTRUCTURE.value,
+        "judge_error": spec.grader.reference["judge_error"],
+    })

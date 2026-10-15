@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from importlib import import_module
+from dataclasses import replace
 import re
 from typing import Any
 
-from eval.contracts.eval_spec import EvalSpec, Grade, JudgePlan
+from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, JudgePlan
 from eval.completion_response import CompletionClassification, CompletionText
 from eval.graders.answer_equivalence import math_answers_equivalent
 from eval.graders.answer_extraction import extract_final_boxed_answer
@@ -97,7 +98,7 @@ def answer_number(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
 def jee(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     from eval.chat_benchmarks.JEEBench.utils import compute_score
 
-    answer = extract_final_boxed_answer(responses[-1])
+    answer = _boxed_answer(responses[-1], "hendrycks_math")
     return Grade({"accuracy": float(compute_score(spec.target, answer, spec.grader.reference["type"]))},
                  {"filtered_resps": [answer]})
 
@@ -118,4 +119,4 @@ def math_equivalence(spec: EvalSpec, responses: Sequence[Any]) -> Grade | JudgeP
     correct = bool(answer.strip()) and math_answers_equivalent(answer, spec.grader.reference["answers"])
     if correct or not spec.grader.reference["judge"]:
         return Grade({"accuracy": float(correct)}, {"filtered_resps": [answer], "method": "minerva"})
-    return equivalence_judge(spec, [answer])
+    return replace(equivalence_judge(spec, [answer]), on_error=GraderSpec("judge_failed", {"accuracy": 0.0}))

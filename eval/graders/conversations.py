@@ -23,14 +23,18 @@ def mtbench(spec, responses):
 
 def turn_ratings(spec, responses):
     scores = []
-    for response in responses:
-        match = re.search(r"\[\[?(\d+(?:\.\d+)?)\]\]?", str(response))
+    metrics = {}
+    for index, response in enumerate(responses):
+        match = re.search(r"\[\[(\d+\.?\d*)\]\]", str(response)) or re.search(r"\[(\d+\.?\d*)\]", str(response))
         if match is None:
-            raise ValueError("judge returned no numeric rating")
-        scores.append(float(match.group(1)))
-    metrics = {f"Turn {index + 1}": score for index, score in enumerate(scores)}
+            continue
+        score = float(match.group(1))
+        scores.append(score)
+        metrics[f"Turn {index + 1}"] = score
+    if not scores:
+        return Grade({}, {"judge_raw": [str(response) for response in responses]})
     metrics["Average"] = sum(scores) / len(scores)
-    return Grade(metrics, {"judge_raw": [str(response) for response in responses]})
+    return Grade(metrics, {"judge_raw": [str(response) for response in responses]}, {"Average": len(scores)})
 
 
 def livebench(spec, responses):

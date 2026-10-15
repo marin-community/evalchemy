@@ -50,6 +50,8 @@ class SourceMetrics:
     def finish(self, task: str) -> dict:
         metrics = self.means.finish()
         count = len(self.examples)
+        if self.policy.name == "rounded_split_mean":
+            return {"results": {task: self._rounded_split_metrics()}}
         if self.pass_at_k is not None:
             metrics = self.pass_at_k.finish()
         elif "accuracy" in metrics:
@@ -69,9 +71,20 @@ class SourceMetrics:
                 denominator = len(accuracies) * (len(accuracies) - self.policy.repeat_ddof)
                 metrics[stderr_name] = math.sqrt(sum((value - accuracy) ** 2 for value in accuracies) / denominator) if denominator > 0 else 0.0
             else:
-                variance = max(0, self.squared_accuracy - count * accuracy ** 2) / (count - 1) if count > 1 else 0
-                metrics.update(num_total=count, num_solved=accuracy * count)
-                metrics[stderr_name] = math.sqrt(variance / count)
+                observed = self.means.counts["accuracy"]
+                variance = max(0, self.squared_accuracy - observed * accuracy ** 2) / (observed - 1) if observed > 1 else 0
+                metrics.update(num_total=count, num_solved=accuracy * self.means.counts["accuracy"])
+                metrics[stderr_name] = math.sqrt(variance / observed)
+        if "judge_failed" in self.means.sums:
+            judged = self.means.counts["accuracy"]
+            metrics.update(
+                num_total=count,
+                num_judged=judged,
+                num_judge_failed=self.means.sums["judge_failed"],
+                judge_coverage=judged / count if count else 0.0,
+            )
+            if not judged:
+                metrics[self.policy.accuracy] = None
         for (tag, group), accumulator in self.groups.items():
             for metric, value in accumulator.finish().items():
                 if tag in self.policy.groups:
@@ -90,12 +103,12 @@ class SourceMetrics:
             incorrect = self.means.sums["incorrect"]
             not_attempted = self.means.sums["not_attempted"]
             judged = correct + incorrect + not_attempted
-            accuracy = correct / judged if judged else 0.0
+            accuracy = correct / judged if judged else None
             attempted = correct / (correct + incorrect) if correct + incorrect else 0.0
             metrics.update(
-                accuracy=accuracy, correct_rate=accuracy, incorrect_rate=incorrect / judged if judged else 0.0,
-                not_attempted_rate=not_attempted / judged if judged else 0.0,
-                accuracy_given_attempted=attempted, f1=2 * accuracy * attempted / (accuracy + attempted) if accuracy + attempted else 0.0,
+                accuracy=accuracy, correct_rate=accuracy, incorrect_rate=incorrect / judged if judged else None,
+                not_attempted_rate=not_attempted / judged if judged else None,
+                accuracy_given_attempted=attempted, f1=2 * accuracy * attempted / (accuracy + attempted) if accuracy is not None and accuracy + attempted else 0.0,
                 num_judged=judged, num_correct=correct, num_incorrect=incorrect, num_not_attempted=not_attempted,
                 num_judge_failed=self.means.sums["judge_failed"], judge_coverage=judged / count,
             )
@@ -116,3 +129,25 @@ class SourceMetrics:
 
             metrics = get_length_controlled_winrate(self.annotations, save_weights_dir=None)
         return {"results": {task: metrics}}
+
+    def _rounded_split_metrics(self) -> dict[str, float]:
+        grouped: dict[str, dict[str, tuple[float, float]]] = defaultdict(dict)
+        for (tag, value), accumulator in self.groups.items():
+            if tag == "split":
+                grouped["overall"][value] = self._rounded_accuracy(accumulator)
+            elif tag == "benchmark_split":
+                benchmark, split = value.rsplit("|", 1)
+                grouped[benchmark][split] = self._rounded_accuracy(accumulator)
+        return {
+            name: self._weighted_split_score(splits)
+            for name, splits in grouped.items()
+        }
+
+    @staticmethod
+    def _rounded_accuracy(accumulator: MeanMetrics) -> tuple[float, float]:
+        return round(accumulator.finish()["accuracy"], 3), accumulator.counts["accuracy"]
+
+    @staticmethod
+    def _weighted_split_score(splits: dict[str, tuple[float, float]]) -> float:
+        total = sum(count for _score, count in splits.values())
+        return sum(score * count for score, count in splits.values()) / total

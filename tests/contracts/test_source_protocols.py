@@ -5,22 +5,13 @@ import json
 
 import pytest
 
+from eval.completion_response import FailedGeneration
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.contracts.eval_spec import SourceRef
-from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import evaluate_source
 from eval.runtime.checkpoints import input_digest
-
-
-class FixedEndpoint:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response
+from eval.sources.common import SourceOptions
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 class MemoryCheckpoints:
@@ -57,6 +48,40 @@ def test_simpleqa_restores_candidate_and_judge_operations_without_repaying():
     assert candidate_again.requests == judge_again.requests == []
 
 
+def test_failed_judge_retries_on_resume_without_regenerating_candidate():
+    source = SimpleQABenchmark(debug=True)
+    options = SourceOptions("SimpleQA", SourceRef(source.data_file), limit=1)
+    store = MemoryCheckpoints()
+    first, _ = evaluate_source(
+        source, options, FixedEndpoint("candidate"),
+        judges={"SimpleQA": FixedEndpoint(FailedGeneration("model_transport"))}, checkpoints={"SimpleQA": store},
+    )
+    assert first["accuracy"] is None
+    candidate, judge = FixedEndpoint("new candidate"), FixedEndpoint("B")
+    resumed, _ = evaluate_source(source, options, candidate, judges={"SimpleQA": judge}, checkpoints={"SimpleQA": store})
+    assert resumed["accuracy"] == 0.0
+    assert candidate.requests == []
+    assert len(judge.requests) == 1
+
+
+def test_simpleqa_excludes_unavailable_judges_from_classification_metrics(tmp_path):
+    data_file = tmp_path / "simpleqa.csv"
+    data_file.write_text("problem,answer,metadata\nCapital of France?,Paris,{}\nCapital of Spain?,Madrid,{}\n")
+    judge = FixedEndpoint(lambda request: "A" if len(judge.requests) == 1 else FailedGeneration("model_transport"))
+
+    metrics, _samples = evaluate_source(
+        SimpleQABenchmark(data_file=str(data_file)),
+        SourceOptions("SimpleQA", SourceRef(str(data_file))),
+        FixedEndpoint("candidate"),
+        judges={"SimpleQA": judge},
+    )
+
+    assert metrics["accuracy"] == 1.0
+    assert metrics["num_judged"] == 1
+    assert metrics["num_judge_failed"] == 1
+    assert metrics["judge_coverage"] == pytest.approx(0.5)
+
+
 def test_instruction_reducer_weights_by_constraints_instead_of_averaging_prompt_rates(tmp_path):
     records = []
     for key, keywords in enumerate((["apple"], ["apple", "banana", "orange"])):
@@ -84,7 +109,6 @@ def test_explicit_trials_share_binary_pass_at_k_reduction():
                 [{"id": "a"}, {"id": "b"}], options,
                 prompt=lambda row: row["id"], target=lambda row: "yes", grader="exact_match",
                 generation={"do_sample": True},
-                seed_repeats=True,
             )
 
     class Backend:

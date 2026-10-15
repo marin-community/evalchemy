@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
+import numpy as np
 
 from aiohttp import ClientConnectionError, ClientPayloadError, ClientResponseError, ClientSession, ClientTimeout, TCPConnector
 from lm_eval import utils
@@ -21,6 +23,7 @@ from eval.contracts.preflight import validate_model_request
 from eval.contracts.failures import FailureCategory
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 from eval.runtime.pool import RetryPolicy, retry
+from eval.execution.run_spec import RunSpec
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
@@ -56,12 +59,22 @@ class _Admitted:
         pass
 
 
+def _local_call(model, kind, instances, seeds):
+    if seeds is not None:
+        for seed, initialize in zip(seeds, (random.seed, np.random.seed, utils.set_torch_seed), strict=True):
+            if seed is not None:
+                initialize(seed)
+    return getattr(model, kind)(instances)
+
+
 @dataclass
 class LMBackend:
     """One initialized LM, used as a transport or local inference implementation."""
 
     model: LM
     session: ClientSession | None = None
+    seeds: tuple[int | None, ...] = RunSpec.seeds
+    supports_request_seed: bool = False
     _pending: list = field(default_factory=list, init=False, repr=False)
     _batch: asyncio.Task | None = field(default=None, init=False, repr=False)
 
@@ -101,8 +114,15 @@ class LMBackend:
             request.metadata.get("task"), request.metadata.get("ordinal"), 1,
         ))
         instance.repeat_idx = request.metadata.get("trial") or 0
+        rng = None
+        if request.kind is RequestKind.GENERATE and "seed" in parameters and not self.supports_request_seed:
+            # HF-style generation uses process RNGs rather than a seed keyword.
+            # Keep distinct trial RNGs in distinct local batches.
+            rng = (parameters.pop("seed"), *(
+                None if value is None else value + instance.repeat_idx for value in self.seeds[1:3]
+            ))
         future = asyncio.get_running_loop().create_future()
-        self._pending.append((instance, future))
+        self._pending.append((instance, future, rng))
         if self._batch is None or self._batch.done():
             self._batch = asyncio.create_task(self._local_batches())
         return await future
@@ -113,13 +133,13 @@ class LMBackend:
         await asyncio.sleep(0)
         while self._pending:
             pending, self._pending = self._pending, []
-            for kind in dict.fromkeys(instance.request_type for instance, _ in pending):
-                batch = [(instance, future) for instance, future in pending
-                         if instance.request_type == kind and not future.cancelled()]
+            for kind, rng in dict.fromkeys((instance.request_type, rng) for instance, _, rng in pending):
+                batch = [(instance, future) for instance, future, item_rng in pending
+                         if instance.request_type == kind and item_rng == rng and not future.cancelled()]
                 if not batch:
                     continue
                 try:
-                    outputs = await asyncio.to_thread(getattr(self.model, kind), [item for item, _ in batch])
+                    outputs = await asyncio.to_thread(_local_call, self.model, kind, [item for item, _ in batch], rng)
                     if len(outputs) != len(batch):
                         raise ValueError(f"model returned {len(outputs)} outputs for {len(batch)} requests")
                 except Exception as error:

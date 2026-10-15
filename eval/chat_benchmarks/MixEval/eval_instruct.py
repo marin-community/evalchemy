@@ -1,5 +1,5 @@
 from eval.sources.common import text_specs
-from eval.contracts.eval_spec import SourceRef
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
 from .mix_eval.prompts.evaluation_prompts import construct_prompt_freeform, construct_prompt_multichoice
 from typing import Optional
 import logging
@@ -18,8 +18,9 @@ class MixEvalBenchmark(BaseBenchmark):
 
     REQUIRES_JUDGE = True
     SOURCE = SourceRef("MixEval", "test", "2024-06-01")
-    METRICS = ("accuracy",)
-    PRIMARY_METRIC = "accuracy"
+    METRICS = ("overall",)
+    PRIMARY_METRIC = "overall"
+    REDUCER = ReducerSpec(name="rounded_split_mean")
 
     def __init__(
         self,
@@ -65,5 +66,9 @@ class MixEvalBenchmark(BaseBenchmark):
                 rows, options, namespace=split, prompt=formatter, target=lambda row: row["target"],
                 grader="mixeval", reference=lambda row: {"kind": split},
                 generation={"temperature": 1.0, "do_sample": True},
-                tags=lambda row: {"benchmark": row["benchmark_name"], "split": split},
+                seed_repeats=False,
+                tags=lambda row: {
+                    "split": split,
+                    "benchmark_split": f"{row['benchmark_name']}|{split}",
+                },
             )

@@ -70,7 +70,7 @@ def text_specs(
             if options.num_samples > 1:
                 parameters.update(do_sample=True, temperature=0.7, top_p=1.0)
             parameters = generation_parameters(parameters, options.generation)
-            if seed_repeats and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
+            if (seed_repeats or options.num_samples > 1) and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
                 for alias in ("max_new_tokens", "max_gen_toks", "max_tokens", "max_completion_tokens"):
