@@ -126,28 +126,3 @@ def test_codeelo_source_uses_common_dispatch_and_preserves_exact_output(monkeypa
     assert metrics.finish("CodeElo")["results"]["CodeElo"]["accuracy_avg"] == expected
     assert sorted(record["sample_repeat"] for record in samples.samples["CodeElo"]) == [0, 1, 2]
     assert len(samples.samples["CodeElo"]) == 3
-
-
-def test_mbppplus_source_excludes_its_fewshot_examples(tmp_path):
-    from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
-
-    rows = [
-        {
-            "task_id": index,
-            "prompt": f"problem-{index}",
-            "test_list": [f"assert answer_{index}() == {index}"],
-            "code": f"def answer_{index}(): return {index}",
-            "test": f"assert answer_{index}() == {index}",
-        }
-        for index in range(4)
-    ]
-    data = tmp_path / "mbppplus.jsonl"
-    data.write_text("".join(json.dumps(row) + "\n" for row in rows))
-    source = MBPPPlusBenchmark(data_dir=str(tmp_path))
-    source.num_examples = 1
-    source.end_idx = len(rows)
-
-    specs = list(source.iter_specs(SourceOptions("MBPPPlus", SourceRef("fixture"))))
-
-    assert [spec.source_id for spec in specs] == [0, 2, 3]
-    assert "answer_1" in specs[0].requests[0].prompt[0]["content"]

@@ -53,7 +53,7 @@ class AIWBenchmark(BaseBenchmark):
         """Load AIW questions from the data file."""
         with open(self.data_file, "r") as f:
             questions = json.load(f)
-        questions = [question for question in questions if question["id"] in self.TARGET_IDS]
+            
         if self.debug:
             questions = questions[:2]
             self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
@@ -62,8 +62,9 @@ class AIWBenchmark(BaseBenchmark):
         return questions
 
     def iter_specs(self, options):
+        rows = (row for row in self.load_questions() if row["id"] in self.TARGET_IDS)
         return text_specs(
-            self.load_questions(), options, prompt=lambda row: row["prompt"], target=lambda row: str(row["right_answer"]),
+            rows, options, prompt=lambda row: row["prompt"], target=lambda row: str(row["right_answer"]),
             grader="answer_number", generation={"do_sample": True, "temperature": 1.0,
                                                 "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
             tags=lambda row: {"id": str(row["id"])},
