@@ -7,10 +7,13 @@ from collections import Counter
 from types import SimpleNamespace
 
 import pytest
+from finestore.eval import ARCHIVE_SAMPLES_TABLE
+from finestore.reader import ReadView
 from lm_eval.models.openai_completions import LocalChatCompletion
 
 from eval.completion_response import CompletionClassification, CompletionContentPolicy
 from eval.contracts.failures import ModelRequestValidationError
+from eval.contracts.finestore_output import FineStoreOutput
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
 from eval.contracts.sample_results import record_sample_metrics
@@ -99,7 +102,7 @@ def _args(**overrides):
     return Namespace(**values)
 
 
-def _custom_evaluate(benchmark, **arg_overrides):
+def _custom_evaluate(benchmark, output_sink=None, **arg_overrides):
     task = "contract_task"
     return evaluate(
         lm=_Model(),
@@ -109,6 +112,7 @@ def _custom_evaluate(benchmark, **arg_overrides):
         task_routes={task: CHAT_BENCHMARK_ROUTE},
         batch_sizes_list=[1],
         args=_args(**arg_overrides),
+        output_sink=output_sink,
     )
 
 
@@ -175,6 +179,19 @@ def test_custom_task_zero_score_is_a_successful_typed_outcome():
     }
 
 
+def test_custom_task_stages_samples_before_aggregate_result(tmp_path):
+    root = str(tmp_path / "archive")
+    benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 0.0})
+
+    with FineStoreOutput(root, "run", ["contract_task"]) as output:
+        result = _custom_evaluate(benchmark, output_sink=output)
+        assert "samples" not in result
+        staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+        assert staged is not None
+        assert staged.num_rows == 1
+        output.finish(result)
+
+
 def test_custom_grader_infrastructure_failure_is_reported_without_a_score():
     benchmark = _Benchmark(
         {"examples": [{"prompt": "x"}]},
@@ -202,7 +219,8 @@ def test_failed_task_is_saved_in_the_results_package(tmp_path):
         batch_size=1,
     )
 
-    handle_evaluation_output(result, args, tracker)
+    with FineStoreOutput(args.finestore_output_path, args.finestore_output_prefix, ["contract_task"]) as output:
+        handle_evaluation_output(result, args, tracker, output_sink=output)
 
     saved = EvalResults.load_archive(str(tmp_path / "archive"))
     assert saved.task_outcomes["contract_task"].failure.category is FailureCategory.GRADER_INFRASTRUCTURE

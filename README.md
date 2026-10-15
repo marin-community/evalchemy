@@ -479,8 +479,13 @@ If you find Evalchemy useful, please consider citing us!
 
 ## Sample records
 
-Each scored task writes normalized rows to FineStore's `samples` table. The
-aggregate result is stored in the `evalchemy_results` table. Sample rows contain
+Each scored task writes normalized rows to FineStore's `samples` table. lm-eval
+appends each record as its document is scored; custom benchmark adapters append
+their records after grading. Rows flush during evaluation and at task boundaries. The aggregate
+result is committed to `evalchemy_results` after task validation. If evaluation
+stops early, committed samples remain readable in the unsealed archive; rerunning
+the same inputs restores request checkpoints and supersedes duplicate sample keys.
+Sample rows contain
 `schema_version: 1`, `task_name`, `doc_id`, `doc`, `target`,
 `arguments`, `resps`, `filtered_resps`, `filter`, `doc_hash`, `prompt_hash`, and
 `target_hash`. These are lm-eval-compatible records with a stable Evalchemy
@@ -490,3 +495,5 @@ retain their native fields unchanged. FineStore's `evalchemy_resume` table
 stores completed request payloads; retries restore them by default. A completed
 result is preserved on retry. A changed fingerprint raises an
 error. Use a new archive path for an intentional fresh evaluation.
+When W&B logging is enabled, aggregate metrics are sent to W&B and sample records
+remain in FineStore.

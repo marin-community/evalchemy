@@ -258,7 +258,7 @@ def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, tmp_path,
     args.model = model
     monkeypatch.setattr("eval.eval.setup_evaluation_tracker", lambda *_args: None)
     monkeypatch.setattr("eval.eval.add_results_metadata", lambda *_args: None)
-    monkeypatch.setattr("eval.eval.handle_evaluation_output", lambda *_args: None)
+    monkeypatch.setattr("eval.eval.handle_evaluation_output", lambda *_args, **_kwargs: None)
 
     cli_evaluate(args)
 

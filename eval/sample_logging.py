@@ -5,11 +5,11 @@ single normalization boundary: it gives custom benchmarks and lm-eval-native
 tasks the same record envelope before FineStore stores them.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 from eval.completion_response import CompletionText, FailedGeneration
-from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
+from eval.contracts.sample_manifest import SampleCoverageError, SampleEntry, SampleManifest
 from eval.contracts.sample_results import SampleMetricsError, validate_sample_metrics
 from eval.lm_eval_tasks.drop.utils import DropAnswer
 
@@ -61,40 +61,74 @@ def canonicalize_samples(
                 f"contains {len(manifest_entries)} samples"
             )
 
-    canonical: list[dict[str, Any]] = []
-    for doc_id, sample in enumerate(samples):
-        record = dict(sample)
-        if task_name.lower() in _IFEVAL_TASKS:
-            _normalize_ifeval_instruction_metrics(record)
-        record["schema_version"] = SAMPLE_SCHEMA_VERSION
-        record["task_name"] = task_name
-        record.setdefault("doc_id", doc_id)
-        record.setdefault("doc", {})
-        record.setdefault("target", "")
-        record.setdefault("arguments", [])
-        record.setdefault("resps", [])
-        record.setdefault("filtered_resps", [])
-        record.setdefault("filter", DEFAULT_FILTER_NAME)
-        if manifest_entries:
-            entry = manifest_entries[doc_id]
-            record["sample_id"] = entry.sample_id
-            record["source_id"] = entry.source_id
-            record["sample_ordinal"] = entry.ordinal
-            record["sample_namespace"] = entry.namespace
-            record["sample_shard"] = entry.shard
-            record["sample_repeat"] = entry.repeat
-        completion_artifacts = _completion_artifacts(record["resps"])
-        if completion_artifacts is not None:
-            record["completion_responses"] = completion_artifacts
-            failure_category = _completion_failure_category(completion_artifacts)
-            if failure_category is not None:
-                record["failure_category"] = failure_category
-        drop_extractions = _drop_extractions(record["filtered_resps"])
-        if drop_extractions is not None:
-            record["drop_extractions"] = drop_extractions
-        canonical.append(record)
+    canonical = [
+        canonicalize_sample(task_name, sample, index, manifest_entries[index] if manifest_entries else None)
+        for index, sample in enumerate(samples)
+    ]
     validate_sample_metrics(task_name, canonical)
     return canonical
+
+
+def canonicalize_sample(
+    task_name: str, sample: Mapping[str, Any], index: int, entry: SampleEntry | None = None
+) -> dict[str, Any]:
+    """Add the stable envelope and optional manifest identity to one scored record."""
+    record = dict(sample)
+    if task_name.lower() in _IFEVAL_TASKS:
+        _normalize_ifeval_instruction_metrics(record)
+    record["schema_version"] = SAMPLE_SCHEMA_VERSION
+    record["task_name"] = task_name
+    record.setdefault("doc_id", index)
+    record.setdefault("doc", {})
+    record.setdefault("target", "")
+    record.setdefault("arguments", [])
+    record.setdefault("resps", [])
+    record.setdefault("filtered_resps", [])
+    record.setdefault("filter", DEFAULT_FILTER_NAME)
+    if entry is not None:
+        record["sample_id"] = entry.sample_id
+        record["source_id"] = entry.source_id
+        record["sample_ordinal"] = entry.ordinal
+        record["sample_namespace"] = entry.namespace
+        record["sample_shard"] = entry.shard
+        record["sample_repeat"] = entry.repeat
+    completion_artifacts = _completion_artifacts(record["resps"])
+    if completion_artifacts is not None:
+        record["completion_responses"] = completion_artifacts
+        failure_category = _completion_failure_category(completion_artifacts)
+        if failure_category is not None:
+            record["failure_category"] = failure_category
+    drop_extractions = _drop_extractions(record["filtered_resps"])
+    if drop_extractions is not None:
+        record["drop_extractions"] = drop_extractions
+    return record
+
+
+def iter_custom_samples(
+    task_name: str,
+    samples: Sequence[Mapping[str, Any]],
+    sample_manifest: SampleManifest | None,
+) -> Iterator[dict[str, Any]]:
+    """Validate and canonicalize custom benchmark records without another task-sized list."""
+    entries = ()
+    if sample_manifest is not None and sample_manifest.expected_sample_count:
+        entries = sample_manifest.sample_entries(namespace=task_name)
+        unit_entries = sample_manifest.unit_entries(namespace=task_name)
+        if not entries and sample_manifest.task_name == task_name:
+            entries = sample_manifest.sample_entries()
+            unit_entries = sample_manifest.unit_entries()
+        if len(samples) != len(entries) and len(samples) == len(unit_entries):
+            entries = unit_entries
+        if len(samples) != len(entries):
+            raise SampleCoverageError(
+                f"{task_name}: sample logger received {len(samples)} records but the manifest "
+                f"contains {len(entries)} samples"
+            )
+
+    for index, sample in enumerate(samples):
+        record = canonicalize_sample(task_name, sample, index, entries[index] if entries else None)
+        validate_sample_metrics(task_name, [record])
+        yield record
 
 
 def _normalize_ifeval_instruction_metrics(record: dict[str, Any]) -> None:

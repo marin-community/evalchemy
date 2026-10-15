@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import threading
+from argparse import Namespace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +15,12 @@ import transformers
 import yaml
 from lm_eval import evaluator
 from lm_eval.api.instance import Instance
+from lm_eval.api.model import LM
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
 from lm_eval.tasks import TaskManager
 from lm_eval.utils import simple_parse_args_string
+from finestore.eval import ARCHIVE_SAMPLES_TABLE
+from finestore.reader import ReadView
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
@@ -25,7 +29,10 @@ from eval.chat_benchmarks.GPQADiamond.eval_instruct import GPQADiamondBenchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
 from eval.contracts.sample_manifest import SampleManifest
+from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
+from eval.eval import LM_EVAL_ROUTE, evaluate
 from eval.resume.lm_eval_native import resume_simple_evaluate
+from eval.sample_logging import canonicalize_sample
 from eval.robust_api import configure_generation_overrides
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
@@ -69,6 +76,22 @@ def _model(endpoint, model_class):
         tokenizer_backend=None,
         tokenized_requests=False,
     )
+
+
+class _PlainLM(LM):
+    def __init__(self):
+        super().__init__()
+        self.requests = []
+
+    def generate_until(self, requests):
+        self.requests.extend(requests)
+        return ["\\boxed{42}"] * len(requests)
+
+    def loglikelihood(self, _requests):
+        raise AssertionError("generation task requested loglikelihood")
+
+    def loglikelihood_rolling(self, _requests):
+        raise AssertionError("generation task requested rolling loglikelihood")
 
 
 @pytest.mark.parametrize(
@@ -313,6 +336,111 @@ def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint,
     if "max_gen_toks" in overrides:
         assert payload["max_tokens"] == overrides["max_gen_toks"]
         assert "max_gen_toks" not in payload
+
+
+def test_lm_eval_stages_scored_sample_before_aggregate_result(tmp_path):
+    dataset = tmp_path / "questions.jsonl"
+    dataset.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
+    task = {
+        "task": "streaming_probe",
+        "dataset_path": "json",
+        "dataset_kwargs": {"data_files": {"test": str(dataset)}},
+        "test_split": "test",
+        "output_type": "generate_until",
+        "doc_to_text": "{{question}}",
+        "doc_to_target": "{{answer}}",
+        "metric_list": [{"metric": "exact_match"}],
+    }
+    (tmp_path / "streaming_probe.yaml").write_text(yaml.safe_dump(task))
+    root = str(tmp_path / "archive")
+    manifest = SampleManifest("streaming_probe")
+    model = _PlainLM()
+
+    with FineStoreOutput(root, "streaming_probe", ["streaming_probe"]) as output:
+        def stage(task_name, sample, index):
+            entry = manifest.sample_entries(namespace=task_name)[index]
+            output.write_sample(task_name, canonicalize_sample(task_name, sample, index, entry))
+
+        result = resume_simple_evaluate(
+            evaluator.simple_evaluate,
+            model=model,
+            tasks=["streaming_probe"],
+            task_manager=TaskManager(include_path=str(tmp_path)),
+            sample_manifest=manifest,
+            sample_callback=stage,
+            limit=1,
+        )
+        output.finish_task()
+
+        rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+        assert rows is not None
+        assert rows.num_rows == 1
+        assert read_finestore_output(root, "streaming_probe") is None
+        assert not result.get("samples", {}).get("streaming_probe")
+        output.finish({"results": result["results"]})
+
+    assert len(model.requests) == 1
+    assert read_finestore_output(root, "streaming_probe")["results"] == result["results"]
+
+
+def test_evaluation_driver_streams_lm_eval_samples_without_result_list(tmp_path):
+    dataset = tmp_path / "questions.jsonl"
+    dataset.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
+    task = {
+        "task": "streaming_driver_probe",
+        "dataset_path": "json",
+        "dataset_kwargs": {"data_files": {"test": str(dataset)}},
+        "test_split": "test",
+        "output_type": "generate_until",
+        "doc_to_text": "{{question}}",
+        "doc_to_target": "{{answer}}",
+        "metric_list": [{"metric": "exact_match"}],
+    }
+    (tmp_path / "streaming_driver_probe.yaml").write_text(yaml.safe_dump(task))
+    root = str(tmp_path / "archive")
+    model = _PlainLM()
+    args = Namespace(
+        model=model,
+        model_args="",
+        num_fewshot=0,
+        max_batch_size=None,
+        device=None,
+        limit=1,
+        check_integrity=False,
+        write_out=False,
+        system_instruction=None,
+        apply_chat_template=False,
+        fewshot_as_multiturn=False,
+        gen_kwargs=None,
+        verbosity="INFO",
+        predict_only=False,
+        confirm_run_unsafe_code=False,
+        seed=[0, 0, 0, 0],
+        task_preparations={},
+        resume_manager_factory=None,
+    )
+    task_name = "streaming_driver_probe"
+
+    with FineStoreOutput(root, task_name, [task_name]) as output:
+        results = evaluate(
+            lm=model,
+            task_manager=SimpleNamespace(tasks={}),
+            pretrain_task_manager=TaskManager(include_path=str(tmp_path)),
+            task_list=[task_name],
+            task_routes={task_name: LM_EVAL_ROUTE},
+            batch_sizes_list=[1],
+            args=args,
+            output_sink=output,
+        )
+        assert "samples" not in results
+        staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+        assert staged is not None
+        assert staged.num_rows == 1
+        assert read_finestore_output(root, task_name) is None
+        output.finish(results)
+
+    assert results["task_outcomes"][task_name]["status"] == "succeeded"
+    assert len(model.requests) == 1
 
 
 def test_context_preflight_caps_the_final_caller_generation_override(endpoint):

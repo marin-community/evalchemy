@@ -61,12 +61,13 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.finestore_output import read_finestore_output, write_finestore_output
+from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.result_serialization import handle_non_serializable_extended
-from eval.contracts.sample_manifest import SampleManifest
+from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
+from eval.contracts.sample_results import validate_sample_metrics
 from eval.contracts.task_outcome import (
     FailureCategory,
     FailurePhase,
@@ -85,7 +86,13 @@ from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import parse_key_value_args, resolve_evaluation_limits
 from eval.resume import lm_eval_native
 from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
-from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
+from eval.sample_logging import (
+    canonicalize_sample,
+    canonicalize_samples,
+    is_scored_result,
+    iter_custom_samples,
+    without_embedded_samples,
+)
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
 
 # Evalchemy-owned lm-eval task overrides (marin-community/evalchemy#31). include_path
@@ -194,6 +201,7 @@ def _grade_custom_tasks(
     generation_work: Sequence[_CustomTaskWork],
     args: argparse.Namespace,
     results: dict[str, Any],
+    output_sink: FineStoreOutput | None = None,
 ) -> list[TaskOutcome]:
     """Score, serialize, and clean up custom work under the shared contracts."""
     try:
@@ -234,11 +242,16 @@ def _grade_custom_tasks(
                     )
                     outcomes.append(outcome)
                     continue
-                results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
-                    work.task_name,
-                    task_samples,
-                    work.benchmark.sample_manifest,
-                )
+                if output_sink is None:
+                    results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
+                        work.task_name,
+                        task_samples,
+                        work.benchmark.sample_manifest,
+                    )
+                else:
+                    for record in iter_custom_samples(work.task_name, task_samples, work.benchmark.sample_manifest):
+                        output_sink.write_sample(work.task_name, record)
+                    output_sink.finish_task()
                 results["results"][work.task_name] = without_embedded_samples(scored_result)
                 outcomes.append(outcome)
             except Exception as exc:
@@ -403,6 +416,7 @@ def evaluate(
     batch_sizes_list: List[int],
     verbosity: str = "INFO",
     args=None,
+    output_sink: FineStoreOutput | None = None,
     **eval_kwargs,
 ) -> Dict[str, Dict]:
     """
@@ -526,7 +540,7 @@ def evaluate(
                 for work in generation_work:
                     _cleanup_generation_result(work.generation_result)
         elif generation_work and (lm.world_size <= 1 or lm.rank == 0):
-            outcomes.extend(_grade_custom_tasks(generation_work, args, results))
+            outcomes.extend(_grade_custom_tasks(generation_work, args, results, output_sink))
         else:
             for work in generation_work:
                 _cleanup_generation_result(work.generation_result)
@@ -537,6 +551,27 @@ def evaluate(
         resume_factory = getattr(args, "resume_manager_factory", None)
         for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
             sample_manifest = SampleManifest(pretrain_task)
+            manifest_entries = {}
+            task_entry = pretrain_task_manager.task_index.get(pretrain_task) if output_sink is not None else None
+            configured_metrics = (task_entry.cfg or {}).get("metric_list", []) if task_entry is not None else []
+            uses_bypass = any(isinstance(metric, Mapping) and metric.get("metric") == "bypass" for metric in configured_metrics)
+            stream_samples = output_sink is not None and not args.predict_only and not uses_bypass
+
+            def stage_lm_eval_sample(task: str, sample: dict[str, Any], index: int) -> None:
+                assert output_sink is not None
+                if task not in manifest_entries:
+                    entries = sample_manifest.sample_entries(namespace=task)
+                    if not entries and sample_manifest.task_name == task:
+                        entries = sample_manifest.sample_entries()
+                    manifest_entries[task] = entries
+                entries = manifest_entries[task]
+                if sample_manifest.expected_sample_count and index >= len(entries):
+                    raise SampleCoverageError(f"{task}: scored sample {index} has no manifest entry")
+                entry = entries[index] if entries else None
+                record = canonicalize_sample(task, sample, index, entry)
+                validate_sample_metrics(task, [record])
+                output_sink.write_sample(task, record)
+
             try:
                 with capture_endpoint_failures() as endpoint_failures:
                     endpoint_captures[pretrain_task] = endpoint_failures
@@ -544,6 +579,7 @@ def evaluate(
                         pretrain_evaluator.simple_evaluate,
                         resume_manager_factory=resume_factory,
                         sample_manifest=sample_manifest,
+                        sample_callback=stage_lm_eval_sample if stream_samples else None,
                         model=args.model,
                         model_args=args.model_args,
                         tasks=[pretrain_task],
@@ -590,23 +626,33 @@ def evaluate(
             outcome = _outcome_with_response_quality(outcome, endpoint_captures[pretrain_task])
             outcomes.append(outcome)
             if outcome.status is TaskStatus.FAILED:
+                if output_sink is not None:
+                    output_sink.finish_task()
                 continue
             results["results"].update(pretrain_results.get("results", {}))
             if pretrain_results.get("n-samples"):
                 results.setdefault("n-samples", {}).update(pretrain_results["n-samples"])
-            native_samples = pretrain_results.get("samples", {})
-            for task, scored_result in pretrain_results.get("results", {}).items():
-                if not is_scored_result(scored_result):
-                    continue
-                task_samples = native_samples.get(task, [])
-                if not task_samples:
-                    eval_logger.warning("scored task %s produced no sample records", task)
-                    continue
-                results.setdefault("samples", {})[task] = canonicalize_samples(
-                    task,
-                    task_samples,
-                    sample_manifest,
-                )
+            if not stream_samples:
+                native_samples = pretrain_results.get("samples", {})
+                for task, scored_result in pretrain_results.get("results", {}).items():
+                    if not is_scored_result(scored_result):
+                        continue
+                    task_samples = native_samples.get(task, [])
+                    if not task_samples:
+                        eval_logger.warning("scored task %s produced no sample records", task)
+                        continue
+                    canonical = canonicalize_samples(
+                        task,
+                        task_samples,
+                        sample_manifest,
+                    )
+                    if output_sink is None:
+                        results.setdefault("samples", {})[task] = canonical
+                    else:
+                        for record in canonical:
+                            output_sink.write_sample(task, record)
+            if output_sink is not None:
+                output_sink.finish_task()
 
     finalized_outcomes = []
     for outcome in outcomes:
@@ -874,22 +920,25 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     if args.wandb_args:
         wandb_logger = WandbLogger(**simple_parse_args_string(args.wandb_args))
 
-    # Run evaluation
-    results = evaluate(
-        lm=lm,
-        task_manager=task_manager,
-        pretrain_task_manager=pretrain_task_manager,
-        task_list=task_list,
-        task_routes=task_routes,
-        batch_sizes_list=batch_sizes_list,
-        verbosity=args.verbosity,
-        args=args,
-    )
+    with FineStoreOutput(args.finestore_output_path, args.finestore_output_prefix, task_list) as output_sink:
+        results = evaluate(
+            lm=lm,
+            task_manager=task_manager,
+            pretrain_task_manager=pretrain_task_manager,
+            task_list=task_list,
+            task_routes=task_routes,
+            batch_sizes_list=batch_sizes_list,
+            verbosity=args.verbosity,
+            args=args,
+            output_sink=output_sink,
+        )
+        output_sink.finish_task()
+        if lm.world_size > 1:
+            lm.barrier()
 
-    # Add metadata to results
-    if lm.rank == 0:
-        add_results_metadata(results, batch_sizes_list, args, lm)
-        handle_evaluation_output(results, args, evaluation_tracker, wandb_logger)
+        if lm.rank == 0:
+            add_results_metadata(results, batch_sizes_list, args, lm)
+            handle_evaluation_output(results, args, evaluation_tracker, wandb_logger, output_sink=output_sink)
 
     if dist is not None and dist.is_initialized():
         dist.destroy_process_group()
@@ -1036,6 +1085,8 @@ def handle_evaluation_output(
     args: argparse.Namespace,
     evaluation_tracker: EvaluationTracker,
     wandb_logger: Optional[WandbLogger] = None,
+    *,
+    output_sink: FineStoreOutput | None = None,
 ) -> None:
     """
     Handle evaluation output, including logging and saving results.
@@ -1060,7 +1111,11 @@ def handle_evaluation_output(
     if not args.finestore_output_path:
         raise ValueError("--finestore_output_path is required")
     validate_result_document(results)
-    samples = results.pop("samples", {})
+    if output_sink is None:
+        raise ValueError("FineStore output sink must be opened before evaluation")
+    if results.get("samples"):
+        raise ValueError("sample records must be staged before aggregate output")
+    results.pop("samples", None)
 
     dumped = json.dumps(
         results,
@@ -1077,13 +1132,12 @@ def handle_evaluation_output(
         try:
             wandb_logger.post_init(results)
             wandb_logger.log_eval_result()
-            wandb_logger.log_eval_samples(samples)
         except Exception as e:
             utils.eval_logger.info(f"Logging to Weights and Biases failed due to {e}")
 
     evaluation_tracker.general_config_tracker.log_end_time()
     results.update(asdict(evaluation_tracker.general_config_tracker))
-    write_finestore_output(args.finestore_output_path, args.finestore_output_prefix, results, samples)
+    output_sink.finish(results)
     if args.use_database and not args.debug:
         evaluation_tracker.update_evalresults_db(
             results,
