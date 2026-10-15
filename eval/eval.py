@@ -61,13 +61,15 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
+from eval.contracts.custom_streaming import CustomSampleEmitter, SampleEmissionError
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.lm_eval_streaming import FineStoreSampleCallback, streams_scored_samples
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.result_serialization import handle_non_serializable_extended
-from eval.contracts.sample_manifest import SampleManifest
+from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
+from eval.contracts.sample_results import emit_scored_samples
 from eval.contracts.task_outcome import (
     FailureCategory,
     FailurePhase,
@@ -89,7 +91,6 @@ from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 from eval.sample_logging import (
     canonicalize_samples,
     is_scored_result,
-    iter_custom_samples,
     without_embedded_samples,
 )
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
@@ -111,19 +112,34 @@ class _CustomTaskWork:
     generation_result: Any
 
 
-def _score_custom_task(work: _CustomTaskWork) -> tuple[TaskOutcome, Any]:
+def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | None = None) -> tuple[TaskOutcome, Any]:
     try:
         artifacts = generation_artifacts(work.generation_result)
         if artifacts is not None:
             artifacts.validate_required()
         with capture_endpoint_failures() as grader_failures:
-            scored_result = work.benchmark.evaluate_responses(work.generation_result)
+            if output_sink is None:
+                scored_result = work.benchmark.evaluate_responses(work.generation_result)
+            else:
+                emitter = CustomSampleEmitter(work.task_name, work.benchmark, work.generation_result, output_sink)
+                with emit_scored_samples(emitter.emit):
+                    scored_result = work.benchmark.evaluate_responses(work.generation_result)
+                if is_scored_result(scored_result):
+                    emitter.finish()
     except Exception as exc:
+        category = (
+            FailureCategory.INCOMPLETE_EVALUATION
+            if isinstance(exc, SampleCoverageError)
+            else classify_task_exception(
+                FailurePhase.SERIALIZATION if isinstance(exc, SampleEmissionError) else FailurePhase.GRADING,
+                exc,
+            )
+        )
         return (
             TaskOutcome.failed(
                 work.task_name,
                 CHAT_BENCHMARK_ROUTE,
-                classify_task_exception(FailurePhase.GRADING, exc),
+                category,
                 str(exc),
                 exception=exc,
             ),
@@ -208,7 +224,7 @@ def _grade_custom_tasks(
             evaluated = execute_grading_jobs(
                 generation_work,
                 mode_for=lambda work: work.benchmark.GRADER_EXECUTION_MODE,
-                grade=_score_custom_task,
+                grade=_score_custom_task if output_sink is None else lambda work: _score_custom_task(work, output_sink),
             )
         except Exception as exc:
             return [
@@ -234,23 +250,19 @@ def _grade_custom_tasks(
                 continue
 
             try:
-                task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
-                if not task_samples:
-                    utils.eval_logger.warning(
-                        "Scored task %s produced no sample records; keeping aggregate score", work.task_name
-                    )
-                    outcomes.append(outcome)
-                    continue
                 if output_sink is None:
+                    task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
+                    if not task_samples:
+                        utils.eval_logger.warning(
+                            "Scored task %s produced no sample records; keeping aggregate score", work.task_name
+                        )
+                        outcomes.append(outcome)
+                        continue
                     results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
                         work.task_name,
                         task_samples,
                         work.benchmark.sample_manifest,
                     )
-                else:
-                    for record in iter_custom_samples(work.task_name, task_samples, work.benchmark.sample_manifest):
-                        output_sink.write_sample(work.task_name, record)
-                    output_sink.finish_task()
                 results["results"][work.task_name] = without_embedded_samples(scored_result)
                 outcomes.append(outcome)
             except Exception as exc:

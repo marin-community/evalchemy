@@ -13,7 +13,7 @@ from lm_eval.models.openai_completions import LocalChatCompletion
 
 from eval.completion_response import CompletionClassification, CompletionContentPolicy
 from eval.contracts.failures import ModelRequestValidationError
-from eval.contracts.finestore_output import FineStoreOutput
+from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
 from eval.contracts.sample_results import record_sample_metrics
@@ -190,6 +190,57 @@ def test_custom_task_stages_samples_before_aggregate_result(tmp_path):
         assert staged is not None
         assert staged.num_rows == 1
         output.finish(result)
+
+
+def test_custom_grader_persists_scored_sample_before_interruption_and_retry(tmp_path):
+    root = str(tmp_path / "archive")
+
+    class _InterruptedBenchmark(_Benchmark):
+        def evaluate_responses(self, results):
+            record_sample_metrics(results["examples"][0], accuracy=True)
+            self.output.finish_task()
+            raise RuntimeError("grader interrupted")
+
+    interrupted = _InterruptedBenchmark(
+        {"examples": [{"prompt": "first"}, {"prompt": "second"}]},
+        scored_result={"accuracy": 1.0},
+    )
+    with FineStoreOutput(root, "run", ["contract_task"]) as output:
+        interrupted.output = output
+        result = _custom_evaluate(interrupted, output_sink=output)
+        assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.FAILED
+        assert read_finestore_output(root, "run") is None
+        staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+        assert staged is not None
+        assert staged.num_rows == 1
+
+    retry = _Benchmark(
+        {"examples": [{"prompt": "first"}, {"prompt": "second"}]},
+        scored_result={"accuracy": 1.0},
+    )
+    with FineStoreOutput(root, "run", ["contract_task"]) as output:
+        result = _custom_evaluate(retry, output_sink=output)
+        output.finish(result)
+
+    samples = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert samples is not None
+    assert samples.num_rows == 2
+    assert {row["doc_id"] for row in samples.to_pylist(maps_as_pydicts="strict")} == {"0", "1"}
+    assert read_finestore_output(root, "run") is not None
+
+
+def test_custom_grader_missing_sample_score_fails_task(tmp_path):
+    class _PartialBenchmark(_Benchmark):
+        def evaluate_responses(self, results):
+            record_sample_metrics(results["examples"][0], accuracy=True)
+            return {"accuracy": 1.0}
+
+    benchmark = _PartialBenchmark({"examples": [{"prompt": "first"}, {"prompt": "second"}]})
+    with FineStoreOutput(str(tmp_path / "archive"), "run", ["contract_task"]) as output:
+        result = _custom_evaluate(benchmark, output_sink=output)
+
+    assert result["results"] == {}
+    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
 
 
 def test_custom_grader_infrastructure_failure_is_reported_without_a_score():

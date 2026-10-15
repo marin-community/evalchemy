@@ -324,6 +324,10 @@ class CruxEvalBenchmark(BaseBenchmark):
         temp_dir_obj.cleanup()
         return evaluation_results
 
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
+        """Expose both CruxEval directions to the scored-sample sink."""
+        return {task: generation_result[task] for task in self.tasks if task in generation_result}
+
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> list[Dict[str, Any]]:
         """Serialize both CruxEval directions as auditable sample records."""
         examples = []

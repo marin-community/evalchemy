@@ -480,9 +480,10 @@ If you find Evalchemy useful, please consider citing us!
 ## Sample records
 
 Each scored task writes normalized rows to FineStore's `samples` table. lm-eval
-appends each record as its document is scored; custom benchmark adapters append
-their records after grading. Rows flush during evaluation and at task boundaries. The aggregate
-result is committed to `evalchemy_results` after task validation. If evaluation
+appends each record as its document is scored. Custom graders emit a record when
+they call `record_sample_metrics` for an example. Rows flush during evaluation
+and at task boundaries. The aggregate result is committed to
+`evalchemy_results` after task validation. If evaluation
 stops early, committed samples remain readable in the unsealed archive; rerunning
 the same inputs restores request checkpoints and supersedes duplicate sample keys.
 Sample rows contain

@@ -5,7 +5,7 @@ single normalization boundary: it gives custom benchmarks and lm-eval-native
 tasks the same record envelope before FineStore stores them.
 """
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from eval.completion_response import CompletionText, FailedGeneration
@@ -120,23 +120,6 @@ def _entries_for_count(
             f"contains {len(entries)} samples"
         )
     return entries
-
-
-def iter_custom_samples(
-    task_name: str,
-    samples: Sequence[Mapping[str, Any]],
-    sample_manifest: SampleManifest | None,
-) -> Iterator[dict[str, Any]]:
-    """Yield validated canonical records for one custom benchmark."""
-    entries = ()
-    if sample_manifest is not None and sample_manifest.expected_sample_count:
-        sample_entries, unit_entries = manifest_entries_for_task(task_name, sample_manifest)
-        entries = _entries_for_count(task_name, len(samples), sample_entries, unit_entries)
-
-    for index, sample in enumerate(samples):
-        record = canonicalize_sample(task_name, sample, index, entries[index] if entries else None)
-        validate_sample_metrics(task_name, [record])
-        yield record
 
 
 def _normalize_ifeval_instruction_metrics(record: dict[str, Any]) -> None:
