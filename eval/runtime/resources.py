@@ -7,9 +7,17 @@ import multiprocessing
 import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
+from enum import StrEnum
 from typing import Any, TypeVar
 
 Result = TypeVar("Result")
+
+
+class ExecutionMode(StrEnum):
+    SERIAL = "serial"
+    THREAD_SAFE = "thread_safe"
+    PROCESS_ISOLATED = "process_isolated"
+    SANDBOXED = "sandboxed"
 
 
 class Resources:
@@ -17,10 +25,10 @@ class Resources:
         self.workers = min(workers, os.cpu_count() or 1)
         self.processes: ProcessPoolExecutor | None = None
 
-    async def call(self, function: Callable[..., Result], args: tuple[Any, ...], mode: str) -> Result:
-        if mode == "thread_safe":
+    async def call(self, function: Callable[..., Result], args: tuple[Any, ...], mode: ExecutionMode) -> Result:
+        if mode is ExecutionMode.THREAD_SAFE:
             return await asyncio.to_thread(function, *args)
-        if mode == "process_isolated":
+        if mode is ExecutionMode.PROCESS_ISOLATED:
             if self.processes is None:
                 self.processes = ProcessPoolExecutor(max_workers=self.workers, mp_context=multiprocessing.get_context("spawn"))
             return await asyncio.get_running_loop().run_in_executor(self.processes, function, *args)

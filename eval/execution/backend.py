@@ -1,4 +1,4 @@
-"""Translate common model operations without adding a second dispatcher."""
+"""Execute normalized model requests against local or HTTP model backends."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ from eval.completion_response import FailedGeneration
 from eval.contracts.eval_spec import ModelRequest, RequestKind
 from eval.limits import preflight_endpoint_generation
 from eval.contracts.preflight import validate_model_request
+from eval.contracts.failures import FailureCategory
+from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 from eval.runtime.pool import RetryPolicy, retry
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -151,10 +153,11 @@ class LMBackend:
 
     async def _call(self, messages: list, parameters: dict, *, generate: bool, ctxlens=None) -> Any:
         model = self.model
-        budget = getattr(model, "transport_retry_budget", None)
+        bounded_transport = isinstance(model, (RetryingLocalChatCompletions, RetryingLocalCompletions))
+        budget = model.transport_retry_budget if bounded_transport else None
         policy = RetryPolicy(
             budget=float(model.timeout if budget is None else budget),
-            attempt_timeout=float(getattr(model, "transport_attempt_timeout", model.timeout)),
+            attempt_timeout=float(model.transport_attempt_timeout if bounded_transport else model.timeout),
             max_attempts=None if budget is not None else model.max_retries,
         )
 
@@ -170,5 +173,5 @@ class LMBackend:
         except Exception as exc:
             if not generate or not retryable_transport(exc):
                 raise
-            category = "AgentTimeoutError" if isinstance(exc, TimeoutError) else "model_transport"
-            return FailedGeneration(category)
+            category = FailureCategory.AGENT_TIMEOUT if isinstance(exc, TimeoutError) else FailureCategory.MODEL_TRANSPORT
+            return FailedGeneration(category.value)

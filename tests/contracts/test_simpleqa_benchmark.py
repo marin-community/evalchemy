@@ -6,17 +6,7 @@ from eval.chat_benchmarks.SimpleQA.eval_instruct import DATASET_SIZE, SimpleQABe
 from eval.chat_benchmarks.SimpleQAMini.eval_instruct import MINI_DATASET_SIZE, SimpleQAMiniBenchmark
 from eval.contracts.eval_spec import SourceRef
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import evaluate_source
-
-
-class FixedEndpoint:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 def test_simpleqa_loads_the_canonical_full_dataset():

@@ -10,6 +10,8 @@ from typing import Any
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 from eval.contracts.prompt_length import REFERENCE_TOKENIZER, BenchmarkPromptLength
+from eval.contracts.eval_spec import SourceRef
+from eval.sources.common import SourceOptions
 
 PLACEHOLDER_CREDENTIAL_VARIABLES = ("OPENAI_API_KEY", "JUDGE_API_KEY")
 PLACEHOLDER_CREDENTIAL = "prompt-corpus-render"
@@ -28,8 +30,6 @@ def render_prompt_corpus(task_name: str, tokenizer: PreTrainedTokenizerBase) -> 
     # Local to break the cycle: eval.task reads the stored lengths from
     # eval.contracts.prompt_length, which this module imports.
     from eval.task import TaskManager
-    from eval.sources.common import SourceOptions
-    from eval.contracts.eval_spec import SourceRef
 
     manager = TaskManager(task_list=[task_name])
     failure = manager.load_failures.get(task_name)

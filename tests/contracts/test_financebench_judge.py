@@ -5,17 +5,7 @@ import json
 from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark, PROMPT
 from eval.contracts.eval_spec import SourceRef
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import evaluate_source
-
-
-class FixedEndpoint:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 def test_financebench_preserves_document_prompt_and_equivalence_judge_plan(tmp_path):

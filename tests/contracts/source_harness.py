@@ -1,11 +1,25 @@
 """Exercise source items, registered graders, sample delivery, and reduction together."""
 
 import asyncio
+from collections.abc import Callable
+from typing import Any
 
 from eval.execution.engine import CollectSamples, Evaluator
 from eval.execution.grading import Graders
 from eval.execution.metrics import SourceMetrics
 from eval.graders.specs import GRADERS
+
+
+class FixedEndpoint:
+    """Endpoint fake that returns a fixed response and retains submitted requests."""
+
+    def __init__(self, response: Any | Callable[[Any], Any]):
+        self.response = response
+        self.requests: list[Any] = []
+
+    async def execute(self, request: Any) -> Any:
+        self.requests.append(request)
+        return self.response(request) if callable(self.response) else self.response
 
 
 def evaluate_source(source, options, backend, *, judges=None, checkpoints=None, workers=2):

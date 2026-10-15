@@ -9,6 +9,7 @@ from typing import Any
 
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, JudgePlan, ModelRequest, RequestKind
 from eval.graders.answer_equivalence import JUDGE_PROMPT, JudgeLabel
+from eval.graders.simpleqa import SIMPLEQA_GRADER_TEMPLATE, _parse_simpleqa_judgment
 
 
 @lru_cache
@@ -94,7 +95,6 @@ def mixeval_score(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
 
 
 def simpleqa(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:
-    from eval.graders.simpleqa import SIMPLEQA_GRADER_TEMPLATE
 
     prompt = SIMPLEQA_GRADER_TEMPLATE.format(
         question=spec.doc["question"], target=spec.target, predicted_answer=str(responses[-1]),
@@ -105,7 +105,6 @@ def simpleqa(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:
     )
 
 def simpleqa_label(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
-    from eval.graders.simpleqa import _parse_simpleqa_judgment
 
     label = _parse_simpleqa_judgment(str(responses[-1])).label.value
     return Grade({"accuracy": float(label == "correct"), "incorrect": float(label == "incorrect"),

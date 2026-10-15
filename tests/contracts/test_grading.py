@@ -5,21 +5,21 @@ import os
 
 import pytest
 
-from eval.runtime.resources import Resources
+from eval.runtime.resources import ExecutionMode, Resources
 
 
 def worker_pid():
     return os.getpid()
 
 
-@pytest.mark.parametrize("mode", ["serial", "thread_safe", "sandboxed", "process_isolated"])
+@pytest.mark.parametrize("mode", list(ExecutionMode))
 def test_grader_runs_under_its_declared_isolation(mode):
     resources = Resources(workers=2)
     try:
         pid = asyncio.run(resources.call(worker_pid, (), mode))
     finally:
         resources.close()
-    assert (pid != os.getpid()) == (mode == "process_isolated")
+    assert (pid != os.getpid()) == (mode is ExecutionMode.PROCESS_ISOLATED)
 
 
 def test_grader_failure_propagates_without_becoming_a_score():
@@ -28,6 +28,6 @@ def test_grader_failure_propagates_without_becoming_a_score():
     resources = Resources()
     try:
         with pytest.raises(ValueError, match="invalid reference"):
-            asyncio.run(resources.call(broken, (), "thread_safe"))
+            asyncio.run(resources.call(broken, (), ExecutionMode.THREAD_SAFE))
     finally:
         resources.close()

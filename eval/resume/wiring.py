@@ -11,6 +11,7 @@ from eval.contracts.finestore_resume import FineStoreResumeManager, OPERATION_PR
 from eval.execution.run_spec import RunSpec
 from eval.limits import parse_key_value_args
 from eval.resume.fingerprint import RunFingerprint, digest_files, resolve_model_revision
+from eval.runtime.checkpoints import input_digest
 
 MODEL_IDENTITY_FIELDS = {
     "pretrained", "model", "revision", "tokenizer", "tokenizer_backend", "tokenizer_revision",
@@ -20,7 +21,7 @@ MODEL_IDENTITY_FIELDS = {
 }
 
 
-def build_resume_wiring(args, lm, run: RunSpec):
+def build_resume_wiring(args, lm, run: RunSpec, *, judge_configs=None):
     model_args = parse_key_value_args(args.model_args or "")
     identity = {name: value for name, value in model_args.items() if name in MODEL_IDENTITY_FIELDS}
     repository = identity.get("pretrained", identity.get("model"))
@@ -28,21 +29,18 @@ def build_resume_wiring(args, lm, run: RunSpec):
     identity["adapter"] = args.model
     identity["template"] = lm.chat_template(run.apply_chat_template)
     root = Path(__file__).resolve().parents[1]
-    code = digest_files([
-        *sorted((root / "execution").glob("*.py")), *sorted((root / "runtime").glob("*.py")),
-        *sorted((root / "sources").glob("*.py")), *sorted((root / "graders").glob("*.py")),
-    ])
+    code = digest_files([*root.rglob("*.py"), *root.rglob("*.yaml")])
     # Wheels have no checkout lockfile. Record the versions actually executing
     # the run in both installed and source environments.
     dependencies = {distribution.metadata["Name"]: distribution.version for distribution in distributions()}
 
     def factory(task):
-        source_file = root / "chat_benchmarks" / task / "eval_instruct.py"
+        judge = (judge_configs or {}).get(task)
         fingerprint = RunFingerprint(inputs={
             "protocol": OPERATION_PROTOCOL, "task": task, "model": identity,
             "run": asdict(run), "implementation": code,
             "dependencies": dependencies,
-            "source_definition": digest_files([source_file]) if source_file.is_file() else None,
+            "judge": {"model": judge.model, "endpoint": input_digest(judge.base_url)} if judge else None,
             "include_path": args.include_path,
         })
         return FineStoreResumeManager(

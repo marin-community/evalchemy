@@ -1,4 +1,4 @@
-"""Offline source-to-judge fixtures for migrated judge-backed benchmarks."""
+"""Offline source-to-judge fixtures for judge-backed benchmarks."""
 
 from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
 from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source

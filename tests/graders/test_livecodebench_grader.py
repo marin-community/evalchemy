@@ -35,7 +35,7 @@ if str(REPO) not in sys.path:
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from eval.contracts.grading import GraderExecutionMode  # noqa: E402
+from eval.runtime.resources import ExecutionMode  # noqa: E402
 from eval.graders import livecodebench  # noqa: E402
 from lcb_test_support import living_children  # noqa: E402
 
@@ -71,7 +71,7 @@ def test_module_does_not_import_a_vendored_benchmark_module():
 
 
 def test_grader_declares_process_isolated_execution():
-    assert livecodebench.GRADER_EXECUTION_MODE is GraderExecutionMode.PROCESS_ISOLATED
+    assert livecodebench.GRADER_EXECUTION_MODE is ExecutionMode.PROCESS_ISOLATED
 
 
 def test_memory_cap_is_wired_by_default():

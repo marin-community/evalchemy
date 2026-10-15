@@ -6,8 +6,6 @@ import logging
 import os
 from typing import Dict, List, Optional
 
-from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
-
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -75,20 +73,3 @@ class AMC23Benchmark(BaseBenchmark):
  
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
-
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Uses the same logic as hendrycks_math.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
-        """
-        try:
-            answer = remove_boxed(last_boxed_only_string(output))
-            return answer
-        except:
-            return ""

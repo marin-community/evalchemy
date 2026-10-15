@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Behavioral coverage for the shared task-preparation boundary."""
 
-import json
 import os
 import subprocess
 import sys
@@ -34,9 +33,6 @@ class _Benchmark(BaseBenchmark):
     def iter_specs(self, options):
         raise NotImplementedError
 
-    def evaluate_responses(self, results):
-        raise NotImplementedError
-
 
 class _CustomManager:
     load_failures = {}
@@ -46,21 +42,6 @@ class _CustomManager:
 
     def get_benchmark(self, task_name):
         return self.benchmark
-
-
-class _RecordingModel:
-    rank = 0
-    world_size = 1
-
-    def __init__(self):
-        self.requests = []
-
-    def generate_until(self, requests):
-        self.requests.extend(requests)
-        return ["answer" for _ in requests]
-
-    def apply_chat_template(self, messages):
-        return JsonChatStr(json.dumps(messages))
 
 
 def test_package_file_and_dependency_are_validated():
@@ -98,9 +79,6 @@ def test_persisted_preparation_rejects_unknown_schema():
 
 
 def test_requested_custom_load_failure_is_not_silently_omitted(tmp_path, monkeypatch):
-    broken = tmp_path / "Broken"
-    broken.mkdir()
-    (broken / "eval_instruct.py").write_text("raise RuntimeError('broken import')\n")
     monkeypatch.setattr("eval.sources.SOURCES", {"Broken": ("fixture_broken_source", "Benchmark")})
     (tmp_path / "fixture_broken_source.py").write_text("raise RuntimeError('broken import')\n")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -142,13 +120,10 @@ def test_lm_eval_task_is_constructed_during_preflight():
     ],
 )
 def test_invalid_representative_request_fails_before_generation(prompt):
-    model = _RecordingModel()
     request = ModelRequest(RequestKind.GENERATE, prompt)
 
     with pytest.raises(ModelRequestValidationError):
         validate_model_request(request)
-
-    assert model.requests == []
 
 
 def test_json_chat_request_passes_validation():

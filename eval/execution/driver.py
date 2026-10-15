@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from contextlib import aclosing
 import logging
-from typing import Any
+from typing import Protocol
 from aiohttp import ClientSession, ClientTimeout
 
 from eval.contracts.eval_spec import EvalSpec
@@ -31,13 +31,18 @@ from eval.robust_api import completion_response_text_unavailable
 logger = logging.getLogger(__name__)
 
 
+class Metrics(Protocol):
+    def add(self, result: ItemResult) -> None: ...
+    def finish(self, name: str) -> dict: ...
+
+
 @dataclass
 class SourcePlan:
     name: str
     route: TaskRoute
     sources: tuple[Iterable[EvalSpec], ...]
     task_names: tuple[str, ...]
-    reducer: Any
+    reducer: Metrics
     graders: dict[str, Grader] = field(default_factory=dict)
     errors: list[Exception] = field(default_factory=list)
     judge_config: JudgeConfig | None = None
@@ -54,14 +59,10 @@ def _interleave(plans: list[SourcePlan]) -> Iterator[EvalSpec]:
             continue
         except Exception as exc:
             logger.error("Source %s failed while producing items: %s", plan.name, exc)
-            plan.errors.append(exc)
+            plan.errors.append(ItemFailure(FailurePhase.PREPARATION, exc))
             continue
         active.append((plan, source))
         yield spec
-
-
-def _custom_items(benchmark, options):
-    yield from benchmark.iter_specs(options)
 
 
 def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[SourcePlan]:
@@ -86,7 +87,7 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
                 policy=description.reducers[0],
             )
             plans.append(SourcePlan(
-                task, route, (_custom_items(benchmark, options),), (task,), reducer,
+                task, route, (benchmark.iter_specs(options),), (task,), reducer,
                 judge_config=JudgeConfig.resolve(judge_model=run.judge_model or benchmark.judge_model)
                 if benchmark.REQUIRES_JUDGE and not run.predict_only else None,
                 expected_examples=description.n_attempted,

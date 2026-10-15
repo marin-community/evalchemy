@@ -1,81 +1,8 @@
-import asyncio
-import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from threading import Thread
-from types import SimpleNamespace
-
 import pytest
 
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
 from eval.graders import answer_equivalence
-
-
-class _FakeAsyncOpenAI:
-    constructor_kwargs = None
-    request_kwargs = None
-
-    def __init__(self, **kwargs):
-        type(self).constructor_kwargs = kwargs
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, traceback):
-        return False
-
-    async def create(self, **kwargs):
-        type(self).request_kwargs = kwargs
-        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="correct"))])
-
-
-@pytest.fixture
-def judge_server():
-    requests = []
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            requests.append((self.path, dict(self.headers), body))
-            if body["model"] == "retry-model" and len(requests) <= 3:
-                payload = b'{"error":{"message":"judge temporarily unavailable","type":"server_error"}}'
-                self.send_response(503)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(payload)))
-                self.end_headers()
-                self.wfile.write(payload)
-                return
-            payload = json.dumps(
-                {
-                    "id": "chatcmpl_test",
-                    "object": "chat.completion",
-                    "created": 1,
-                    "model": body["model"],
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": "correct"},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                }
-            ).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, format, *args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}/v1", requests
-    finally:
-        server.shutdown()
-        thread.join()
+from eval.graders.judged import equivalence_judge, equivalence_label
 
 
 def test_math_answers_equivalent_accepts_symbolically_equal_latex():
@@ -127,88 +54,32 @@ def test_judge_config_rejects_unsafe_endpoint_urls(base_url):
         answer_equivalence.JudgeConfig("judge-model", base_url, "judge-key")
 
 
-def test_judge_equivalence_uses_dedicated_endpoint_and_credentials(monkeypatch):
-    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", _FakeAsyncOpenAI)
-    config = answer_equivalence.JudgeConfig(
-        model="judge-model",
-        base_url="https://judge.example/v1",
-        api_key="judge-key",
+def _equivalence_spec():
+    return EvalSpec(
+        task="FinanceBench", source=SourceRef("fixture"), source_id="question-1", ordinal=0, requests=(),
+        grader=GraderSpec("equivalence_judge", {"question": "How many centimeters are in one meter?", "answers": ["100 cm"], "answer": "100 cm"}),
     )
-    requests = [
-        answer_equivalence.EquivalenceRequest(
-            question="How many centimeters are in one meter?",
-            reference_answers=("100 cm",),
-            candidate_answer="1 m",
-        )
-    ]
-
-    judgments = asyncio.run(answer_equivalence.judge_equivalence(requests, config))
-
-    assert judgments == [
-        answer_equivalence.EquivalenceJudgment(
-            label=answer_equivalence.JudgeLabel.CORRECT,
-            raw="correct",
-        )
-    ]
-    assert _FakeAsyncOpenAI.constructor_kwargs["api_key"] == "judge-key"
-    assert _FakeAsyncOpenAI.constructor_kwargs["base_url"] == "https://judge.example/v1"
-    assert _FakeAsyncOpenAI.request_kwargs["model"] == "judge-model"
-    assert "100 cm" in _FakeAsyncOpenAI.request_kwargs["messages"][0]["content"]
 
 
-def test_judge_equivalence_retries_transient_server_failures(judge_server):
-    base_url, requests = judge_server
-    request = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
-    config = answer_equivalence.JudgeConfig("retry-model", base_url, "judge-key")
+def test_equivalence_judge_builds_the_named_judge_plan():
+    plan = equivalence_judge(_equivalence_spec(), ["1 m"])
 
-    judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
-
-    assert judgments == [answer_equivalence.EquivalenceJudgment(answer_equivalence.JudgeLabel.CORRECT, "correct")]
-    assert len(requests) == 4
-    path, headers, body = requests[0]
-    assert path == "/v1/chat/completions"
-    assert headers["Authorization"] == "Bearer judge-key"
-    assert body["model"] == "retry-model"
+    assert plan.grader == GraderSpec("equivalence_label", {"answer": "1 m"})
+    assert plan.requests[0].generation == {"temperature": 0, "max_gen_toks": 2048}
+    assert "How many centimeters are in one meter?" in plan.requests[0].prompt
+    assert '["100 cm"]' in plan.requests[0].prompt
+    assert "Candidate answer:\n1 m" in plan.requests[0].prompt
 
 
-@pytest.mark.parametrize("response", ["maybe", "The answer is correct.", "incorrect because it conflicts", "", "not_attempt"])
-def test_judge_equivalence_rejects_non_label_responses(monkeypatch, response):
-    class NonLabelAsyncOpenAI(_FakeAsyncOpenAI):
-        async def create(self, **kwargs):
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=response))])
+@pytest.mark.parametrize(
+    ("response", "metrics"),
+    [
+        ("correct", {"accuracy": 1.0, "incorrect": 0.0, "not_attempted": 0.0, "judge_failed": 0.0}),
+        ("incorrect", {"accuracy": 0.0, "incorrect": 1.0, "not_attempted": 0.0, "judge_failed": 0.0}),
+    ],
+)
+def test_equivalence_label_maps_judge_responses_to_grades(response, metrics):
+    grade = equivalence_label(_equivalence_spec(), [response])
 
-    monkeypatch.setattr(answer_equivalence, "AsyncOpenAI", NonLabelAsyncOpenAI)
-    request = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
-    config = answer_equivalence.JudgeConfig("judge-model", "https://judge.example/v1", "judge-key")
-
-    judgments = asyncio.run(answer_equivalence.judge_equivalence([request], config))
-
-    assert len(judgments) == 1
-    assert isinstance(judgments[0], ValueError)
-
-
-@pytest.mark.parametrize("candidate_answer", ["", " ", "\n\t "])
-def test_grade_math_equivalence_empty_candidate_zero_score_without_judge(judge_server, candidate_answer):
-    base_url, requests = judge_server
-    config = answer_equivalence.JudgeConfig("judge-model", base_url, "judge-key")
-    request = answer_equivalence.EquivalenceRequest("Question", ("0",), candidate_answer)
-
-    outcomes = asyncio.run(answer_equivalence.grade_math_equivalence([request], config))
-
-    assert outcomes == [answer_equivalence.EquivalenceResult(False, answer_equivalence.EquivalenceMethod.MINERVA)]
-    assert requests == []
-
-
-def test_grade_math_equivalence_mixed_batch_judges_only_attempted_answers(judge_server):
-    base_url, requests = judge_server
-    config = answer_equivalence.JudgeConfig("judge-model", base_url, "judge-key")
-    empty = answer_equivalence.EquivalenceRequest("Question", ("reference",), "")
-    attempted = answer_equivalence.EquivalenceRequest("Question", ("reference",), "candidate")
-
-    outcomes = asyncio.run(answer_equivalence.grade_math_equivalence([empty, attempted], config))
-
-    assert outcomes[0] == answer_equivalence.EquivalenceResult(False, answer_equivalence.EquivalenceMethod.MINERVA)
-    assert outcomes[1].equivalent is True
-    assert outcomes[1].method == answer_equivalence.EquivalenceMethod.LLM_JUDGE
-    assert len(requests) == 1
-    assert "Candidate answer:\ncandidate" in requests[0][2]["messages"][0]["content"]
+    assert grade.metrics == metrics
+    assert grade.audit["judge_label"] == response

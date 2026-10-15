@@ -1,16 +1,12 @@
-"""Reusable deterministic and LLM answer-equivalence graders."""
+"""Deterministic answer equivalence and shared judge configuration."""
 
-import asyncio
-import json
 import os
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Sequence, TypeVar
+from typing import Sequence
 from urllib.parse import urlsplit
 
 from math_verify import parse, verify
-from openai import AsyncOpenAI
 from sympy.core.relational import Relational
 
 from eval.graders.minerva_math import is_equiv as minerva_is_equiv
@@ -18,11 +14,6 @@ from eval.graders.minerva_math import normalize_final_answer
 
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_NUM_WORKERS = 16
-JUDGE_MAX_TOKENS = 2048
-
-_Judgment = TypeVar("_Judgment")
-
 JUDGE_PROMPT = """You are an expert and precise grader. Determine whether the candidate answer is equivalent to any reference answer for the question.
 
 Use these labels:
@@ -90,39 +81,6 @@ class JudgeConfig:
         )
 
 
-@dataclass(frozen=True)
-class EquivalenceRequest:
-    """One candidate answer to compare with accepted references."""
-
-    question: str
-    reference_answers: tuple[str, ...]
-    candidate_answer: str
-
-
-@dataclass(frozen=True)
-class EquivalenceJudgment:
-    """Parsed judge label and the raw completion retained for audit."""
-
-    label: JudgeLabel
-    raw: str
-
-
-class EquivalenceMethod(StrEnum):
-    """Grader that settled an answer-equivalence request."""
-
-    MINERVA = "minerva"
-    LLM_JUDGE = "llm_judge"
-
-
-@dataclass(frozen=True)
-class EquivalenceResult:
-    """Final equivalence verdict with its grading provenance."""
-
-    equivalent: bool
-    method: EquivalenceMethod
-    judgment: EquivalenceJudgment | None = None
-
-
 def _is_symbol_free_relation(parsed: Sequence[object]) -> bool:
     """Return whether every non-string parsed value is a relation over no free symbols."""
     relations = [value for value in parsed if not isinstance(value, str)]
@@ -144,115 +102,3 @@ def math_answers_equivalent(candidate_answer: str, reference_answers: Sequence[s
         if minerva_is_equiv(candidate, normalize_final_answer(reference)):
             return True
     return False
-
-
-def _parse_judgment(text: str) -> JudgeLabel:
-    """Parse an exact supported judge label."""
-    try:
-        return JudgeLabel(text.strip().lower())
-    except ValueError as exc:
-        raise ValueError(f"unrecognized equivalence judgment: {text!r}") from exc
-
-
-async def _complete_judge_prompt(
-    prompt: str,
-    config: JudgeConfig,
-    client: AsyncOpenAI,
-) -> str:
-    response = await client.chat.completions.create(
-        model=config.model,
-        max_tokens=JUDGE_MAX_TOKENS,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return (response.choices[0].message.content or "").strip()
-
-
-async def judge_prompts(
-    prompts: Sequence[str],
-    config: JudgeConfig,
-    parse_response: Callable[[str], _Judgment],
-    num_workers: int = DEFAULT_NUM_WORKERS,
-) -> list[_Judgment | BaseException]:
-    """Complete and parse independent judge prompts while preserving input order."""
-    if not prompts:
-        return []
-    if num_workers < 1:
-        raise ValueError("num_workers must be positive")
-    semaphore = asyncio.Semaphore(num_workers)
-    async with AsyncOpenAI(
-        api_key=config.api_key,
-        base_url=config.base_url,
-        timeout=300.0,
-        max_retries=5,
-    ) as client:
-
-        async def bound(prompt: str) -> _Judgment:
-            async with semaphore:
-                raw = await _complete_judge_prompt(prompt, config, client)
-                return parse_response(raw)
-
-        return await asyncio.gather(*(bound(prompt) for prompt in prompts), return_exceptions=True)
-
-
-async def judge_equivalence(
-    requests: Sequence[EquivalenceRequest],
-    config: JudgeConfig,
-    num_workers: int = DEFAULT_NUM_WORKERS,
-) -> list[EquivalenceJudgment | BaseException]:
-    """Judge requests concurrently and preserve failures in input order."""
-    prompts = [
-        JUDGE_PROMPT.format(
-            question=request.question,
-            reference_answers=json.dumps(request.reference_answers, ensure_ascii=False),
-            candidate_answer=request.candidate_answer,
-        )
-        for request in requests
-    ]
-    return await judge_prompts(
-        prompts,
-        config,
-        lambda raw: EquivalenceJudgment(_parse_judgment(raw), raw),
-        num_workers=num_workers,
-    )
-
-
-async def grade_math_equivalence(
-    requests: Sequence[EquivalenceRequest],
-    config: JudgeConfig | None,
-    num_workers: int = DEFAULT_NUM_WORKERS,
-) -> list[EquivalenceResult | BaseException]:
-    """Zero empty candidates, use Minerva equivalence next, judge the rest only when configured."""
-    outcomes: list[EquivalenceResult | BaseException | None] = [None] * len(requests)
-    unresolved_indexes = []
-    unresolved_requests = []
-    for index, request in enumerate(requests):
-        if not request.candidate_answer.strip():
-            outcomes[index] = EquivalenceResult(False, EquivalenceMethod.MINERVA)
-            continue
-        if math_answers_equivalent(request.candidate_answer, request.reference_answers):
-            outcomes[index] = EquivalenceResult(True, EquivalenceMethod.MINERVA)
-            continue
-        unresolved_indexes.append(index)
-        unresolved_requests.append(request)
-
-    if unresolved_requests and config is None:
-        for index in unresolved_indexes:
-            outcomes[index] = EquivalenceResult(False, EquivalenceMethod.MINERVA)
-    elif unresolved_requests:
-        judgments = await judge_equivalence(unresolved_requests, config, num_workers=num_workers)
-        for index, judgment in zip(unresolved_indexes, judgments, strict=True):
-            if isinstance(judgment, BaseException):
-                outcomes[index] = judgment
-            else:
-                outcomes[index] = EquivalenceResult(
-                    equivalent=judgment.label == JudgeLabel.CORRECT,
-                    method=EquivalenceMethod.LLM_JUDGE,
-                    judgment=judgment,
-                )
-
-    resolved = []
-    for outcome in outcomes:
-        assert outcome is not None
-        resolved.append(outcome)
-    return resolved

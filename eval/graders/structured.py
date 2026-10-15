@@ -9,11 +9,10 @@ import re
 from fractions import Fraction
 
 from eval.contracts.eval_spec import Grade
+from eval.graders.gsm8k import FALLBACK, extract_flexible
 
 
 def gsm8k_flexible(spec, responses):
-    from eval.graders.gsm8k import FALLBACK, extract_flexible
-
     answer = extract_flexible(str(responses[-1]))
     predicted = re.search(r"-?\d+(\.\d+)?", answer.replace("$", "").replace(",", ""))
     target = re.search(r"-?\d+(\.\d+)?", str(spec.target).replace("$", "").replace(",", ""))

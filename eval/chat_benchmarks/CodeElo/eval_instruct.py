@@ -7,7 +7,7 @@ import os
 from datasets import load_dataset
 
 from eval.sources.common import text_specs
-from eval.sources.programs import difficulty
+from eval.sources.programs import difficulty, exact_tests
 from eval.task import BaseBenchmark
 
 INSTRUCTION = '"You are a coding expert. Given a competition-level coding problem, you need to write a Python program to solve it. You may start by outlining your thought process. In the end, please provide the complete code in a code block enclosed with ``` ```. The code should take stdin as input and print the output.'
@@ -34,13 +34,8 @@ def prompt(problem):
 
 
 def test_reference(problem):
-    tests = []
-    for sample_input, output in problem["examples"]:
-        output = output.strip()
-        if output.endswith("-"):
-            output = output[:output.rfind("-")].rstrip()
-        tests.append({"input": sample_input, "output": output})
-    return {"tests": tests, "stdin": True, "timeout": problem["time_limit_ms"] / 1000, "comparison": "exact"}
+    examples = [{"input": sample_input, "output": output} for sample_input, output in problem["examples"]]
+    return {"tests": exact_tests(examples), "stdin": True, "timeout": problem["time_limit_ms"] / 1000, "comparison": "exact"}
 
 
 class CodeEloBenchmark(BaseBenchmark):

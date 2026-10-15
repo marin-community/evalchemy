@@ -1,7 +1,6 @@
 from eval.contracts.eval_spec import ReducerSpec, SourceRef
 from eval.sources.common import text_specs
 
-import re
 import logging
 from importlib.resources import files
 from typing import Any, Dict, List, Optional
@@ -13,45 +12,7 @@ from eval.contracts.preflight import (
     PackageFileRequirement,
     PythonDependencyRequirement,
 )
-from eval.completion_response import CompletionClassification, CompletionText
-from eval.graders.answer_extraction import final_response_text
 from eval.task import BaseBenchmark
-
-
-# --- Extraction helpers from https://github.com/TIGER-AI-Lab/MMLU-Pro/blob/main/evaluate_from_local.py ---
-
-
-def extract_answer(text: str) -> Optional[str]:
-    if isinstance(text, CompletionText):
-        completion = text.response
-        if completion.content:
-            text = completion.content
-        elif completion.classification == CompletionClassification.REASONING_ONLY:
-            text = completion.reasoning_content or ""
-        else:
-            return None
-    text = final_response_text(text)
-    pattern = r"answer is \(?([A-J])\)?"
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        return match.group(1).upper()
-    else:
-        return extract_again(text)
-
-
-def extract_again(text: str) -> Optional[str]:
-    match = re.search(r"Answer:\s*([A-J])", text, re.IGNORECASE)
-    if match:
-        return match.group(1).upper()
-    else:
-        return extract_final(text)
-
-
-def extract_final(text: str) -> Optional[str]:
-    pattern = r"\b[A-J]\b(?!.*\b[A-J]\b)"
-    match = re.search(pattern, text, re.DOTALL)
-    return match.group(0) if match else None
-
 
 # --- Prompt construction from Script 1 ---
 

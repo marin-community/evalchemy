@@ -8,16 +8,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from eval.contracts.eval_spec import EvalSpec, Grade, JudgePlan
-from eval.contracts.grading import GraderExecutionMode
 from eval.execution.engine import ItemResult
 from eval.passk import estimate_pass_at_k
-from eval.runtime.resources import Resources
+from eval.runtime.resources import ExecutionMode, Resources
 
 
 @dataclass(frozen=True)
 class Grader:
     function: Callable[[EvalSpec, Sequence[Any]], Grade | JudgePlan]
-    mode: GraderExecutionMode = GraderExecutionMode.SERIAL
+    mode: ExecutionMode = ExecutionMode.SERIAL
 
 
 class Graders:
@@ -29,14 +28,14 @@ class Graders:
 
     async def __call__(self, spec: EvalSpec, responses: Sequence[Any]) -> Grade | JudgePlan:
         grader = self.definitions[spec.grader.name]
-        return await self.resources.call(grader.function, (spec, responses), grader.mode.value)
+        return await self.resources.call(grader.function, (spec, responses), grader.mode)
 
     def close(self) -> None:
         self.resources.close()
 
 
 class MeanMetrics:
-    """Retain sums and counts, so normal scores do not retain source documents."""
+    """Online weighted means for numeric sample metrics."""
 
     def __init__(self):
         self.sums: dict[str, float] = defaultdict(float)

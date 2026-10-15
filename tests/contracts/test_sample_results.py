@@ -27,17 +27,7 @@ from eval.contracts.sample_results import (
 )
 from eval.sample_logging import canonicalize_samples
 from eval.sources.common import SourceOptions, text_specs
-from tests.contracts.source_harness import evaluate_source
-
-
-class FixedEndpoint:
-    def __init__(self, response: Any):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response(request) if callable(self.response) else self.response
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 def _persist(tmp_path, task_name, records):
@@ -53,7 +43,7 @@ def _persist(tmp_path, task_name, records):
 
 
 def test_judge_sources_emit_metrics_and_persist_records(tmp_path, monkeypatch):
-    """Exercise former no-record sources through candidate, judge, and sink boundaries."""
+    """Exercise candidate, judge, and persistence boundaries for judge-backed sources."""
     finance_row = {
         "id": "filing-7",
         "question": "What was revenue?",

@@ -6,6 +6,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from dataclasses import dataclass, field, replace
 from itertools import islice
 from typing import Any
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES
 
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.runtime.checkpoints import input_digest
@@ -69,7 +70,7 @@ def text_specs(
             if parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
-                for alias in ("max_new_tokens", "max_gen_toks", "max_tokens", "max_completion_tokens"):
+                for alias in (*MAX_OUTPUT_ALIASES, "max_completion_tokens"):
                     parameters.pop(alias, None)
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(

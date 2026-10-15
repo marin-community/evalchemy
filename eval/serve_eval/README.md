@@ -88,8 +88,8 @@ seed and trial index unless `--gen_kwargs` supplies a seed.
 Every source yields normalized specs into the same bounded pool. Candidate and
 judge requests are checkpointed separately, and scored samples stream directly to
 FineStore. Resume reads saved outputs in bounded windows and regenerates failed
-operations. Checkpoint protocol 2 requires a new output path for archives produced
-before this execution cleanup.
+operations. Checkpoint protocol 2 requires a new output path for archives using
+protocol 1.
 
 ## Telemetry
 

@@ -99,7 +99,7 @@ def test_codeelo_source_uses_common_dispatch_and_preserves_exact_output(monkeypa
     problem = {
         "id": "example", "title": "Echo", "description": "Echo an integer",
         "input": "One integer", "output": "The same integer", "rating": 800,
-        "time_limit_ms": 1000, "interaction": "", "note": "", "examples": [("2", "2")],
+        "time_limit_ms": 1000, "interaction": "", "note": "", "examples": [("2", "2-\n")],
     }
     monkeypatch.setattr(codeelo, "load_dataset", lambda *_args, **_kwargs: {"test": [problem]})
     source = codeelo.CodeEloBenchmark()

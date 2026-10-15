@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import re
+import tempfile
 from typing import Any
 
 from eval.contracts.eval_spec import EvalSpec, Grade
@@ -37,7 +38,6 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
 
 def crux(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     from eval.chat_benchmarks.CruxEval.execution import check_correctness
-    import tempfile
 
     answer = str(responses[-1])
     if "[ANSWER]" in answer and "[/ANSWER]" in answer:

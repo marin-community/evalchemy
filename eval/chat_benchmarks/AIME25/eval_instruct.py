@@ -6,8 +6,6 @@ import logging
 import os
 from typing import Dict, List, Optional
 
-from eval.graders.answer_extraction import extract_final_boxed_answer
-
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -73,16 +71,3 @@ class AIME25Benchmark(BaseBenchmark):
  
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
-
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Excludes reasoning content before selecting the final box.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
-        """
-        return extract_final_boxed_answer(output)

@@ -43,6 +43,6 @@ class RunSpec:
         return cls(
             **values,
             generation=generation,
-            seeds=tuple(getattr(args, "seed", (0, 1234, 1234, 1234))),
+            seeds=tuple(getattr(args, "seed", cls.seeds)),
             pass_at_k=tuple(parse_pass_at_k(getattr(args, "pass_at_k", None))),
         )

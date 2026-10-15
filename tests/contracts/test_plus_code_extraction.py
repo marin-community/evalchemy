@@ -1,10 +1,35 @@
 """Executable Python extracted from the Plus code benchmarks."""
 
+import asyncio
 import pytest
 
 from eval.chat_benchmarks.HumanEvalPlus.utils.utils import extract_generation_code
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
 from eval.graders.program_suites import program_suite
+from eval.graders.specs import GRADERS
+from eval.execution.grading import Graders
+
+
+@pytest.mark.parametrize("suite", ["HumanEval", "MBPP"])
+@pytest.mark.parametrize("answer,score", [(42, 1.0), (41, 0.0)])
+def test_fork_suites_execute_through_shared_grading(suite, answer, score):
+    problem = {
+        "task_id": "python/0", "prompt": "def answer():\n",
+        "test": ["assert answer() == 42"] if suite == "MBPP" else "assert answer() == 42",
+    }
+    spec = EvalSpec(
+        task=suite, source=SourceRef("fixture"), source_id="0", ordinal=0, requests=(),
+        grader=GraderSpec("program_suite", {
+            "suite": suite, "language": "python", "problem": problem,
+            "timeout": 1.0, "mbpp": suite == "MBPP",
+        }), doc=problem,
+    )
+    graders = Graders(GRADERS, workers=2)
+    try:
+        result = asyncio.run(graders(spec, [f"```python\ndef answer():\n    return {answer}\n``` "]))
+    finally:
+        graders.close()
+    assert result.metrics["accuracy"] == score
 
 
 @pytest.mark.parametrize(

@@ -41,7 +41,7 @@ import threading
 import time
 import types
 
-from eval.contracts.grading import GraderExecutionMode
+from eval.runtime.resources import ExecutionMode
 
 try:
     import resource  # POSIX-only; the memory cap degrades where it is absent (see apply_memory_cap)
@@ -425,4 +425,4 @@ def grade(tests, completion, **kwargs) -> float:
 # The grader declares its own isolation so a driver that dispatches it (``eval.contracts.grading``)
 # runs it outside the threaded pool, as ``execute_grading_jobs(PROCESS_ISOLATED)`` does for the
 # Plus-style graders. The RL reward path that calls ``run`` directly is already process-isolated.
-GRADER_EXECUTION_MODE = GraderExecutionMode.PROCESS_ISOLATED
+GRADER_EXECUTION_MODE = ExecutionMode.PROCESS_ISOLATED

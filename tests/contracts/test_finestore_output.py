@@ -22,6 +22,7 @@ from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
 from eval.execution.run_spec import RunSpec
 from eval.runtime.checkpoints import CheckpointRow, ResumeStream, input_digest
+from eval.graders.answer_equivalence import JudgeConfig
 
 
 def _write_result(root, source_prefix, results, samples_by_task):
@@ -490,6 +491,22 @@ def test_finestore_cli_refuses_resume_off(tmp_path: Path):
     args = Namespace(finestore_output_path=str(tmp_path / "archive"), resume_mode="off")
     with pytest.raises(ValueError, match="FineStore output requires"):
         cli_evaluate(args)
+
+
+@pytest.mark.parametrize("change", [{"model": "other"}, {"base_url": "https://other.example/v1"}])
+def test_judge_identity_change_refuses_checkpoint_reuse(tmp_path, change):
+    args = setup_custom_parser().parse_args([
+        "--tasks", "MTBench", "--model_args", "model=served", "--output_path", str(tmp_path),
+    ])
+    model = SimpleNamespace(chat_template=lambda _enabled: None)
+    config = {"model": "judge", "base_url": "https://judge.example/v1", "api_key": "key"}
+    run = RunSpec.from_args(args)
+    first = build_resume_wiring(args, model, run, judge_configs={"MTBench": JudgeConfig(**config)})("MTBench")
+    first.decide()
+    first.finalize()
+    changed = JudgeConfig(**{**config, **change})
+    with pytest.raises(ResumeRefused, match="fingerprint changed"):
+        build_resume_wiring(args, model, run, judge_configs={"MTBench": changed})("MTBench").decide()
 
 
 def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):

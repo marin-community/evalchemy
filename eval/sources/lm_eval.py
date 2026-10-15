@@ -51,9 +51,8 @@ def grade_lm_eval(task: Task, spec: EvalSpec, responses: Sequence[Any]) -> Grade
         instance.resps.extend(str(value) if isinstance(value, str) else value for value in original_responses)
         instances.append(instance)
         offset += repeats
-    # Task filters consume instances. They run serially and the task retains no
-    # completed document, keeping majority-vote/filter semantics without an
-    # evaluator, a model wrapper or a scoring monkeypatch.
+    # Filters consume the complete response cohort for this document; majority
+    # voting must see all repeats before process_results runs.
     for pipeline in task._filters:
         pipeline.apply(instances)
     variants = []

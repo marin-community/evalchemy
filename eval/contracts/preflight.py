@@ -8,11 +8,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from importlib.resources import files
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
-if TYPE_CHECKING:
-    pass
-
+from .eval_spec import RequestKind
 from .failures import FailureCategory, FailurePhase, ModelRequestValidationError, classify_task_exception
 from .task_outcome import TaskFailure, TaskRoute
 
@@ -145,7 +143,6 @@ class EvaluationPreflightError(RuntimeError):
 
 def validate_model_request(request) -> None:
     """Validate the common request shape after model-specific prompt preparation."""
-    from .eval_spec import RequestKind
     if request.kind is not RequestKind.GENERATE:
         return
     prompt, parameters = request.prompt, request.generation

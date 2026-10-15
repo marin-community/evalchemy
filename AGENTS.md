@@ -30,8 +30,8 @@ uv sync --extra database            # + the psycopg2 driver for --use_database
 
 The base install is torch-free by design: it evaluates a *served* OpenAI-compatible
 endpoint (`--model local-completions` or `curator`) and grades the result, so it needs no
-local inference engine and installs on a CPU box. `eval/task.py` execs only the benchmarks
-named in `--tasks`, so the math/code core set — AIME24/25, AMC23, MATH500, HMMT,
+local inference engine and installs on a CPU box. `eval/task.py` imports only the sources
+named in `--tasks` from an explicit registry, so the math/code core set — AIME24/25, AMC23, MATH500, HMMT,
 GPQADiamond, LiveCodeBench, MMLUPro — imports with no extras.
 
 Each benchmark dir under `eval/chat_benchmarks` has its **own** extra (the PEP-685

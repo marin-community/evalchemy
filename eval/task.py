@@ -15,6 +15,7 @@ from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepa
 from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_tokens
 from eval.contracts.task_outcome import TaskRoute
 from eval.passk import parse_pass_at_k
+from eval import sources
 
 
 class BaseBenchmark(ABC):
@@ -115,16 +116,13 @@ class TaskManager:
     """Load only explicitly selected sources, without executing files or changing sys.path."""
 
     def __init__(self, task_list=None, **benchmark_kwargs):
-        from eval.sources import SOURCES
-
         self.tasks = {}
         self.benchmark_instances = {}
         self.load_failures = {}
-        self.benchmark_kwargs = benchmark_kwargs
         lengths = load_prompt_lengths()
-        selected = SOURCES if task_list is None else [name for name in task_list if name in SOURCES]
+        selected = sources.SOURCES if task_list is None else [name for name in task_list if name in sources.SOURCES]
         for name in selected:
-            module_name, class_name = SOURCES[name]
+            module_name, class_name = sources.SOURCES[name]
             try:
                 source_type = getattr(importlib.import_module(module_name), class_name)
                 parameters = inspect.signature(source_type).parameters
@@ -145,18 +143,8 @@ class TaskManager:
                 self.load_failures[name] = error
                 logging.getLogger(__name__).error("Cannot load source %s: %s", name, error)
 
-    @property
-    def available_tasks(self):
-        return list(self.tasks)
-
     def get_benchmark(self, name):
         return self.benchmark_instances.get(name)
 
-    def is_valid_task(self, name):
-        return name in self.tasks
-
-    def requires_annotator_model(self, name):
-        return name in self.tasks and self.tasks[name].REQUIRES_JUDGE
-
     def requires_judge_credentials(self, name):
-        return self.requires_annotator_model(name)
+        return name in self.tasks and self.tasks[name].REQUIRES_JUDGE

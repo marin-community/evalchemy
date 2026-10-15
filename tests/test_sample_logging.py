@@ -12,15 +12,7 @@ from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmar
 from eval.contracts.eval_spec import ReducerSpec, SourceRef
 from eval.contracts.finestore_output import FineStoreOutput
 from eval.sources.common import SourceOptions, text_specs
-from tests.contracts.source_harness import evaluate_source
-
-
-class FixedEndpoint:
-    def __init__(self, response):
-        self.response = response
-
-    async def execute(self, _request):
-        return self.response
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 class ExactMatchSource:

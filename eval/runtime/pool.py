@@ -87,9 +87,6 @@ class ExecutionPool:
                 ready.extend(sorted(islice(source, self.lookahead), key=lambda item: group(item[1])))
             return ready.popleft() if ready else None
 
-        async def run(job: Job) -> Result:
-            return await execute(job)
-
         pending: dict[asyncio.Task[Result], tuple[int, Job]] = {}
         exhausted = False
         count = failures = 0
@@ -101,7 +98,7 @@ class ExecutionPool:
                     if item is None:
                         exhausted = True
                     else:
-                        pending[asyncio.create_task(run(item[1]))] = item
+                        pending[asyncio.create_task(execute(item[1]))] = item
                 if not pending:
                     break
                 done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)

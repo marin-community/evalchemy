@@ -6,6 +6,7 @@ import difflib
 import json
 import logging
 import os
+import random
 import sys
 import time
 from dataclasses import asdict
@@ -21,6 +22,7 @@ try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run t
 except ModuleNotFoundError:
     dist = None
 import yaml
+import numpy as np
 from lm_eval import utils
 
 # Upstream EleutherAI lm-eval (>=0.4.8) refactored the CLI into lm_eval._cli and
@@ -47,7 +49,7 @@ from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLoca
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
-from eval.constants import AUTO_ANNOTATOR_MODEL, LIST_OPENAI_MODELS
+from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.contracts.benchmark_metadata import (
     canonicalize_results,
     describe_benchmarks,
@@ -236,8 +238,16 @@ def evaluate(
 ) -> Dict[str, Dict]:
     """Normalize every source into EvalSpec items and execute one shared flow."""
     run = RunSpec.from_args(args)
+    if run.seeds[0] is not None:
+        random.seed(run.seeds[0])
+    if run.seeds[1] is not None:
+        np.random.seed(run.seeds[1])
+    if run.seeds[2] is not None:
+        utils.set_torch_seed(run.seeds[2])
     plans = source_plans(task_list, task_routes, task_manager, pretrain_task_manager, run, lm)
-    factory = build_resume_wiring(args, lm, run) if getattr(args, "finestore_output_path", None) else None
+    factory = build_resume_wiring(args, lm, run, judge_configs={
+        task: plan.judge_config for plan in plans if plan.judge_config is not None for task in plan.task_names
+    }) if getattr(args, "finestore_output_path", None) else None
     checkpoints = {
         task: factory(task) for plan in plans for task in plan.task_names
     } if factory is not None else {}
@@ -415,21 +425,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             "Please set JUDGE_API_KEY to evaluate the following tasks: "
             f"{judge_tasks}"
         )
-
-    openai_annotator_tasks = [
-        task
-        for task in task_list
-        if task_routes[task] == CHAT_BENCHMARK_ROUTE
-        and task_manager.requires_annotator_model(task)
-        and not task_manager.requires_judge_credentials(task)
-    ]
-    if args.annotator_model in LIST_OPENAI_MODELS and openai_annotator_tasks:
-        if not os.getenv("OPENAI_API_KEY"):
-            raise ValueError(
-                f"Please set OPENAI_API_KEY to allow usage of {args.annotator_model}"
-                "to evaluate the following tasks: "
-                f"{openai_annotator_tasks}"
-            )
 
     # Initialize model
     try:

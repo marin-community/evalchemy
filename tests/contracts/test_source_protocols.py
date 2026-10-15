@@ -8,19 +8,9 @@ import pytest
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.contracts.eval_spec import SourceRef
-from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import evaluate_source
 from eval.runtime.checkpoints import input_digest
-
-
-class FixedEndpoint:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response
+from eval.sources.common import SourceOptions
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 class MemoryCheckpoints:
