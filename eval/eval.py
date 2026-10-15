@@ -64,10 +64,10 @@ from eval.contracts.conformance import build_task_contract_registry
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
+from eval.contracts.lm_eval_streaming import FineStoreSampleCallback, streams_scored_samples
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.result_serialization import handle_non_serializable_extended
-from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
-from eval.contracts.sample_results import validate_sample_metrics
+from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
     FailurePhase,
@@ -87,7 +87,6 @@ from eval.limits import parse_key_value_args, resolve_evaluation_limits
 from eval.resume import lm_eval_native
 from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 from eval.sample_logging import (
-    canonicalize_sample,
     canonicalize_samples,
     is_scored_result,
     iter_custom_samples,
@@ -439,6 +438,9 @@ def evaluate(
             Logging verbosity level. Defaults to "INFO".
         args (Any, optional):
             Additional arguments to pass to the evaluation. Defaults to None.
+        output_sink (FineStoreOutput, optional):
+            Stage samples during a CLI run. Direct in-process callers without a
+            sink receive canonical samples in the returned result document.
         **eval_kwargs:
             Additional keyword arguments for evaluation configuration.
 
@@ -551,26 +553,10 @@ def evaluate(
         resume_factory = getattr(args, "resume_manager_factory", None)
         for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
             sample_manifest = SampleManifest(pretrain_task)
-            manifest_entries = {}
-            task_entry = pretrain_task_manager.task_index.get(pretrain_task) if output_sink is not None else None
-            configured_metrics = (task_entry.cfg or {}).get("metric_list", []) if task_entry is not None else []
-            uses_bypass = any(isinstance(metric, Mapping) and metric.get("metric") == "bypass" for metric in configured_metrics)
-            stream_samples = output_sink is not None and not args.predict_only and not uses_bypass
-
-            def stage_lm_eval_sample(task: str, sample: dict[str, Any], index: int) -> None:
-                assert output_sink is not None
-                if task not in manifest_entries:
-                    entries = sample_manifest.sample_entries(namespace=task)
-                    if not entries and sample_manifest.task_name == task:
-                        entries = sample_manifest.sample_entries()
-                    manifest_entries[task] = entries
-                entries = manifest_entries[task]
-                if sample_manifest.expected_sample_count and index >= len(entries):
-                    raise SampleCoverageError(f"{task}: scored sample {index} has no manifest entry")
-                entry = entries[index] if entries else None
-                record = canonicalize_sample(task, sample, index, entry)
-                validate_sample_metrics(task, [record])
-                output_sink.write_sample(task, record)
+            stream_samples = output_sink is not None and streams_scored_samples(
+                pretrain_task_manager, pretrain_task, args.predict_only
+            )
+            sample_callback = FineStoreSampleCallback(sample_manifest, output_sink) if stream_samples else None
 
             try:
                 with capture_endpoint_failures() as endpoint_failures:
@@ -579,7 +565,7 @@ def evaluate(
                         pretrain_evaluator.simple_evaluate,
                         resume_manager_factory=resume_factory,
                         sample_manifest=sample_manifest,
-                        sample_callback=stage_lm_eval_sample if stream_samples else None,
+                        sample_callback=sample_callback,
                         model=args.model,
                         model_args=args.model_args,
                         tasks=[pretrain_task],

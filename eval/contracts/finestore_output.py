@@ -113,22 +113,3 @@ class FineStoreOutput:
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
-
-
-def write_finestore_output(
-    root: str,
-    source_prefix: str,
-    results: Mapping[str, Any],
-    samples_by_task: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> None:
-    """Write an already collected result through the incremental output sink."""
-    if completed_finestore_output(root, source_prefix):
-        return
-
-    with FineStoreOutput(root, source_prefix, tuple(samples_by_task)) as output:
-        if _scored_results(results):
-            for task_name, task_samples in samples_by_task.items():
-                for record in task_samples:
-                    output.write_sample(task_name, record)
-                output.finish_task()
-        output.finish(results)

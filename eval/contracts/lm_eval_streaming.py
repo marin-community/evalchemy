@@ -4,16 +4,53 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
+from lm_eval.tasks import TaskManager
 from lm_eval.utils import handle_non_serializable, hash_string
+
+from eval.contracts.finestore_output import FineStoreOutput
+from eval.contracts.sample_manifest import SampleCoverageError, SampleEntry, SampleManifest
+from eval.contracts.sample_results import validate_sample_metrics
+from eval.sample_logging import canonicalize_sample, manifest_entries_for_task
+
+
+def streams_scored_samples(task_manager: TaskManager, task_name: str, predict_only: bool) -> bool:
+    """Keep lm-eval's required sample logging for bypass/output-only tasks."""
+    if predict_only:
+        return False
+    task_entry = task_manager.task_index.get(task_name)
+    metrics = (task_entry.cfg or {}).get("metric_list", []) if task_entry is not None else []
+    return not any(isinstance(metric, Mapping) and metric.get("metric") == "bypass" for metric in metrics)
+
+
+class FineStoreSampleCallback:
+    """Canonicalize and stage each scored lm-eval record with manifest identity."""
+
+    def __init__(self, sample_manifest: SampleManifest, output: FineStoreOutput) -> None:
+        self._manifest = sample_manifest
+        self._output = output
+        self._entries: dict[str, tuple[SampleEntry, ...]] = {}
+        self._has_manifest: dict[str, bool] = {}
+
+    def __call__(self, task_name: str, sample: dict[str, Any], index: int) -> None:
+        if task_name not in self._entries:
+            self._has_manifest[task_name] = self._manifest.expected_sample_count > 0
+            self._entries[task_name] = manifest_entries_for_task(task_name, self._manifest)[0]
+        entries = self._entries[task_name]
+        if self._has_manifest[task_name] and index >= len(entries):
+            raise SampleCoverageError(f"{task_name}: scored sample {index} has no manifest entry")
+        entry = entries[index] if entries else None
+        record = canonicalize_sample(task_name, sample, index, entry)
+        validate_sample_metrics(task_name, [record])
+        self._output.write_sample(task_name, record)
 
 
 class StreamingTaskManager:
     """Decorate loaded lm-eval tasks so each scored document reaches a callback."""
 
-    def __init__(self, task_manager: Any, on_sample: Callable[[str, dict[str, Any], int], None]) -> None:
+    def __init__(self, task_manager: TaskManager, on_sample: Callable[[str, dict[str, Any], int], None]) -> None:
         self._task_manager = task_manager
         self._on_sample = on_sample
 

@@ -46,20 +46,9 @@ def canonicalize_samples(
     """
     manifest_entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
-        sample_entries = sample_manifest.sample_entries(namespace=task_name)
-        unit_entries = sample_manifest.unit_entries(namespace=task_name)
-        if not sample_entries and sample_manifest.task_name == task_name:
-            sample_entries = sample_manifest.sample_entries()
-            unit_entries = sample_manifest.unit_entries()
+        sample_entries, unit_entries = manifest_entries_for_task(task_name, sample_manifest)
         samples = _coalesce_lm_eval_filter_variants(samples, len(sample_entries))
-        manifest_entries = sample_entries
-        if len(samples) != len(sample_entries) and len(samples) == len(unit_entries):
-            manifest_entries = unit_entries
-        if len(manifest_entries) != len(samples):
-            raise SampleCoverageError(
-                f"{task_name}: sample logger received {len(samples)} records but the manifest "
-                f"contains {len(manifest_entries)} samples"
-            )
+        manifest_entries = _entries_for_count(task_name, len(samples), sample_entries, unit_entries)
 
     canonical = [
         canonicalize_sample(task_name, sample, index, manifest_entries[index] if manifest_entries else None)
@@ -104,26 +93,45 @@ def canonicalize_sample(
     return record
 
 
+def manifest_entries_for_task(
+    task_name: str, sample_manifest: SampleManifest
+) -> tuple[tuple[SampleEntry, ...], tuple[SampleEntry, ...]]:
+    """Return sample and request-unit identities for one task namespace."""
+    sample_entries = sample_manifest.sample_entries(namespace=task_name)
+    unit_entries = sample_manifest.unit_entries(namespace=task_name)
+    if not sample_entries and sample_manifest.task_name == task_name:
+        sample_entries = sample_manifest.sample_entries()
+        unit_entries = sample_manifest.unit_entries()
+    return sample_entries, unit_entries
+
+
+def _entries_for_count(
+    task_name: str,
+    count: int,
+    sample_entries: tuple[SampleEntry, ...],
+    unit_entries: tuple[SampleEntry, ...],
+) -> tuple[SampleEntry, ...]:
+    entries = sample_entries
+    if count != len(entries) and count == len(unit_entries):
+        entries = unit_entries
+    if count != len(entries):
+        raise SampleCoverageError(
+            f"{task_name}: sample logger received {count} records but the manifest "
+            f"contains {len(entries)} samples"
+        )
+    return entries
+
+
 def iter_custom_samples(
     task_name: str,
     samples: Sequence[Mapping[str, Any]],
     sample_manifest: SampleManifest | None,
 ) -> Iterator[dict[str, Any]]:
-    """Validate and canonicalize custom benchmark records without another task-sized list."""
+    """Yield validated canonical records for one custom benchmark."""
     entries = ()
     if sample_manifest is not None and sample_manifest.expected_sample_count:
-        entries = sample_manifest.sample_entries(namespace=task_name)
-        unit_entries = sample_manifest.unit_entries(namespace=task_name)
-        if not entries and sample_manifest.task_name == task_name:
-            entries = sample_manifest.sample_entries()
-            unit_entries = sample_manifest.unit_entries()
-        if len(samples) != len(entries) and len(samples) == len(unit_entries):
-            entries = unit_entries
-        if len(samples) != len(entries):
-            raise SampleCoverageError(
-                f"{task_name}: sample logger received {len(samples)} records but the manifest "
-                f"contains {len(entries)} samples"
-            )
+        sample_entries, unit_entries = manifest_entries_for_task(task_name, sample_manifest)
+        entries = _entries_for_count(task_name, len(samples), sample_entries, unit_entries)
 
     for index, sample in enumerate(samples):
         record = canonicalize_sample(task_name, sample, index, entries[index] if entries else None)

@@ -9,7 +9,7 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 from sympy import Integer
 
-from eval.contracts.finestore_output import FineStoreOutput, completed_finestore_output, read_finestore_output, write_finestore_output
+from eval.contracts.finestore_output import FineStoreOutput, completed_finestore_output, read_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
@@ -19,6 +19,17 @@ from eval.lm_eval_compat import setup_parser
 from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
+
+
+def _write_result(root, source_prefix, results, samples_by_task):
+    if completed_finestore_output(root, source_prefix):
+        return
+    with FineStoreOutput(root, source_prefix, tuple(samples_by_task)) as output:
+        for task_name, records in samples_by_task.items():
+            for record in records:
+                output.write_sample(task_name, record)
+            output.finish_task()
+        output.finish(results)
 
 
 @pytest.mark.parametrize("option", ["--output_path", "--finestore_output_path"])
@@ -147,7 +158,7 @@ def test_finestore_output_preserves_repeated_trials(tmp_path: Path):
         for repeat, (answer, score) in enumerate((("A", 1.0), ("B", 0.0), ("A", 1.0)))
     ]
 
-    write_finestore_output(
+    _write_result(
         root,
         "gpqa_diamond",
         {"results": {"GPQADiamond": {"accuracy_avg": 2 / 3}}},
@@ -191,7 +202,7 @@ def test_finestore_output_expands_filter_variants(
     }
 
     results = {"results": {"gsm8k": {"exact_match": 1.0}}}
-    write_finestore_output(root, "gsm8k_5shot", results, {"gsm8k": [record]})
+    _write_result(root, "gsm8k_5shot", results, {"gsm8k": [record]})
 
     view = ReadView(root)
     table = view.scan(ARCHIVE_SAMPLES_TABLE)
@@ -220,8 +231,8 @@ def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: 
     }
     results = {"results": {"hellaswag": {"acc,none": 1.0}}}
 
-    write_finestore_output(root, "hellaswag_0shot", results, {"hellaswag": [record]})
-    write_finestore_output(root, "hellaswag_10shot", results, {"hellaswag": [record]})
+    _write_result(root, "hellaswag_0shot", results, {"hellaswag": [record]})
+    _write_result(root, "hellaswag_10shot", results, {"hellaswag": [record]})
 
     table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
     assert table is not None
@@ -267,7 +278,7 @@ def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: P
 
 def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
     root = str(tmp_path / "archive")
-    write_finestore_output(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
+    _write_result(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
 
     with pytest.raises(ResumeRefused, match="without a resume fingerprint"):
         FineStoreResumeManager(root, "run", "gsm8k", RunFingerprint(inputs={"task_name": "gsm8k"})).decide()
@@ -276,12 +287,12 @@ def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
 def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
     root = str(tmp_path / "archive")
     results = {"results": {"gsm8k": {"exact_match": 0.5}}}
-    write_finestore_output(root, "gsm8k_0shot", results, {})
+    _write_result(root, "gsm8k_0shot", results, {})
     committed = ReadView(root)
     assert completed_finestore_output(root, "gsm8k_0shot")
     assert not committed.is_sealed()
-    write_finestore_output(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
-    write_finestore_output(
+    _write_result(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
+    _write_result(
         root,
         "gsm8k_0shot",
         {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}},
@@ -376,9 +387,9 @@ def test_failed_finestore_result_can_be_replaced_by_success(tmp_path: Path):
     failure = {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}}
     success = {"results": {"gsm8k": {"exact_match": 0.5}}}
 
-    write_finestore_output(root, "gsm8k_0shot", failure, {})
+    _write_result(root, "gsm8k_0shot", failure, {})
     assert not completed_finestore_output(root, "gsm8k_0shot")
-    write_finestore_output(root, "gsm8k_0shot", success, {})
+    _write_result(root, "gsm8k_0shot", success, {})
 
     assert completed_finestore_output(root, "gsm8k_0shot")
     assert read_finestore_output(root, "gsm8k_0shot") == success
@@ -392,7 +403,7 @@ def test_finestore_output_serializes_large_sympy_result(tmp_path: Path, bits: in
         "config": {"large_integer": Integer(2) ** bits},
     }
 
-    write_finestore_output(root, "gsm8k_0shot", results, {})
+    _write_result(root, "gsm8k_0shot", results, {})
 
     restored = read_finestore_output(root, "gsm8k_0shot")
     assert restored is not None
@@ -409,7 +420,7 @@ def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, mo
 
     monkeypatch.setattr("eval.contracts.finestore_output.samples_from_lm_eval", fail_normalization)
     with pytest.raises(ValueError, match="invalid sample"):
-        write_finestore_output(root, "gsm8k_0shot", result, {"gsm8k": [{}]})
+        _write_result(root, "gsm8k_0shot", result, {"gsm8k": [{}]})
 
     assert read_finestore_output(root, "gsm8k_0shot") is None
 
@@ -435,7 +446,7 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
     assert manager.decide() == "fresh"
     manager.finalize()
     result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
-    write_finestore_output(root, args.finestore_output_prefix, result, {})
+    _write_result(root, args.finestore_output_prefix, result, {})
 
     setattr(args, changed_field, changed_value)
     monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}))
