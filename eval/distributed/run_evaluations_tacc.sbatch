@@ -17,7 +17,7 @@ source /scratch/08002/gsmyrnis/dcft_shared/dcft_private/hpc/dotenv/tacc.env
 $EVALCHEMY_ACTIVATE_ENV
 
 # EVAL SCORING COMMAND
-export EVAL_COMMAND="python -m eval.eval --model precomputed_hf --model_args "repo_id=mlfoundations-dev/Qwen2.5-7B-Instruct_1744582706_eval_288a",model="Qwen/Qwen2.5-7B-Instruct" --tasks AIME24,AMC23,MATH500,AIME25,GPQADiamond,MMLUPro,LiveCodeBench,CodeElo --output_path logs --use_database"
+export EVAL_COMMAND="python -m eval.eval --model precomputed_hf --model_args "repo_id=mlfoundations-dev/Qwen2.5-7B-Instruct_1744582706_eval_288a",model="Qwen/Qwen2.5-7B-Instruct" --tasks AIME24,AMC23,MATH500,AIME25,GPQADiamond,MMLUPro,LiveCodeBench,CodeElo --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ --use_database"
 
 # RUN EVAL SCORING
 srun echo -e "EVAL_COMMAND: ${EVAL_COMMAND}"

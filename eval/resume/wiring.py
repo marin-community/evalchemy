@@ -1,30 +1,7 @@
-"""Auto-detect wiring — construct the ResumeManager from CLI run inputs (Stage 4).
+"""Construct per-task FineStore resume managers from CLI inputs.
 
-This is the ONE construction site that feeds all three resume paths (global
-invariant #5 — one interface). ``cli_evaluate`` (``eval/eval.py``) calls
-:func:`build_resume_wiring` once after model init; the result both
-
-  * sets ``args.resume_manager_factory`` — the seam the lm-eval-native (3b) and
-    native pass@k (3c) call sites read (``resume_manager_factory(task_name) ->
-    ResumeManager``), and
-  * is used to ``attach_resume_manager(...)`` on the chat_benchmark instances
-    (the 3a / 3c seam).
-
-``--resume-mode`` semantics (default ``auto``):
-  * ``off``       — pure no-op: NO factory is built, NOTHING is attached, no
-    ``resume/`` dir is written. Reproduces today exactly (global invariant #1).
-  * ``auto``      — auto-detect prior state under the per-task run dir; a FIRST
-    run with no matching state is a pure no-op that only writes the (inert)
-    fingerprint/state dir (mirror Harbor's ``is_resuming=False`` branch); a
-    second run with identical inputs resumes; a material delta refuses.
-  * ``force-fresh`` — wipe any prior state and start fresh.
-
-Resume state needs a durable anchor directory. ``--output_path`` is the anchor;
-a FineStore-native run without one anchors on a sibling of the FineStore root
-(a remote root cannot anchor stdlib state, so it stays a no-op), so completed
-responses are still checkpointed during generation and a restarted run can
-resume instead of repeating the whole task. When no local anchor exists we
-degrade to a no-op (same as ``off``), preserving the flag-off invariant.
+The factory feeds both lm-eval and chat benchmarks. Request state lives in the
+FineStore archive, and a fresh evaluation requires a new archive path.
 
 The fingerprint here is built from the run inputs that are *cheaply available
 from ``args`` + the initialized ``lm``* (model repo/revision, decoding params,
@@ -33,15 +10,18 @@ seeds, template on/off, num_fewshot, max_model_len, num_samples / pass@k batch
 digests (loaded dataset bytes, grader ``__file__``) are NOT loaded here — they
 would require materializing each benchmark's dataset/grader at wiring time; the
 decision table is correct without them (they would only ADD refuse-sensitivity).
-Each task gets its OWN manager under ``<run_dir>/<task>`` so tasks never share
-state, and ``task_name`` is a material field so two tasks never collide.
+Each task gets its own namespace in the archive, and ``task_name`` is a
+material fingerprint field so tasks never collide.
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Optional
+
+from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
+from eval.contracts.finestore_resume import FineStoreResumeManager
 
 from .fingerprint import RunFingerprint, resolve_model_revision
 
@@ -90,58 +70,27 @@ def _world_rank(lm: Any) -> tuple[int, int]:
     return int(getattr(lm, "world_size", 1) or 1), int(getattr(lm, "rank", 0) or 0)
 
 
-def _sanitize(name: str) -> str:
-    return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name))
-
-
-def _resume_root(args: Any) -> Optional[Path]:
-    """The local directory resume state anchors on, or ``None`` when there is none."""
-    output_path = getattr(args, "output_path", None)
-    if output_path:
-        return Path(output_path) / ".resume"
-    finestore_path = getattr(args, "finestore_output_path", None)
-    if finestore_path:
-        root = str(finestore_path).rstrip("/")
-        if "://" in root:
-            # Resume state is written with the stdlib, so a remote FineStore root
-            # (gs://…, s3://…) has no local sibling to anchor on.
-            logger.info("resume: FineStore root %s is remote; resume disabled (no-op).", root)
-            return None
-        # Anchor beside a local FineStore root, outside the archive layout, so a
-        # run without --output_path still checkpoints completed responses.
-        return Path(f"{root}.resume")
-    return None
-
-
-def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
-    """Build the per-task ResumeManager factory and stash it on ``args``.
+def build_resume_wiring(args: Any, lm: Any) -> Callable[[str], FineStoreResumeManager]:
+    """Build the per-task FineStore manager factory and stash it on ``args``.
 
     Returns the factory (also set as ``args.resume_manager_factory``) so the
-    caller can ``attach_resume_manager`` to chat benchmark instances, or ``None``
-    when resume is disabled (``off`` mode, or no durable anchor) — in which case
-    NOTHING is attached and behavior is byte-identical to today.
+    caller can ``attach_resume_manager`` to chat benchmark instances.
     """
-    mode = getattr(args, "resume_mode", "auto") or "auto"
-
-    # off -> pure no-op: do not even build a factory (invariant #1).
+    mode = args.resume_mode
     if mode == "off":
-        args.resume_manager_factory = None
-        return None
+        raise ValueError("FineStore resume cannot be disabled")
 
-    resume_root = _resume_root(args)
-    if resume_root is None:
-        logger.info("resume: --resume-mode=%s but no --output_path or --finestore_output_path; disabled (no-op).", mode)
-        args.resume_manager_factory = None
-        return None
+    finestore_output_path = args.finestore_output_path
+    if not finestore_output_path:
+        raise ValueError("--finestore_output_path is required for resume")
 
     world_size, rank = _world_rank(lm)
 
     margs = _parse_model_args(getattr(args, "model_args", "") or "")
-    model_repo = margs.get("pretrained") or getattr(args, "model_name", None)
+    model_repo = margs.get("pretrained") or margs.get("model") or getattr(args, "model_name", None)
     revision = margs.get("revision")
     model_revision = resolve_model_revision(model_repo, revision, allow_network=False)
-    # Evalchemy's canonical CLI writes ``max_length``.  Keep the older vLLM
-    # spelling for backwards-compatible resume fingerprints.
+    # The endpoint may also report this as max_model_len.
     max_model_len = margs.get("max_length", margs.get("max_model_len"))
     if max_model_len is not None:
         try:
@@ -151,10 +100,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
 
     gen = _parse_gen_kwargs(getattr(args, "gen_kwargs", None))
     max_tokens = getattr(args, "max_tokens", None)
-    decoding: dict = {}
-    for k in ("temperature", "top_p", "do_sample"):
-        if k in gen:
-            decoding[k] = gen[k]
+    decoding = dict(gen)
     # max generation length: prefer the explicit --max_tokens, else gen_kwargs alias.
     if max_tokens is not None:
         try:
@@ -184,12 +130,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
         "system_instruction": getattr(args, "system_instruction", None),
     }
 
-    model_dir = _sanitize(model_repo or "model")
-    base_run_dir = resume_root / model_dir
-
-    def factory(task_name: str):
-        from .manager import ResumeManager
-
+    def factory(task_name: str) -> FineStoreResumeManager:
         fp = RunFingerprint.from_run_inputs(
             model_repo=model_repo,
             model_revision=model_revision,
@@ -202,9 +143,10 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
             apply_chat_template=apply_chat_template,
             rendered_config=rendered_config,
         )
-        run_dir = base_run_dir / _sanitize(task_name)
-        return ResumeManager(
-            run_dir=run_dir,
+        return FineStoreResumeManager(
+            root=finestore_output_path,
+            source_prefix=getattr(args, "finestore_output_prefix", DEFAULT_SOURCE_PREFIX),
+            task_name=task_name,
             fingerprint=fp,
             mode=mode,
             world_size=world_size,
@@ -215,7 +157,7 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
     logger.info(
         "resume: --resume-mode=%s active; per-task state under %s (model=%s, rev=%s).",
         mode,
-        base_run_dir,
+        finestore_output_path,
         model_repo,
         model_revision,
     )
@@ -223,19 +165,10 @@ def build_resume_wiring(args: Any, lm: Any) -> Optional[Any]:
 
 
 def attach_to_chat_benchmarks(task_manager: Any, task_list: list, factory: Any) -> None:
-    """Attach a per-task ResumeManager to each chat benchmark instance (3a/3c seam).
-
-    No-op when ``factory`` is ``None`` (off-mode / no output_path) so nothing is
-    attached and ``compute`` stays byte-identical to today.
-    """
-    if factory is None:
-        return
+    """Attach each chat benchmark's FineStore resume manager."""
     instances = getattr(task_manager, "benchmark_instances", {}) or {}
     for task_name in task_list:
         bench = instances.get(task_name)
         if bench is None:
             continue
-        try:
-            bench.attach_resume_manager(factory(task_name))
-        except Exception as exc:  # pragma: no cover - defensive; never break a run on wiring
-            logger.warning("resume: could not attach manager to %s (%s); running without resume.", task_name, exc)
+        bench.attach_resume_manager(factory(task_name))

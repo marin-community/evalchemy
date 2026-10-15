@@ -77,6 +77,9 @@ dependencies = [
     # --use_database, so it lives in the `database` extra.
     "sqlalchemy",
     "python-dotenv",
+    "s3fs",
+    "marin-finestore>=0.2.113.dev35019671596",
+    "marin-rigging>=0.2.67.dev30673006835",
 ]
 
 [project.urls]
@@ -100,30 +103,18 @@ dev = [
 
 # The serve-and-eval runner (eval/serve_eval/): the run/validate CLIs use click,
 # parse results/spec JSON with pydantic, and load the run config (qwen-tiny.yaml) with
-# pydantic-settings. marin-rigging exports bounded, best-effort lifecycle records to
-# Finelog without pulling marin-core. marin-finestore writes native evaluation artifacts
-# and normalized tables when --finestore_output_path is set. This is an optional extra,
-# not a base dependency: base evalchemy evaluates fine without the runner. The regression
-# gate (eval/regression/) reuses these same deps.
-#
-# s3fs gives fsspec an s3:// backend so FineStore can write to durable S3/R2 object
-# storage instead of a pod-local path that is garbage-collected when the pod ends.
-# The eval pod inherits AWS creds + FSSPEC_S3 (endpoint + virtual-host addressing) from
-# its runtime env, so bare `fsspec.core.url_to_fs("s3://...")` authenticates with no extra
-# config -- it just needs the s3 filesystem installed, which the lean base omits.
+# pydantic-settings. FineStore and rigging are core dependencies because every
+# evaluation writes its results and resume state directly to a FineStore archive.
 serve-eval = [
     "click>=8",
     "pydantic-settings>=2",
     "pyyaml",
-    "s3fs",
-    "marin-finestore>=0.2.113.dev35019671596",
-    "marin-rigging>=0.2.67.dev30673006835",
 ]
 
 # Postgres driver for the --use_database result-tracking path only. DATABASE_URL
 # (database/config.py) uses the plain `postgresql://` dialect, for which SQLAlchemy
-# loads the psycopg2 DBAPI. Base evalchemy writes results to JSON and never opens the DB,
-# so this stays out of the core install.
+# loads the psycopg2 DBAPI. FineStore is the default output; this optional driver
+# enables the separate database integration.
 database = [
     "psycopg2-binary",
 ]

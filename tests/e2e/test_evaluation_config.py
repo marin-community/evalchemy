@@ -98,9 +98,8 @@ def test_runner_argv_preserves_shipped_evaluation_behavior():
         "temperature=0,do_sample=false,max_gen_toks=1024",
         "--max_tokens",
         "1024",
-        "--output_path",
+        "--finestore_output_path",
         "/results",
-        "--log_samples",
     ]
 
 

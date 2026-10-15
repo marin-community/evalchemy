@@ -19,7 +19,7 @@ from eval.graders.minerva_math import normalize_final_answer
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_NUM_WORKERS = 16
-JUDGE_TOKEN_BUDGETS = (128, 512, 2048)
+JUDGE_MAX_TOKENS = 2048
 
 _Judgment = TypeVar("_Judgment")
 
@@ -159,18 +159,13 @@ async def _complete_judge_prompt(
     config: JudgeConfig,
     client: AsyncOpenAI,
 ) -> str:
-    raw = ""
-    for max_tokens in JUDGE_TOKEN_BUDGETS:
-        response = await client.chat.completions.create(
-            model=config.model,
-            max_tokens=max_tokens,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        if raw:
-            return raw
-    return raw
+    response = await client.chat.completions.create(
+        model=config.model,
+        max_tokens=JUDGE_MAX_TOKENS,
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 async def judge_prompts(

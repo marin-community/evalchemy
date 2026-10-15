@@ -191,7 +191,7 @@ assert "Q?" in prompt
     ("num_fewshot", "includes_validation"),
     [(0, False), (1, True)],
 )
-def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, num_fewshot, includes_validation):
+def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, tmp_path, num_fewshot, includes_validation):
     validation = {
         "question": "Validation demonstration?",
         "options": ["demo-a", "demo-b"],
@@ -251,8 +251,8 @@ def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, num_fewsh
             "--max_tokens",
             "1024",
             "--apply_chat_template",
-            "--resume-mode",
-            "off",
+            "--finestore_output_path",
+            str(tmp_path / "archive"),
         ]
     )
     args.model = model

@@ -26,6 +26,7 @@ import zstandard
 from click.testing import CliRunner
 from pydantic import ValidationError
 
+from eval.contracts.finestore_output import read_finestore_output
 from eval.contracts.failures import FailureCategory
 from eval.contracts.task_outcome import EvaluationRunError
 from eval.serve_eval.config import RunConfig
@@ -127,6 +128,20 @@ def test_apply_chat_template_flag_is_bare_never_a_value():
     following = argv[argv.index("--apply_chat_template") + 1 :]
     assert not following or following[0].startswith("--")
     assert "True" not in argv
+
+@pytest.mark.parametrize("option", ["--finestore_output_path", "--output_path", "--finestore_output_prefix"])
+def test_runner_rejects_output_override_that_would_change_archive_reader(option):
+    served = ServedModel(base_url="http://h/v1", model="m")
+    cfg = RunConfig.load(None, tasks=["gsm8k"])
+    with pytest.raises(ValueError, match="owns the FineStore output"):
+        build_eval_argv(
+            served,
+            cfg,
+            "/out",
+            limit=None,
+            extra_args=[option, "other"],
+            python="python",
+        )
 
 
 # --- run config boundaries ----------------------------------------------------
@@ -377,15 +392,11 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
         textwrap.dedent(
             f"""\
             #!{sys.executable}
-            import json
-            import pathlib
             import sys
-
             if {exit_code}:
                 raise SystemExit({exit_code})
-            output_dir = pathlib.Path(sys.argv[sys.argv.index("--output_path") + 1])
-            results_dir = output_dir / "served-model"
-            results_dir.mkdir(parents=True, exist_ok=True)
+            from eval.contracts.finestore_output import write_finestore_output
+            output_dir = sys.argv[sys.argv.index("--finestore_output_path") + 1]
             payload = {{
                 "results": {{
                     "gsm8k": {{
@@ -411,7 +422,7 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
                     }}
                 }},
             }}
-            (results_dir / "results_test.json").write_text(json.dumps(payload))
+            write_finestore_output(output_dir, "run", payload, {{}})
             """
         )
     )
@@ -474,7 +485,7 @@ def test_runner_exports_terminal_results_through_real_boundaries(tmp_path):
         server.shutdown()
 
     assert result.exit_code == 0, result.output
-    assert (output_dir / "served-model" / "results_test.json").is_file()
+    assert read_finestore_output(str(output_dir), "run") is not None
 
     records = _telemetry_records()
     resources = {json.dumps(batch["resource"], sort_keys=True) for batch in _RunnerHandler.telemetry_batches}
@@ -587,7 +598,9 @@ def test_telemetry_delivery_failure_does_not_change_runner_output_or_status(tmp_
     try:
         output_dir = tmp_path / "results"
         args = _runner_args(server, output_dir, _fake_eval_python(tmp_path, exit_code=eval_exit_code))
+        baseline_started = time.monotonic()
         without_telemetry = CliRunner().invoke(main, args)
+        baseline_elapsed = time.monotonic() - baseline_started
         started = time.monotonic()
         with_broken_telemetry = _invoke_with_telemetry(server, args)
         elapsed = time.monotonic() - started
@@ -596,4 +609,4 @@ def test_telemetry_delivery_failure_does_not_change_runner_output_or_status(tmp_
 
     assert with_broken_telemetry.exit_code == without_telemetry.exit_code
     assert with_broken_telemetry.output == without_telemetry.output
-    assert elapsed < 3
+    assert elapsed - baseline_elapsed < 3

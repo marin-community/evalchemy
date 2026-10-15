@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from eval.contracts.sample_manifest import SampleCoverageError, SampleIdentityError, SampleManifest, SampleRequest
-from eval.resume import ResumeManager, RunFingerprint
+from eval.contracts.finestore_resume import FineStoreResumeManager
+from eval.resume import RunFingerprint
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
 
@@ -37,6 +38,10 @@ class _QueuedModel(_Model):
     def generate_until(self, requests):
         self.calls += 1
         return [f"answer-{request.idx}-{request.repeat_idx}" for request in requests]
+
+
+def _resume_manager(root, fingerprint):
+    return FineStoreResumeManager(str(root), "run", "_", fingerprint)
 
 
 def _instance(source_id, *, repeat=None):
@@ -117,12 +122,12 @@ def test_resume_uses_the_shared_opaque_identity(tmp_path, source_id):
         task_data_digest="sha256:data",
     )
     first = _Benchmark()
-    first.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
     assert first.compute(_Model(["saved"]), [_instance(source_id)]) == ["saved"]
 
     resumed_model = _Model([])
     resumed = _Benchmark()
-    resumed.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
 
     assert resumed.compute(resumed_model, [_instance(source_id)]) == ["saved"]
     assert resumed_model.calls == 0
@@ -135,11 +140,11 @@ def test_resume_rejects_changed_identity_before_generation(tmp_path):
         task_data_digest="sha256:data",
     )
     first = _Benchmark()
-    first.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
     first.compute(_Model(["saved"]), [_instance("old-id")])
 
     resumed = _Benchmark()
-    resumed.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
     model = _Model(["unused"])
 
     with pytest.raises(SampleIdentityError, match="absent from the current request batch"):
@@ -237,7 +242,7 @@ def test_passk_restores_are_included_in_manifest_coverage(tmp_path):
         return instances
 
     first = _Benchmark(num_samples=2)
-    first.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
     expected = first.generate_n_samples_batched(
         _QueuedModel([]),
         build_instances,
@@ -245,7 +250,7 @@ def test_passk_restores_are_included_in_manifest_coverage(tmp_path):
     )
 
     resumed = _Benchmark(num_samples=2)
-    resumed.attach_resume_manager(ResumeManager(run_dir=tmp_path, fingerprint=fingerprint, mode="auto"))
+    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
     resumed_model = _QueuedModel([])
 
     assert resumed.generate_n_samples_batched(resumed_model, build_instances, batch_size=1) == expected

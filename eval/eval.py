@@ -2,13 +2,12 @@ import argparse
 import difflib
 import json
 import logging
-import math
 import os
 import sys
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -38,7 +37,6 @@ from lm_eval.api.model import LM
 from lm_eval.loggers import EvaluationTracker, WandbLogger
 from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_commit_hash
 from lm_eval.tasks import TaskManager as PretrainTaskManager
-from lm_eval.utils import handle_non_serializable as _orig_handle
 from lm_eval.utils import sanitize_model_name, simple_parse_args_string
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 
@@ -63,9 +61,11 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.finestore_output import require_finestore_output, write_finestore_output
+from eval.contracts.finestore_output import read_finestore_output, write_finestore_output
+from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
 from eval.contracts.preflight import prepare_requested_tasks
+from eval.contracts.result_serialization import handle_non_serializable_extended
 from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.task_outcome import (
     FailureCategory,
@@ -84,10 +84,9 @@ from eval.contracts.task_outcome import (
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import parse_key_value_args, resolve_evaluation_limits
 from eval.resume import lm_eval_native
+from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
 from eval.sample_logging import canonicalize_samples, is_scored_result, without_embedded_samples
 from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
-
-_BIT_CAP = 15_000
 
 # Evalchemy-owned lm-eval task overrides (marin-community/evalchemy#31). include_path
 # task configs take precedence over lm-eval's packaged defaults, so shipping
@@ -223,7 +222,7 @@ def _grade_custom_tasks(
                 continue
             results["results"][work.task_name] = scored_result
             _record_generation_artifacts(results, work)
-            if not getattr(args, "log_samples", False) or not is_scored_result(scored_result):
+            if not is_scored_result(scored_result):
                 outcomes.append(outcome)
                 continue
 
@@ -295,35 +294,6 @@ def resolve_task_routes(
         utils.eval_logger.info("%s -> %s", task, route)
 
     return task_routes
-
-
-def handle_non_serializable_extended(o):
-    """
-    Delegates to the stock helper, but for gigantic SymPy Integer /
-    Rational objects returns a short placeholder *without* calling str().
-    """
-    try:
-        from sympy import Integer, Rational
-
-        if isinstance(o, Integer):
-            if o.p.bit_length() > _BIT_CAP:
-                digits = int(o.p.bit_length() * math.log10(2)) + 1
-                return f"<Integer ~{digits} digits>"
-            return str(int(o))  # safe: fits under the guard
-
-        if isinstance(o, Rational):
-            num_bits = o.p.bit_length()
-            den_bits = o.q.bit_length()
-            if num_bits > _BIT_CAP or den_bits > _BIT_CAP:
-                d_num = int(num_bits * math.log10(2)) + 1
-                d_den = int(den_bits * math.log10(2)) + 1
-                return f"<Rational {d_num}/{d_den} digits>"
-            return str(o)  # small enough
-    except ModuleNotFoundError:
-        pass
-
-    # Everything else: NumPy ints, sets, etc.
-    return _orig_handle(o)
 
 
 def setup_custom_parser():
@@ -418,12 +388,8 @@ def setup_custom_parser():
         dest="resume_mode",
         type=str,
         default="auto",
-        choices=["auto", "force-fresh", "off"],
-        help="Unified resume manager mode. 'auto' (default) auto-detects matching prior "
-        "run-state under --output_path and resumes (or refuses on a material delta); a first "
-        "run with no prior state is a pure no-op (byte-identical to today). 'force-fresh' wipes "
-        "prior state and starts over. 'off' disables the manager entirely (reproduces today "
-        "exactly). Requires --output_path; without it resume is disabled.",
+        choices=["auto", "force-fresh"],
+        help="Restore completed requests from FineStore by default. force-fresh requires an empty archive.",
     )
     return parser
 
@@ -585,11 +551,10 @@ def evaluate(
                         batch_size=batch_size,
                         max_batch_size=args.max_batch_size,
                         device=args.device,
-                        use_cache=args.use_cache,
                         limit=args.limit,
                         check_integrity=args.check_integrity,
                         write_out=args.write_out,
-                        log_samples=args.log_samples,
+                        log_samples=True,
                         evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
                         system_instruction=args.system_instruction,
                         apply_chat_template=args.apply_chat_template,
@@ -629,20 +594,19 @@ def evaluate(
             results["results"].update(pretrain_results.get("results", {}))
             if pretrain_results.get("n-samples"):
                 results.setdefault("n-samples", {}).update(pretrain_results["n-samples"])
-            if getattr(args, "log_samples", False):
-                native_samples = pretrain_results.get("samples", {})
-                for task, scored_result in pretrain_results.get("results", {}).items():
-                    if not is_scored_result(scored_result):
-                        continue
-                    task_samples = native_samples.get(task, [])
-                    if not task_samples:
-                        eval_logger.warning("log_samples: scored task %s produced no sample records", task)
-                        continue
-                    results.setdefault("samples", {})[task] = canonicalize_samples(
-                        task,
-                        task_samples,
-                        sample_manifest,
-                    )
+            native_samples = pretrain_results.get("samples", {})
+            for task, scored_result in pretrain_results.get("results", {}).items():
+                if not is_scored_result(scored_result):
+                    continue
+                task_samples = native_samples.get(task, [])
+                if not task_samples:
+                    eval_logger.warning("scored task %s produced no sample records", task)
+                    continue
+                results.setdefault("samples", {})[task] = canonicalize_samples(
+                    task,
+                    task_samples,
+                    sample_manifest,
+                )
 
     finalized_outcomes = []
     for outcome in outcomes:
@@ -678,10 +642,7 @@ def evaluate(
     if lm is not None and hasattr(lm, "update_repo_readme") and callable(lm.update_repo_readme):
         try:
             eval_logger.info("Updating repository README with evaluation results...")
-            local_readme_path = os.path.join(
-                args.output_path, args.model_args.strip("repo_id=").replace("/", "__") + "_README.md"
-            )
-            lm.update_repo_readme(results, local_readme_path=local_readme_path)
+            lm.update_repo_readme(results)
         except Exception as e:
             eval_logger.error(f"Error updating repository README: {str(e)}")
             import traceback
@@ -741,11 +702,10 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         parser = setup_custom_parser()
         args = parse_eval_args(parser)
 
-    if args.finestore_output_path:
-        if not args.log_samples:
-            raise ValueError("--finestore_output_path requires --log_samples")
-        require_finestore_output()
-
+    if not args.finestore_output_path:
+        raise ValueError("--finestore_output_path is required")
+    if args.resume_mode == "off":
+        raise ValueError("FineStore output requires --resume-mode auto or force-fresh")
     if args.config is not None:
         # This overwrites `--tasks` and `--batch_size`
         with open(args.config, "r") as file:
@@ -760,10 +720,14 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             for _ in range(len(args.tasks.split(",")))
         ]
 
-    # Initialize evaluation tracker
-    if args.output_path:
-        args.hf_hub_log_args += f",output_path={args.output_path}"
-    evaluation_tracker = setup_evaluation_tracker(args.output_path, args.use_database)
+    prior_result = read_finestore_output(args.finestore_output_path, args.finestore_output_prefix)
+    if prior_result is not None:
+        if args.resume_mode == "force-fresh":
+            raise ResumeRefused("FineStore output already exists; use a new output path for a fresh evaluation")
+        if prior_result.get("config", {}).get("tasks") != args.tasks:
+            raise ResumeRefused("FineStore result task list changed; use a new output path")
+
+    evaluation_tracker = setup_evaluation_tracker(args.use_database)
 
     task_list = args.tasks.split(",")
 
@@ -890,22 +854,15 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
 
-    # Stage 4: auto-detect resume wiring. ONE construction site that feeds all
-    # three resume paths (global invariant #5). Builds a per-task ResumeManager
-    # factory from the run inputs and sets `args.resume_manager_factory` (the
-    # lm-eval-native 3b + native pass@k 3c seam) AND attaches a manager to each
-    # chat_benchmark instance (the 3a/3c seam). `--resume-mode off` (or no
-    # `--output_path`) builds nothing and attaches nothing -> byte-identical to
-    # today (invariant #1); `auto` (the default) on a first run with no prior
-    # state is a pure no-op that only writes the inert fingerprint/state dir.
-    try:
-        from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
-
-        _resume_factory = build_resume_wiring(args, lm)
-        attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
-    except Exception as e:
-        utils.eval_logger.warning(f"resume: wiring failed ({e}); running without resume.")
-        args.resume_manager_factory = None
+    # One per-task factory feeds the native lm-eval and chat benchmark resume paths.
+    _resume_factory = build_resume_wiring(args, lm)
+    for task in task_list:
+        manager = _resume_factory(task)
+        try:
+            manager.decide()
+        finally:
+            manager.finalize()
+    attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
 
     # Initialize logging and environment
     eval_logger = utils.eval_logger
@@ -938,23 +895,18 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         dist.destroy_process_group()
 
 
-def setup_evaluation_tracker(output_path: str, use_database: bool) -> DCEvaluationTracker:
+def setup_evaluation_tracker(use_database: bool) -> DCEvaluationTracker:
     """
-    This function initializes a DCEvaluationTracker instance with the specified
-    configuration for either file-based or database storage of evaluation results.
+    Initialize the tracker used for run metadata and optional database updates.
 
     Args:
-        output_path (str): The file system path where evaluation results will be saved.
-            For file-based storage, this will be the directory path. For database
-            storage, this could be the connection string or database path.
         use_database (bool): If True, uses database storage for results.
-            If False, uses file-based storage.
 
     Returns:
         DCEvaluationTracker: A configured instance of the evaluation tracker
             ready to record and manage DCF evaluation results
     """
-    return DCEvaluationTracker(output_path, use_database)
+    return DCEvaluationTracker(use_database=use_database)
 
 
 def initialize_model(
@@ -1041,7 +993,6 @@ def add_results_metadata(results: Dict, batch_sizes_list: List[int], args: argpa
         "tasks": args.tasks,
         "batch_sizes": batch_sizes_list,
         "device": args.device,
-        "use_cache": args.use_cache,
         "limit": args.limit,
         "annotator_model": args.annotator_model,
         "max_length": getattr(args, "max_length", None) if getattr(args, "max_length", None) is not None else "default",
@@ -1104,16 +1055,12 @@ def handle_evaluation_output(
             visualization. If None, W&B logging is disabled. Defaults to None.
 
     Returns:
-        None:
-            Function handles outputs via side effects (logging, saving files)
-            rather than returning values.
+        None: Results are written to FineStore.
     """
-    if args.finestore_output_path:
-        if not args.log_samples:
-            raise ValueError("--finestore_output_path requires --log_samples")
-        require_finestore_output()
+    if not args.finestore_output_path:
+        raise ValueError("--finestore_output_path is required")
     validate_result_document(results)
-    samples = results.pop("samples", {}) if args.log_samples else {}
+    samples = results.pop("samples", {})
 
     dumped = json.dumps(
         results,
@@ -1130,12 +1077,13 @@ def handle_evaluation_output(
         try:
             wandb_logger.post_init(results)
             wandb_logger.log_eval_result()
-            if args.log_samples:
-                wandb_logger.log_eval_samples(samples)
+            wandb_logger.log_eval_samples(samples)
         except Exception as e:
             utils.eval_logger.info(f"Logging to Weights and Biases failed due to {e}")
 
-    evaluation_tracker.save_results_aggregated(results=results, samples=samples if args.log_samples else None)
+    evaluation_tracker.general_config_tracker.log_end_time()
+    results.update(asdict(evaluation_tracker.general_config_tracker))
+    write_finestore_output(args.finestore_output_path, args.finestore_output_prefix, results, samples)
     if args.use_database and not args.debug:
         evaluation_tracker.update_evalresults_db(
             results,
@@ -1145,18 +1093,6 @@ def handle_evaluation_output(
             creation_location=args.creation_location,
             created_by=args.created_by,
             is_external=args.is_external_model,
-        )
-
-    if args.log_samples and not args.finestore_output_path and hasattr(evaluation_tracker, "save_results_samples"):
-        for task_name, task_samples in samples.items():
-            evaluation_tracker.save_results_samples(task_name=task_name, samples=task_samples)
-
-    if args.finestore_output_path:
-        write_finestore_output(
-            args.finestore_output_path,
-            args.finestore_output_prefix,
-            results,
-            samples,
         )
 
     utils.eval_logger.info(
