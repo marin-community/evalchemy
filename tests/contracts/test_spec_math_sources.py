@@ -30,6 +30,19 @@ def test_aiw_selects_target_ids_before_expanding_trials(tmp_path):
     assert specs[0].requests[0].generation["temperature"] == 1.0
 
 
+def test_aiw_debug_selects_target_rows_before_limiting(tmp_path):
+    data = tmp_path / "aiw.json"
+    data.write_text(json.dumps([
+        {"id": 1, "prompt": "skip", "right_answer": 0},
+        {"id": 577, "prompt": "first", "right_answer": 42},
+        {"id": 580, "prompt": "second", "right_answer": 43},
+    ]))
+
+    specs = list(AIWBenchmark(data_file=data, debug=True, n_trials=1).iter_specs(_options("AIW")))
+
+    assert [spec.source_id for spec in specs] == [577, 580]
+
+
 def test_hle_and_hmmt_preserve_prompt_and_repeat_protocols(monkeypatch):
     hle = HLESubsetBenchmark()
     monkeypatch.setattr(hle, "load_questions", lambda: [{"id": "h", "answer": "B", "answer_type": "multipleChoice", "image": "", "question": "Choose B"}])

@@ -79,15 +79,16 @@ class MBPPPlusBenchmark(BaseBenchmark):
                 examples = [json.loads(x) for x in f]
             self.logger.info(f"Loaded {len(examples)} examples from {data_path}")
 
+            fewshot_indices = range(1, min(self.num_examples + 1, len(examples)))
             examples_str = []
-            for i in range(1, self.num_examples + 1):
+            for i in fewshot_indices:
                 ex = examples[i]
                 example_prompt = "- Example {}:\n{}".format(
                     i, self.format_test_example(ex["prompt"], ex["test_list"], ex["code"])
                 )
                 examples_str.append(example_prompt)
 
-            eval_range = range(self.start_idx, min(self.end_idx, len(examples)))
+            eval_range = (i for i in range(self.start_idx, min(self.end_idx, len(examples))) if i not in fewshot_indices)
             if self.debug:
                 eval_range = list(eval_range)[:2]
                 self.logger.info(f"Debug mode: using 2 examples")
