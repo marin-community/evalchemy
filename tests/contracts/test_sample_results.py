@@ -20,12 +20,17 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
+from finestore.reader import ReadView
 
+from eval.contracts.custom_streaming import CustomSampleEmitter
+from eval.contracts.finestore_output import FineStoreOutput
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_results import (
     SAMPLE_METRICS_FIELD,
     SampleMetricsError,
     record_sample_metrics,
+    emit_scored_samples,
     sample_metric_fields,
     validate_sample_metrics,
 )
@@ -490,13 +495,26 @@ def test_graded_benchmark_samples_persist_their_per_sample_metrics(task_name, mo
     case = GRADING_CASES[task_name]
     benchmark, generation_result = case.prepare(monkeypatch, tmp_path)
 
-    scored_result = benchmark.evaluate_responses(generation_result)
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "run", [task_name]) as output:
+        emitter = CustomSampleEmitter(task_name, benchmark, generation_result, output)
+        with emit_scored_samples(emitter.emit):
+            scored_result = benchmark.evaluate_responses(generation_result)
+        emitter.finish()
     records = canonicalize_samples(task_name, benchmark.to_samples(generation_result, scored_result))
 
     assert records
     for record in records:
         assert set(record[SAMPLE_METRICS_FIELD]) == set(case.metrics)
         assert all(isinstance(record[name], float) for name in case.metrics)
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    persisted = [sample_from_archive_row(row) for row in table.to_pylist(maps_as_pydicts="strict")]
+    assert len(persisted) == len(records)
+    assert {sample.doc_id for sample in persisted} == {str(record["doc_id"]) for record in records}
+    assert sorted(tuple(sorted(sample.metrics.items())) for sample in persisted) == sorted(
+        tuple(sorted((name, float(record[name])) for name in record["metrics"])) for record in records
+    )
 
 
 def test_ifbench_sample_contains_per_instruction_results(monkeypatch, tmp_path):

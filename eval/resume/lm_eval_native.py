@@ -8,10 +8,12 @@ calling the model and commits new responses through the FineStore manager.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, Dict, List, Optional
 
 from lm_eval.api.model import LM
 
+from eval.contracts.lm_eval_streaming import StreamingTaskManager
 from eval.robust_api import configure_generation_overrides, parse_generation_overrides
 from eval.contracts.sample_manifest import (
     DEFAULT_SAMPLE_NAMESPACE,
@@ -265,13 +267,18 @@ def resume_simple_evaluate(
     *,
     resume_manager_factory=None,
     sample_manifest: SampleManifest | None = None,
+    sample_callback: Callable[[str, dict[str, Any], int], None] | None = None,
     **kwargs,
 ):
-    """Wrap lm-eval's model with FineStore request restoration and sample accounting."""
-    if resume_manager_factory is None and sample_manifest is None:
+    """Wrap lm-eval requests and optionally stream scored samples through a callback."""
+    if resume_manager_factory is None and sample_manifest is None and sample_callback is None:
         return simple_evaluate_fn(**kwargs)
 
     import lm_eval
+
+    if sample_callback is not None and not kwargs.get("predict_only"):
+        kwargs["task_manager"] = StreamingTaskManager(kwargs["task_manager"], sample_callback)
+        kwargs["log_samples"] = False
 
     model = kwargs.pop("model")
     model_args = kwargs.get("model_args")

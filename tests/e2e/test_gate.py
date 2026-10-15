@@ -13,7 +13,7 @@ import os
 import pytest
 from click.testing import CliRunner
 
-from eval.contracts.finestore_output import write_finestore_output
+from eval.contracts.finestore_output import FineStoreOutput
 from pydantic import ValidationError
 
 from eval.regression.validate import DEFAULT_SPEC, GateSpec, MetricThreshold, cli, evaluate_gate
@@ -171,7 +171,8 @@ def _write(tmp_path, name, obj):
 
 def _write_results(tmp_path, name, results):
     root = str(tmp_path / name)
-    write_finestore_output(root, "run", results, {})
+    with FineStoreOutput(root, "run", tuple(results["results"])) as output:
+        output.finish(results)
     return root
 
 

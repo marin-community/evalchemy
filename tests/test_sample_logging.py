@@ -9,6 +9,7 @@ import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
+from eval.contracts.finestore_output import FineStoreOutput
 from eval.contracts.sample_results import record_sample_metrics
 from eval.eval import evaluate, handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
@@ -75,7 +76,13 @@ def _write_output(tmp_path: Path, results: dict[str, Any], args: Namespace):
     args.finestore_output_prefix = next(iter(results["results"]))
     tracker = DCEvaluationTracker()
     tracker.general_config_tracker.model_name_sanitized = "test-model"
-    handle_evaluation_output(results, args, tracker)
+    samples = results.pop("samples", {})
+    with FineStoreOutput(args.finestore_output_path, args.finestore_output_prefix, tuple(samples)) as output:
+        for task_name, records in samples.items():
+            for record in records:
+                output.write_sample(task_name, record)
+        output.finish_task()
+        handle_evaluation_output(results, args, tracker, output_sink=output)
     table = ReadView(args.finestore_output_path).scan(ARCHIVE_SAMPLES_TABLE)
     assert table is not None
     return [sample_from_archive_row(row) for row in table.to_pylist(maps_as_pydicts="strict")]

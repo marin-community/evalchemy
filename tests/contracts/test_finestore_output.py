@@ -9,7 +9,7 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 from sympy import Integer
 
-from eval.contracts.finestore_output import completed_finestore_output, read_finestore_output, write_finestore_output
+from eval.contracts.finestore_output import FineStoreOutput, completed_finestore_output, read_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
@@ -19,6 +19,17 @@ from eval.lm_eval_compat import setup_parser
 from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
+
+
+def _write_result(root, source_prefix, results, samples_by_task):
+    if completed_finestore_output(root, source_prefix):
+        return
+    with FineStoreOutput(root, source_prefix, tuple(samples_by_task)) as output:
+        for task_name, records in samples_by_task.items():
+            for record in records:
+                output.write_sample(task_name, record)
+            output.finish_task()
+        output.finish(results)
 
 
 @pytest.mark.parametrize("option", ["--output_path", "--finestore_output_path"])
@@ -147,7 +158,7 @@ def test_finestore_output_preserves_repeated_trials(tmp_path: Path):
         for repeat, (answer, score) in enumerate((("A", 1.0), ("B", 0.0), ("A", 1.0)))
     ]
 
-    write_finestore_output(
+    _write_result(
         root,
         "gpqa_diamond",
         {"results": {"GPQADiamond": {"accuracy_avg": 2 / 3}}},
@@ -191,7 +202,7 @@ def test_finestore_output_expands_filter_variants(
     }
 
     results = {"results": {"gsm8k": {"exact_match": 1.0}}}
-    write_finestore_output(root, "gsm8k_5shot", results, {"gsm8k": [record]})
+    _write_result(root, "gsm8k_5shot", results, {"gsm8k": [record]})
 
     view = ReadView(root)
     table = view.scan(ARCHIVE_SAMPLES_TABLE)
@@ -220,8 +231,8 @@ def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: 
     }
     results = {"results": {"hellaswag": {"acc,none": 1.0}}}
 
-    write_finestore_output(root, "hellaswag_0shot", results, {"hellaswag": [record]})
-    write_finestore_output(root, "hellaswag_10shot", results, {"hellaswag": [record]})
+    _write_result(root, "hellaswag_0shot", results, {"hellaswag": [record]})
+    _write_result(root, "hellaswag_10shot", results, {"hellaswag": [record]})
 
     table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
     assert table is not None
@@ -267,7 +278,7 @@ def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: P
 
 def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
     root = str(tmp_path / "archive")
-    write_finestore_output(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
+    _write_result(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
 
     with pytest.raises(ResumeRefused, match="without a resume fingerprint"):
         FineStoreResumeManager(root, "run", "gsm8k", RunFingerprint(inputs={"task_name": "gsm8k"})).decide()
@@ -276,33 +287,109 @@ def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
 def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
     root = str(tmp_path / "archive")
     results = {"results": {"gsm8k": {"exact_match": 0.5}}}
-    write_finestore_output(root, "gsm8k_0shot", results, {})
-    sealed = ReadView(root)
+    _write_result(root, "gsm8k_0shot", results, {})
+    committed = ReadView(root)
     assert completed_finestore_output(root, "gsm8k_0shot")
-    assert sealed.is_sealed()
-    write_finestore_output(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
-    write_finestore_output(
+    assert not committed.is_sealed()
+    _write_result(root, "gsm8k_0shot", {"results": {"gsm8k": {"exact_match": 0.0}}}, {})
+    _write_result(
         root,
         "gsm8k_0shot",
         {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}},
         {},
     )
     assert read_finestore_output(root, "gsm8k_0shot") == results
-    assert ReadView(root).token == sealed.token
+    assert ReadView(root).token == committed.token
     other_task = FineStoreResumeManager(root, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
     other_task.record({"task": "arc", "problem_idx": 0}, {"output": "A"})
     other_task.finalize()
     assert not ReadView(root).is_sealed()
     assert completed_finestore_output(root, "gsm8k_0shot")
 
+
+def _triviaqa_record(doc_id: int) -> dict:
+    return {
+        "doc_id": doc_id,
+        "doc": {"question": str(doc_id)},
+        "target": "answer",
+        "arguments": [[str(doc_id), {}]],
+        "resps": [["answer"]],
+        "filtered_resps": ["answer"],
+        "filter": "none",
+        "metrics": ["exact_match"],
+        "exact_match": 1.0,
+    }
+
+
+def test_staged_samples_survive_interruption_and_restart(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    results = {"results": {"triviaqa": {"exact_match": 1.0}}}
+
+    with pytest.raises(MemoryError):
+        with FineStoreOutput(root, "triviaqa", ["triviaqa"]) as output:
+            for doc_id in range(4):
+                output.write_sample("triviaqa", _triviaqa_record(doc_id))
+            output.finish_task()
+            raise MemoryError("simulated evaluator interruption")
+
+    assert read_finestore_output(root, "triviaqa") is None
+    partial = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert partial is not None
+    assert {row["doc_id"] for row in partial.to_pylist(maps_as_pydicts="strict")} == {str(i) for i in range(4)}
+
+    with FineStoreOutput(root, "triviaqa", ["triviaqa"]) as output:
+        for doc_id in range(6):
+            output.write_sample("triviaqa", _triviaqa_record(doc_id))
+        output.finish_task()
+        output.finish(results)
+
+    rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert rows is not None
+    assert sorted(row["doc_id"] for row in rows.to_pylist(maps_as_pydicts="strict")) == [str(i) for i in range(6)]
+    assert read_finestore_output(root, "triviaqa") == results
+
+
+def test_large_task_publishes_sample_progress_before_result(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "triviaqa", ["triviaqa"]) as output:
+        for doc_id in range(1024):
+            output.write_sample("triviaqa", _triviaqa_record(doc_id))
+            if (doc_id + 1) % 128 == 0:
+                output.finish_task()
+            if doc_id == 511:
+                halfway = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+                assert halfway is not None
+                assert halfway.num_rows == 512
+                assert read_finestore_output(root, "triviaqa") is None
+        output.finish({"results": {"triviaqa": {"exact_match": 1.0}}})
+
+    complete = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert complete is not None
+    assert complete.num_rows == 1024
+
+
+def test_grouped_lm_eval_children_keep_distinct_sample_keys(tmp_path: Path):
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "knowledge_group", ["knowledge_group"]) as output:
+        output.write_sample("arc_easy", _triviaqa_record(0))
+        output.write_sample("arc_challenge", _triviaqa_record(0))
+        output.finish_task()
+
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    assert set(table.column("task").to_pylist()) == {
+        "knowledge_group/arc_easy",
+        "knowledge_group/arc_challenge",
+    }
+
 def test_failed_finestore_result_can_be_replaced_by_success(tmp_path: Path):
     root = str(tmp_path / "archive")
     failure = {"results": {}, "task_outcomes": {"gsm8k": {"status": "failed"}}}
     success = {"results": {"gsm8k": {"exact_match": 0.5}}}
 
-    write_finestore_output(root, "gsm8k_0shot", failure, {})
+    _write_result(root, "gsm8k_0shot", failure, {})
     assert not completed_finestore_output(root, "gsm8k_0shot")
-    write_finestore_output(root, "gsm8k_0shot", success, {})
+    _write_result(root, "gsm8k_0shot", success, {})
 
     assert completed_finestore_output(root, "gsm8k_0shot")
     assert read_finestore_output(root, "gsm8k_0shot") == success
@@ -316,7 +403,7 @@ def test_finestore_output_serializes_large_sympy_result(tmp_path: Path, bits: in
         "config": {"large_integer": Integer(2) ** bits},
     }
 
-    write_finestore_output(root, "gsm8k_0shot", results, {})
+    _write_result(root, "gsm8k_0shot", results, {})
 
     restored = read_finestore_output(root, "gsm8k_0shot")
     assert restored is not None
@@ -333,7 +420,7 @@ def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, mo
 
     monkeypatch.setattr("eval.contracts.finestore_output.samples_from_lm_eval", fail_normalization)
     with pytest.raises(ValueError, match="invalid sample"):
-        write_finestore_output(root, "gsm8k_0shot", result, {"gsm8k": [{}]})
+        _write_result(root, "gsm8k_0shot", result, {"gsm8k": [{}]})
 
     assert read_finestore_output(root, "gsm8k_0shot") is None
 
@@ -359,7 +446,7 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
     assert manager.decide() == "fresh"
     manager.finalize()
     result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
-    write_finestore_output(root, args.finestore_output_prefix, result, {})
+    _write_result(root, args.finestore_output_prefix, result, {})
 
     setattr(args, changed_field, changed_value)
     monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}))
@@ -461,7 +548,12 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
     tracker.general_config_tracker.model_source = "local-completions"
     tracker.general_config_tracker.model_name_sanitized = "test-model"
 
-    handle_evaluation_output(results, args, tracker)
+    samples = results.pop("samples")
+    with FineStoreOutput(str(archive_root), args.finestore_output_prefix, ["gsm8k"]) as output:
+        for sample in samples["gsm8k"]:
+            output.write_sample("gsm8k", sample)
+        output.finish_task()
+        handle_evaluation_output(results, args, tracker, output_sink=output)
 
     assert list(tmp_path.rglob("samples_*.jsonl")) == []
     assert list(tmp_path.rglob("results_*.json")) == []

@@ -395,7 +395,7 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
             import sys
             if {exit_code}:
                 raise SystemExit({exit_code})
-            from eval.contracts.finestore_output import write_finestore_output
+            from eval.contracts.finestore_output import FineStoreOutput
             output_dir = sys.argv[sys.argv.index("--finestore_output_path") + 1]
             payload = {{
                 "results": {{
@@ -422,7 +422,8 @@ def _fake_eval_python(tmp_path: Path, exit_code: int = 0, sample_count: int = 3)
                     }}
                 }},
             }}
-            write_finestore_output(output_dir, "run", payload, {{}})
+            with FineStoreOutput(output_dir, "run", ["gsm8k"]) as output:
+                output.finish(payload)
             """
         )
     )

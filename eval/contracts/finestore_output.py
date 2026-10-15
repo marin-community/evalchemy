@@ -56,49 +56,60 @@ def completed_finestore_output(root: str, source_prefix: str) -> bool:
     return row is not None and row[_SCORED]
 
 
-def write_finestore_output(
-    root: str,
-    source_prefix: str,
-    results: Mapping[str, Any],
-    samples_by_task: Mapping[str, Sequence[Mapping[str, Any]]],
-) -> None:
-    """Commit aggregate results and normalized samples in the same FineStore archive."""
-    if completed_finestore_output(root, source_prefix):
-        return
+class FineStoreOutput:
+    """Stage scored samples during evaluation and publish the result last."""
 
-    scored = _scored_results(results)
-    store = DataStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
-    try:
-        store.table(
+    def __init__(self, root: str, source_prefix: str, task_names: Sequence[str]) -> None:
+        self.root = root
+        self.source_prefix = source_prefix
+        self.task_names = tuple(task_names)
+        self._store = DataStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
+        self._samples = self._store.table(
+            ARCHIVE_SAMPLES_TABLE,
+            primary_key=SAMPLES_MERGE_KEY,
+            schema=samples_schema(),
+            schema_version=SCHEMA_VERSION,
+        )
+        self._results = self._store.table(
             RESULTS_TABLE,
             primary_key=(_SOURCE_PREFIX,),
             schema=_RESULTS_SCHEMA,
             on_conflict=OnConflict.SUPERSEDE,
         )
-        if scored:
-            store.table(
-                ARCHIVE_SAMPLES_TABLE,
-                primary_key=SAMPLES_MERGE_KEY,
-                schema=samples_schema(),
-                schema_version=SCHEMA_VERSION,
-            )
-        with store.unbounded_transaction() as transaction:
-            if scored:
-                sample_rows = transaction.table(ARCHIVE_SAMPLES_TABLE)
-                for task_name, task_samples in samples_by_task.items():
-                    normalized_task = source_prefix if len(samples_by_task) == 1 else f"{source_prefix}/{task_name}"
-                    for record in task_samples:
-                        for sample in samples_from_lm_eval(normalized_task, dict(record)):
-                            repeat = record.get("sample_repeat")
-                            sample_rows.add(sample_to_archive_row(sample, trial_id="" if repeat is None else str(repeat)))
-            transaction.table(RESULTS_TABLE).add(
-                {
-                    _SOURCE_PREFIX: source_prefix,
-                    _DOCUMENT: json.dumps(results, default=handle_non_serializable_extended, ensure_ascii=False),
-                    _SCORED: scored,
-                }
-            )
-        if scored:
-            store.seal()
-    finally:
-        store.close()
+
+    def write_sample(self, task_name: str, record: Mapping[str, Any]) -> None:
+        """Append one canonical record and its filter variants to FineStore."""
+        normalized_task = (
+            self.source_prefix
+            if self.task_names == (task_name,)
+            else f"{self.source_prefix}/{task_name}"
+        )
+        repeat = record.get("sample_repeat")
+        trial_id = "" if repeat is None else str(repeat)
+        for sample in samples_from_lm_eval(normalized_task, dict(record)):
+            self._samples.append(sample_to_archive_row(sample, trial_id=trial_id))
+
+    def finish_task(self) -> None:
+        """Make the task's staged samples readable before starting another task."""
+        self._store.flush()
+
+    def finish(self, results: Mapping[str, Any]) -> None:
+        """Publish success only after all samples and task outcomes are complete."""
+        self._store.flush()
+        self._results.append(
+            {
+                _SOURCE_PREFIX: self.source_prefix,
+                _DOCUMENT: json.dumps(results, default=handle_non_serializable_extended, ensure_ascii=False),
+                _SCORED: _scored_results(results),
+            }
+        )
+        self._store.flush()
+
+    def close(self) -> None:
+        self._store.close()
+
+    def __enter__(self) -> FineStoreOutput:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()

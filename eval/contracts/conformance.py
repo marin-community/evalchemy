@@ -96,6 +96,6 @@ def validate_custom_benchmark_class(benchmark_class: type, base_class: type) -> 
     for requirement in requirements:
         if not isinstance(requirement, ResourceRequirement):
             raise TypeError("custom benchmark resource requirements must implement the shared contract")
-    for method_name in ("prepare", "generate_responses", "evaluate_responses", "to_samples"):
+    for method_name in ("prepare", "generate_responses", "evaluate_responses", "sample_groups", "to_samples"):
         if not callable(getattr(benchmark_class, method_name, None)):
             raise TypeError(f"custom benchmark is missing lifecycle method: {method_name}")
