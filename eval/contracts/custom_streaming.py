@@ -6,7 +6,7 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from eval.contracts.finestore_output import FineStoreOutput
-from eval.contracts.sample_manifest import DEFAULT_SAMPLE_NAMESPACE, SampleCoverageError, SampleEntry
+from eval.contracts.sample_manifest import DEFAULT_SAMPLE_GROUP, DEFAULT_SAMPLE_NAMESPACE, SampleCoverageError, SampleEntry
 from eval.contracts.sample_results import validate_sample_metrics
 from eval.sample_logging import canonicalize_sample
 from eval.task import BaseBenchmark
@@ -66,29 +66,37 @@ class CustomSampleEmitter:
             if not records:
                 raise SampleCoverageError(f"{self.task_name}: scored sample {position} has no sample record")
             repeat_shape = tuple(record.get("sample_repeat") for record in records)
-            if self._repeat_shape is None:
-                self._repeat_shape = repeat_shape
-            elif repeat_shape != self._repeat_shape:
-                raise SampleCoverageError(f"{self.task_name}: examples have different repetition counts")
-            namespace = DEFAULT_SAMPLE_NAMESPACE if name == "examples" else name
-            if repeat_shape != (None,) and self._entries:
-                expected_repeats = self._unit_repeats.get((namespace, ordinal), set())
-                if set(repeat_shape) != expected_repeats:
-                    raise SampleCoverageError(f"{self.task_name}: scored sample {position} has incomplete repeated trials")
+            namespace = DEFAULT_SAMPLE_NAMESPACE if name == DEFAULT_SAMPLE_GROUP else name
+            self._validate_repeats(namespace, ordinal, position, repeat_shape)
             for sample in records:
                 sample["doc_id"] = position
-                repeat = sample.get("sample_repeat")
-                entry = self._entries.get((namespace, ordinal, repeat))
-                if entry is None and repeat is None:
-                    entry = self._sample_entries.get((namespace, ordinal))
-                if self._entries and entry is None:
-                    raise SampleCoverageError(f"{self.task_name}: scored sample {position} has no manifest identity")
+                entry = self._sample_entry(namespace, ordinal, position, sample.get("sample_repeat"))
                 record = canonicalize_sample(self.task_name, sample, position, entry)
                 validate_sample_metrics(self.task_name, [record])
                 self.output_sink.write_sample(self.task_name, record)
             self._seen.add(id(example))
         except Exception as exc:
             raise SampleEmissionError(f"{self.task_name}: failed to emit scored sample: {exc}") from exc
+
+    def _validate_repeats(
+        self, namespace: str, ordinal: int, position: int, repeat_shape: tuple[int | None, ...]
+    ) -> None:
+        if self._repeat_shape is None:
+            self._repeat_shape = repeat_shape
+        elif repeat_shape != self._repeat_shape:
+            raise SampleCoverageError(f"{self.task_name}: examples have different repetition counts")
+        if repeat_shape != (None,) and self._entries:
+            expected_repeats = self._unit_repeats.get((namespace, ordinal), set())
+            if set(repeat_shape) != expected_repeats:
+                raise SampleCoverageError(f"{self.task_name}: scored sample {position} has incomplete repeated trials")
+
+    def _sample_entry(self, namespace: str, ordinal: int, position: int, repeat: int | None) -> SampleEntry | None:
+        entry = self._entries.get((namespace, ordinal, repeat))
+        if entry is None and repeat is None:
+            entry = self._sample_entries.get((namespace, ordinal))
+        if self._entries and entry is None:
+            raise SampleCoverageError(f"{self.task_name}: scored sample {position} has no manifest identity")
+        return entry
 
     def finish(self) -> None:
         """Verify every generated example was emitted and make its rows readable."""

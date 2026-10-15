@@ -11,6 +11,7 @@ from typing import Any
 
 SAMPLE_MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_SAMPLE_NAMESPACE = "default"
+DEFAULT_SAMPLE_GROUP = "examples"
 
 
 class SampleManifestError(RuntimeError):

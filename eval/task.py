@@ -40,6 +40,7 @@ from eval.contracts.grading import GraderExecutionMode
 from eval.contracts.preflight import ResourceRequirement, TaskPreparation, prepare_task, validate_model_request
 from eval.contracts.prompt_length import load_prompt_lengths, resolve_task_max_tokens
 from eval.contracts.sample_manifest import (
+    DEFAULT_SAMPLE_GROUP,
     DEFAULT_SAMPLE_NAMESPACE,
     SampleEntry,
     SampleManifest,
@@ -782,8 +783,8 @@ class BaseBenchmark(ABC):
 
     def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
         """Return generated examples grouped by the namespace used for sample identity."""
-        examples = generation_result.get("examples", [])
-        return {"examples": examples} if examples else {}
+        examples = generation_result.get(DEFAULT_SAMPLE_GROUP, [])
+        return {DEFAULT_SAMPLE_GROUP: examples} if examples else {}
 
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Reshape generated examples into canonical lm-eval-compatible sample records.
