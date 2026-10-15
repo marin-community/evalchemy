@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from importlib.metadata import distributions
 from pathlib import Path
 
 from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
@@ -30,14 +31,17 @@ def build_resume_wiring(args, lm, run: RunSpec):
     code = digest_files([
         *sorted((root / "execution").glob("*.py")), *sorted((root / "runtime").glob("*.py")),
         *sorted((root / "sources").glob("*.py")), *sorted((root / "graders").glob("*.py")),
-        root.parent / "uv.lock",
     ])
+    # Wheels have no checkout lockfile. Record the versions actually executing
+    # the run in both installed and source environments.
+    dependencies = {distribution.metadata["Name"]: distribution.version for distribution in distributions()}
 
     def factory(task):
         source_file = root / "chat_benchmarks" / task / "eval_instruct.py"
         fingerprint = RunFingerprint(inputs={
             "protocol": OPERATION_PROTOCOL, "task": task, "model": identity,
             "run": asdict(run), "implementation": code,
+            "dependencies": dependencies,
             "source_definition": digest_files([source_file]) if source_file.is_file() else None,
             "include_path": args.include_path,
         })

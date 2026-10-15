@@ -2,6 +2,7 @@
 
 from argparse import Namespace
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -453,7 +454,16 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
     assert read_finestore_output(root, args.finestore_output_prefix) == result
 
 
-def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
+@pytest.mark.parametrize("installed_layout", [False, True])
+def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path, monkeypatch, installed_layout):
+    if installed_layout:
+        import eval.resume.wiring as wiring
+
+        package = tmp_path / "site-packages" / "eval"
+        source = Path(wiring.__file__).resolve().parents[1]
+        for directory in ("execution", "runtime", "sources", "graders"):
+            shutil.copytree(source / directory, package / directory, ignore=shutil.ignore_patterns("__pycache__"))
+        monkeypatch.setattr(wiring, "__file__", str(package / "resume" / "wiring.py"))
     root = str(tmp_path / "archive")
     args = Namespace(
         model="local-completions",
