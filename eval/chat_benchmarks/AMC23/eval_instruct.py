@@ -59,6 +59,7 @@ class AMC23Benchmark(BaseBenchmark):
             target=lambda example: example['answer'], grader="boxed_math",
             generation={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
             repeats=getattr(self, "n_repeat", 1),
+            reference=lambda _row: {"extractor": "hendrycks_math", "comparator": "hendrycks_math"},
         )
 
 

@@ -8,9 +8,19 @@ import pytest
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.contracts.eval_spec import SourceRef
-from eval.runtime.checkpoints import input_digest
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import FixedEndpoint, evaluate_source
+from tests.contracts.source_harness import evaluate_source
+from eval.runtime.checkpoints import input_digest
+
+
+class FixedEndpoint:
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+
+    async def execute(self, request):
+        self.requests.append(request)
+        return self.response
 
 
 class MemoryCheckpoints:
@@ -74,6 +84,7 @@ def test_explicit_trials_share_binary_pass_at_k_reduction():
                 [{"id": "a"}, {"id": "b"}], options,
                 prompt=lambda row: row["id"], target=lambda row: "yes", grader="exact_match",
                 generation={"do_sample": True},
+                seed_repeats=True,
             )
 
     class Backend:

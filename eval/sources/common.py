@@ -6,7 +6,6 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from dataclasses import dataclass, field, replace
 from itertools import islice
 from typing import Any
-from evalchemy_config.limits import MAX_OUTPUT_ALIASES
 
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.runtime.checkpoints import input_digest
@@ -38,11 +37,15 @@ def text_specs(
     grader: str,
     generation: Mapping[str, Any] | Callable[[Mapping[str, Any]], Mapping[str, Any]],
     repeats: int = 1,
+    seed_repeats: bool = True,
     namespace: str = "default",
     reference: Callable[[Mapping[str, Any]], Mapping[str, Any]] = lambda _doc: {},
     tags: Callable[[Mapping[str, Any]], Mapping[str, str]] = lambda _doc: {},
 ) -> Iterator[EvalSpec]:
-    """Apply an example cap before expanding trials and derive seeds before dispatch."""
+    """Apply an example cap before expanding trials.
+
+    Sources whose legacy protocol omitted request seeds opt out explicitly.
+    """
     limit = options.limit
     if limit is not None:
         if 0 < limit < 1:
@@ -67,10 +70,10 @@ def text_specs(
             if options.num_samples > 1:
                 parameters.update(do_sample=True, temperature=0.7, top_p=1.0)
             parameters = generation_parameters(parameters, options.generation)
-            if parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
+            if seed_repeats and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
-                for alias in (*MAX_OUTPUT_ALIASES, "max_completion_tokens"):
+                for alias in ("max_new_tokens", "max_gen_toks", "max_tokens", "max_completion_tokens"):
                     parameters.pop(alias, None)
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(

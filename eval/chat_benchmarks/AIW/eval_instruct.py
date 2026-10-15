@@ -65,7 +65,7 @@ class AIWBenchmark(BaseBenchmark):
         rows = (row for row in self.load_questions() if row["id"] in self.TARGET_IDS)
         return text_specs(
             rows, options, prompt=lambda row: row["prompt"], target=lambda row: str(row["right_answer"]),
-            grader="answer_number", generation={"do_sample": True, "temperature": 1.0,
+            grader="answer_number", reference=lambda _row: {"comparator": "hendrycks_math"}, generation={"do_sample": True, "temperature": 1.0,
                                                 "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
             tags=lambda row: {"id": str(row["id"])},
         )

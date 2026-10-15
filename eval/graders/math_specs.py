@@ -18,9 +18,36 @@ from eval.graders.answer_extraction import AnswerExtractionError, extract_boxed_
 
 from eval.graders.judged import equivalence_judge
 
+def _reference_option(spec: EvalSpec, name: str, default: str) -> str:
+    return str(spec.grader.reference.get(name, default))
+
+
+def _boxed_answer(response: Any, extractor: str) -> str:
+    if extractor == "final_boxed":
+        return extract_final_boxed_answer(response)
+    if extractor == "hendrycks_math":
+        from lm_eval.tasks.hendrycks_math.utils import last_boxed_only_string, remove_boxed
+
+        try:
+            return remove_boxed(last_boxed_only_string(str(response)))
+        except (AssertionError, TypeError, ValueError):
+            return ""
+    raise ValueError(f"unknown boxed-answer extractor: {extractor}")
+
+
+def _math_correct(answer: str | None, target: Any, comparator: str) -> bool:
+    if comparator == "math_answers_equivalent":
+        return math_answers_equivalent(answer, [str(target)])
+    if comparator == "hendrycks_math":
+        from lm_eval.tasks.hendrycks_math.utils import is_equiv
+
+        return is_equiv(str(target), answer)
+    raise ValueError(f"unknown math comparator: {comparator}")
+
+
 def boxed_math(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
-    answer = extract_final_boxed_answer(responses[-1])
-    correct = math_answers_equivalent(answer, [str(spec.target)])
+    answer = _boxed_answer(responses[-1], _reference_option(spec, "extractor", "final_boxed"))
+    correct = _math_correct(answer, spec.target, _reference_option(spec, "comparator", "math_answers_equivalent"))
     return Grade({"accuracy": float(correct)}, {"filtered_resps": [answer]})
 
 def gsm8k(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
@@ -63,7 +90,8 @@ def answer_number(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
         if matches:
             answer = matches[-1]
             break
-    return Grade({"accuracy": float(math_answers_equivalent(answer, [str(spec.target)]))},
+    correct = _math_correct(answer, spec.target, _reference_option(spec, "comparator", "math_answers_equivalent"))
+    return Grade({"accuracy": float(correct)},
                  {"filtered_resps": [answer]})
 
 def jee(spec: EvalSpec, responses: Sequence[Any]) -> Grade:

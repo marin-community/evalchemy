@@ -88,7 +88,7 @@ def test_runner_and_portable_config_normalize_the_same_legacy_limit_aliases():
     assert parse_key_value_args(portable_config.gen_kwargs) == parse_key_value_args(args.gen_kwargs)
 
 
-def source_items(**options):
+def source_items(*, seed_repeats=True, **options):
     from eval.contracts.eval_spec import SourceRef
     from eval.sources.common import SourceOptions, text_specs
     return text_specs(
@@ -96,6 +96,7 @@ def source_items(**options):
         SourceOptions("fixture", SourceRef("fixture"), **options),
         prompt=lambda row: row["question"], target=lambda row: row["answer"], grader="exact_match",
         generation={"max_new_tokens": 17, "max_tokens": 19, "max_gen_toks": 23},
+        seed_repeats=seed_repeats,
     )
 
 
@@ -107,9 +108,29 @@ def test_request_cannot_escape_resolved_output_cap():
 
 
 def test_sample_limit_is_applied_before_expanding_trials():
-    specs = list(source_items(limit=2, num_samples=3))
+    specs = list(source_items(limit=2, num_samples=3, seed_repeats=False))
     assert [spec.source_id for spec in specs] == ["0", "0", "0", "1", "1", "1"]
     assert [spec.trial for spec in specs] == [0, 1, 2, 0, 1, 2]
+    assert all("seed" not in spec.requests[0].generation for spec in specs)
+
+
+def test_sampling_seeds_default_and_sources_can_opt_out():
+    from eval.contracts.eval_spec import SourceRef
+    from eval.sources.common import SourceOptions, text_specs
+
+    specs = list(text_specs(
+        [{"id": "row"}], SourceOptions("fixture", SourceRef("fixture"), seed=7),
+        prompt=lambda row: row["id"], target=lambda row: row["id"], grader="exact_match",
+        generation={"do_sample": True}, repeats=2,
+    ))
+    unseeded = list(text_specs(
+        [{"id": "row"}], SourceOptions("fixture", SourceRef("fixture"), seed=7),
+        prompt=lambda row: row["id"], target=lambda row: row["id"], grader="exact_match",
+        generation={"do_sample": True}, repeats=2, seed_repeats=False,
+    ))
+
+    assert [spec.requests[0].generation["seed"] for spec in specs] == [7, 8]
+    assert all("seed" not in spec.requests[0].generation for spec in unseeded)
 
 
 def test_limited_iterator_does_not_construct_later_prompts():

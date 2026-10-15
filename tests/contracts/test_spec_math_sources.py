@@ -2,7 +2,10 @@
 
 import json
 
+from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
+from eval.chat_benchmarks.AIME25.eval_instruct import AIME25Benchmark
 from eval.chat_benchmarks.AIW.eval_instruct import AIWBenchmark
+from eval.chat_benchmarks.AMC23.eval_instruct import AMC23Benchmark
 from eval.chat_benchmarks.HLE.eval_instruct import HLESubsetBenchmark
 from eval.chat_benchmarks.HMMT.eval_instruct import HMMTBenchmark
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
@@ -28,6 +31,32 @@ def test_aiw_selects_target_ids_before_expanding_trials(tmp_path):
     assert [spec.trial for spec in specs] == [0, 1]
     assert specs[0].target == "42"
     assert specs[0].requests[0].generation["temperature"] == 1.0
+    assert [spec.requests[0].generation["seed"] for spec in specs] == [7, 8]
+
+
+def test_aime24_keeps_legacy_per_trial_sampling_seeds(tmp_path):
+    data = tmp_path / "aime24.jsonl"
+    data.write_text(json.dumps({"id": "aime", "problem": "Find 1", "expected_answer": "1"}) + "\n")
+
+    specs = list(AIME24Benchmark(data_file=data).iter_specs(_options("AIME24")))
+
+    assert len(specs) == 10
+    assert [spec.requests[0].generation["seed"] for spec in specs] == list(range(7, 17))
+    assert specs[0].requests[0].generation["until"]
+    assert specs[0].grader.reference == {"comparator": "math_answers_equivalent"}
+
+
+def test_math_source_comparator_protocols_are_serialized(tmp_path):
+    aime25_data = tmp_path / "aime25.jsonl"
+    aime25_data.write_text(json.dumps({"id": "aime", "problem": "Find 1", "answer": "1"}) + "\n")
+    amc_data = tmp_path / "amc.jsonl"
+    amc_data.write_text(json.dumps({"id": "amc", "question": "Find 1", "answer": "1"}) + "\n")
+
+    aime25 = next(AIME25Benchmark(data_file=str(aime25_data)).iter_specs(_options("AIME25")))
+    amc = next(AMC23Benchmark(data_file=str(amc_data)).iter_specs(_options("AMC23")))
+
+    assert aime25.grader.reference == {"comparator": "math_answers_equivalent"}
+    assert amc.grader.reference == {"extractor": "hendrycks_math", "comparator": "hendrycks_math"}
 
 
 def test_hle_and_hmmt_preserve_prompt_and_repeat_protocols(monkeypatch):

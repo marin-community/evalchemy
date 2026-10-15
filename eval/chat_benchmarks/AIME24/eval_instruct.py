@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.generation_stops import END_OF_TURN_SEQUENCES
 from eval.sources.common import text_specs
 from eval.task import BaseBenchmark
 
@@ -31,4 +32,7 @@ class AIME24Benchmark(BaseBenchmark):
     def iter_specs(self, options):
         return text_specs(self.load_questions(), options, prompt=lambda row: PROMPT.format(**row),
                           target=lambda row: row["expected_answer"], grader="boxed_math",
-                          generation={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_tokens}, repeats=10)
+                          generation={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_tokens,
+                                      "until": list(END_OF_TURN_SEQUENCES)},
+                          repeats=10, seed_repeats=True,
+                          reference=lambda _row: {"comparator": "math_answers_equivalent"})
