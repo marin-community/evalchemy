@@ -57,6 +57,31 @@ def test_extract_answer_uses_final_content(prediction, answer_format, expected):
     assert scorer.extract_answer(prediction, answer_format) == expected
 
 
+@pytest.mark.parametrize(
+    ("prediction", "answer_format", "expected"),
+    [
+        (
+            'Thus output should be "102642201395399/70115290456035".102642201395399/70115290456035',
+            scorer.FRACTION,
+            "102642201395399/70115290456035",
+        ),
+        ('Thus final output is "501".501', scorer.INTEGER, "501"),
+        ('Thus I will output "7.0".7.0', scorer.FLOAT, "7.0"),
+        (
+            'Return "5.44817407812678198771e76".5.44817407812678198771e76',
+            scorer.SCIENTIFIC,
+            "5.44817407812678198771e76",
+        ),
+    ],
+)
+def test_extract_answer_accepts_typed_answer_after_terminal_period(prediction, answer_format, expected):
+    assert scorer.extract_answer(prediction, answer_format) == expected
+
+
+def test_extract_answer_does_not_treat_sentence_punctuation_as_terminal_answer_separator():
+    assert scorer.extract_answer("After checking the work, there are 42.", scorer.INTEGER) is None
+
+
 def test_score_prediction_preserves_numeric_representation():
     exact = scorer.score_prediction("9.9", "9.9", scorer.FLOAT)
     wrong_digits = scorer.score_prediction("9.11", "9.9", scorer.FLOAT)

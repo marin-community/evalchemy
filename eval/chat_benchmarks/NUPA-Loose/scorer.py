@@ -77,8 +77,20 @@ def extract_answer(text: str | None, answer_format: str) -> str | None:
     direct = _ANSWER_MARKER_RE.sub("", stripped, count=1)
     match = _ANSWER_PATTERNS[answer_format].match(direct)
     if match is None:
-        return _full_answer(tail.splitlines()[-1].strip() if tail else "", answer_format)
+        final_line = tail.splitlines()[-1].strip() if tail else ""
+        return _full_answer(final_line, answer_format) or _answer_after_terminal_period(tail, answer_format)
     return _normalize_answer(match.group())
+
+
+def _answer_after_terminal_period(text: str, answer_format: str) -> str | None:
+    """Extract a typed answer appended after sentence-ending punctuation."""
+    for boundary in range(len(text) - 1, -1, -1):
+        if text[boundary] != ".":
+            continue
+        answer = _full_answer(text[boundary + 1 :].strip(), answer_format)
+        if answer is not None:
+            return answer
+    return None
 
 
 def _full_answer(candidate: str, answer_format: str) -> str | None:
