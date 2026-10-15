@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from aiohttp import ClientSession
 
 from eval.contracts.eval_spec import ModelRequest
-from eval.execution.backend import retryable_transport
+from eval.execution.backend import retryable_transport, transport_retry_delay
 from eval.graders.answer_equivalence import JudgeConfig
 from eval.runtime.pool import RetryPolicy, retry
 from eval.completion_response import CompletionContentPolicy, CompletionText, completion_response_from_chat_choice
@@ -40,4 +40,4 @@ class JudgeBackend:
                 completion = completion_response_from_chat_choice(document, document["choices"][0])
                 return CompletionText(content, completion, CompletionContentPolicy.FINAL_ONLY)
 
-        return await retry(call, RetryPolicy(budget=180, attempt_timeout=60, max_attempts=3), retryable_transport)
+        return await retry(call, RetryPolicy(budget=180, attempt_timeout=60, max_attempts=3), retryable_transport, transport_retry_delay)

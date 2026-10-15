@@ -371,6 +371,7 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         limits.max_tokens if limits.max_tokens is not None else "default",
     )
     utils.eval_logger.setLevel(getattr(logging, args.verbosity))
+    logging.basicConfig(level=getattr(logging, args.verbosity), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     # Initialize tasks
     task_manager = InstructTaskManager(

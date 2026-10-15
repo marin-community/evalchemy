@@ -96,8 +96,8 @@ def test_local_api_recovers_after_ten_minute_proxy_outage(monkeypatch, kind):
     assert clock.now >= 600
 
 
-@pytest.mark.parametrize("status", [408, 429, 503, 504])
-def test_local_api_retries_other_transient_http_statuses(monkeypatch, status):
+@pytest.mark.parametrize("status,retry_after", [(408, None), (429, 7), (500, None), (503, 12), (504, None)])
+def test_local_api_retries_other_transient_http_statuses(monkeypatch, status, retry_after):
     clock = _Clock()
     attempts = 0
     monkeypatch.setattr(runtime_pool, "monotonic", lambda: clock.now)
@@ -108,7 +108,10 @@ def test_local_api_retries_other_transient_http_statuses(monkeypatch, status):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            return web.json_response({"error": "unavailable"}, status=status)
+            headers = {} if retry_after is None else {"Retry-After": str(retry_after)}
+            return web.json_response({"error": "unavailable"}, status=status, headers=headers)
+        if retry_after is not None:
+            assert clock.now >= retry_after
         return web.json_response(_response("completions"))
 
     async def run():

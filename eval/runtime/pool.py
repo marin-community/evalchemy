@@ -31,6 +31,7 @@ async def retry(
     call: Callable[[], Awaitable[Result]],
     policy: RetryPolicy,
     retryable: Callable[[Exception], bool],
+    minimum_delay: Callable[[Exception], float] = lambda _error: 0.0,
 ) -> Result:
     deadline = monotonic() + policy.budget
     attempts = 0
@@ -46,7 +47,7 @@ async def retry(
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise
-                delay = min(random.uniform(0, min(2 ** min(attempts - 1, 4), 10)), remaining)
+                delay = min(max(random.uniform(0, min(2 ** min(attempts - 1, 4), 10)), minimum_delay(exc)), remaining)
                 logger.info("Retrying request after attempt %d in %.1f seconds: %r", attempts, delay, exc)
                 await sleep(delay)
 
@@ -90,7 +91,7 @@ class ExecutionPool:
         pending: dict[asyncio.Task[Result], tuple[int, Job]] = {}
         exhausted = False
         count = failures = 0
-        last_report = monotonic()
+        started = last_report = monotonic()
         try:
             while pending or not exhausted:
                 while len(pending) < self.workers and not exhausted:
@@ -110,12 +111,13 @@ class ExecutionPool:
                         completed = Completed(position, job, error=exc)
                         failures += 1
                     count += 1
-                    if monotonic() - last_report >= 10:
-                        logger.info("Pool progress: completed=%d failed=%d pending=%d", count, failures, len(pending))
-                        last_report = monotonic()
+                    now = monotonic()
+                    if now - last_report >= 10:
+                        logger.info("Pool progress: completed=%d failed=%d pending=%d rate=%.2f items/s", count, failures, len(pending), count / max(now - started, 1e-9))
+                        last_report = now
                     yield completed
         finally:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-            logger.info("Pool finished: completed=%d failed=%d", count, failures)
+            logger.info("Pool finished: completed=%d failed=%d elapsed=%.1fs rate=%.2f items/s", count, failures, monotonic() - started, count / max(monotonic() - started, 1e-9))
