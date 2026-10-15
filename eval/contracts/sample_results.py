@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import math
 import numbers
-from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -80,21 +78,6 @@ class SampleMetricsError(RuntimeError):
     """Raised when per-sample metrics are absent, misnamed, or not numeric."""
 
 
-_scored_sample_callback: ContextVar[Callable[[MutableMapping[str, Any]], None] | None] = ContextVar(
-    "scored_sample_callback", default=None
-)
-
-
-@contextmanager
-def emit_scored_samples(callback: Callable[[MutableMapping[str, Any]], None]) -> Iterator[None]:
-    """Deliver each custom grader's completed metric annotation to its output sink."""
-    token = _scored_sample_callback.set(callback)
-    try:
-        yield
-    finally:
-        _scored_sample_callback.reset(token)
-
-
 def record_sample_metrics(example: MutableMapping[str, Any], **values: bool | float) -> None:
     """Record one graded example's per-sample metric values.
 
@@ -105,9 +88,6 @@ def record_sample_metrics(example: MutableMapping[str, Any], **values: bool | fl
     if not values:
         raise SampleMetricsError("a graded sample must record at least one metric value")
     example[SAMPLE_METRICS_ANNOTATION] = {name: _metric_value(name, value) for name, value in values.items()}
-    callback = _scored_sample_callback.get()
-    if callback is not None:
-        callback(example)
 
 
 def record_repeated_sample_metrics(example: MutableMapping[str, Any], **values: Sequence[bool | float]) -> None:

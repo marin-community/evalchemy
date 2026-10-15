@@ -70,23 +70,26 @@ tokenizer code on that path (`trust_remote_code=True`); set
 `extra_model_args.trust_remote_code: false` to disable it. Use
 `extra_model_args.tokenizer_backend: huggingface` to load a local tokenizer for chat.
 
-Both local endpoint adapters retry connection failures, request timeouts, and HTTP
-408/429/502/503/504 for up to 900 seconds per request. Set
+The shared execution runtime retries connection failures, request timeouts, and HTTP
+408/429/500/502/503/504 for up to 900 seconds per request. Set
 `transport_retry_budget=<seconds>` in `--model_args`, or
 `extra_model_args.transport_retry_budget` in runner config, to change that limit.
 Each attempt uses `timeout` unless `transport_attempt_timeout=<seconds>` sets a
-shorter bound. A shorter attempt bound leaves time to retry a stalled request inside
-the total budget. Other HTTP 4xx errors fail immediately. If the budget expires, the
-item retains its infrastructure-error classification. The budget replaces
-`max_retries` for these adapters' transport failures.
+shorter bound. Other HTTP 4xx errors fail immediately. Exhausted requests leave
+failed item evidence without becoming incorrect-answer scores, and are generated
+again on resume.
 
-For local chat and completions endpoints, omit `temperature` and `seed` from
-`gen_kwargs` to use the server's generation defaults. Evalchemy leaves those fields
-out of requests even when a benchmark or lm-eval supplies its own defaults. Values
-passed through `--gen_kwargs` take precedence for both custom and lm-eval tasks;
-for example, `temperature=0.85,top_p=0.95,seed=27`. An explicit
-`do_sample=false` requests greedy decoding. The evaluation `--seed` controls
-local task randomness and does not set the endpoint's request seed.
+Sources declare generation defaults. Values passed through `--gen_kwargs` override
+those defaults for custom and imported lm-eval tasks, for example
+`temperature=0.85,top_p=0.95,seed=27`. An explicit `do_sample=false` requests greedy
+decoding. Sampled custom trials derive stable request seeds from the evaluation
+seed and trial index unless `--gen_kwargs` supplies a seed.
+
+Every source yields normalized specs into the same bounded pool. Candidate and
+judge requests are checkpointed separately, and scored samples stream directly to
+FineStore. Resume reads saved outputs in bounded windows and regenerates failed
+operations. Checkpoint protocol 2 requires a new output path for archives produced
+before this execution cleanup.
 
 ## Telemetry
 

@@ -1,5 +1,5 @@
 import re
-from livebench.if_runner.instruction_following_eval import evaluation_main
+from eval.chat_benchmarks.LiveBench.livebench.if_runner.instruction_following_eval import evaluation_main
 
 
 def score_results(follow_all_instructions, follow_instruction_list, threshold=0.2):

@@ -1,77 +1,52 @@
-"""Scored lm-eval records reach FineStore as each document is processed."""
+"""Native filter variants reach FineStore before the aggregate commit."""
 
-from pathlib import Path
-from types import SimpleNamespace
+import asyncio
+from functools import partial
 
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.finestore_output import FineStoreOutput
-from eval.contracts.lm_eval_streaming import StreamingTaskManager
-from eval.sample_logging import canonicalize_sample
+from eval.execution.engine import Evaluator
+from eval.execution.grading import Grader, Graders
+from eval.sources.lm_eval import grade_lm_eval
 
 
-class _Task:
-    def __init__(self):
-        self.instances = [
-            SimpleNamespace(
-                doc_id=0,
-                idx=0,
-                doc={"question": "2 + 2?"},
-                args=["2 + 2?", {}],
-                arguments=["2 + 2?", {}],
-                resps=["4"],
-                filtered_resps={"strict": "wrong", "flexible": "4"},
-            )
-        ]
+class Filters:
+    def apply(self, instances):
+        for instance in instances:
+            instance.filtered_resps.update(strict="wrong", flexible="4")
 
-    def apply_filters(self):
-        pass
 
-    def doc_iterator(self, **_kwargs):
-        yield 0, {"question": "2 + 2?"}
+class Task:
+    _filters = [Filters()]
 
-    def process_results(self, _doc, responses):
+    def process_results(self, doc, responses):
         return {"exact_match": float(responses[0] == "4")}
 
-    def doc_to_target(self, _doc):
+
+class Backend:
+    async def execute(self, request):
         return "4"
 
 
-class _TaskManager:
-    def __init__(self, task):
-        self.task = task
-
-    def load(self, _tasks):
-        return {"tasks": {"gsm8k": self.task}, "groups": {}}
-
-
-def test_streaming_lm_eval_scores_filter_variants_before_result_commit(tmp_path: Path):
+def test_native_filter_variants_are_durable_before_result_commit(tmp_path):
     root = str(tmp_path / "archive")
-    task = _Task()
-    with FineStoreOutput(root, "gsm8k_0shot", ["gsm8k"]) as output:
-        manager = StreamingTaskManager(
-            _TaskManager(task),
-            lambda name, sample, index: output.write_sample(name, canonicalize_sample(name, sample, index)),
-        )
-        scored_task = manager.load(["gsm8k"])["tasks"]["gsm8k"]
-        list(scored_task.doc_iterator())  # lm-eval also iterates documents while building requests
-        scored_task.apply_filters()
-
-        for filter_name in scored_task.instances[0].filtered_resps:
-            for _, doc in scored_task.doc_iterator():
-                response = scored_task.instances[0].filtered_resps[filter_name]
-                scored_task.process_results(doc, [response])
-        output.finish_task()
-
+    spec = EvalSpec("gsm8k", SourceRef("fixture"), "opaque", 0,
+                    (ModelRequest(RequestKind.GENERATE, "2 + 2?"),),
+                    GraderSpec("native", {"repeats": [1], "indices": [0]}),
+                    doc={"question": "2 + 2?"}, target="4")
+    grading = Graders({"native": Grader(partial(grade_lm_eval, Task()))})
+    with FineStoreOutput(root, "run", ["gsm8k"]) as output:
+        engine = Evaluator(Backend(), grading, output, workers=1)
+        async def run():
+            async for completed in engine.run([spec]):
+                assert completed.error is None
+        try:
+            asyncio.run(run())
+        finally:
+            grading.close()
         staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
-        assert staged is not None
-        samples = {
-            row["filter"]: sample_from_archive_row(row)
-            for row in staged.to_pylist(maps_as_pydicts="strict")
-        }
-        assert {name: sample.correct for name, sample in samples.items()} == {
-            "strict": False,
-            "flexible": True,
-        }
-        output.finish({"results": {"gsm8k": {"exact_match": 0.5}}})
+        samples = {row["filter"]: sample_from_archive_row(row) for row in staged.to_pylist(maps_as_pydicts="strict")}
+        assert {name: sample.correct for name, sample in samples.items()} == {"strict": False, "flexible": True}

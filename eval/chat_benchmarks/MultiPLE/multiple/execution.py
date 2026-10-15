@@ -12,7 +12,7 @@ import gzip
 import json
 from typing import *
 import traceback
-from multiple.containerized_eval import eval_string_script
+from eval.chat_benchmarks.MultiPLE.multiple.containerized_eval import eval_string_script
 
 
 def check_code_correctness(

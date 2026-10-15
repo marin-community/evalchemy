@@ -1,50 +1,16 @@
 # Copyright The Marin Authors
 # SPDX-License-Identifier: Apache-2.0
-"""Make lm-eval's async OpenAI-endpoint batch resilient to a single request error.
-
-Upstream lm-eval ``TemplateAPI.get_batched_requests`` (``lm_eval/models/api_models.py``,
-pinned here at v0.4.12) fires every request as a task and awaits them with
-``tqdm_asyncio.gather(*tasks)`` with **no** ``return_exceptions``. Each task is wrapped
-in a tenacity ``retry(..., reraise=True)``, so the moment ONE request still errors after
-exhausting its retries, that exception propagates out of ``gather`` and **aborts the
-entire eval batch** -- a single bad/slow/5xx request nukes the whole run. (In lm-eval
-<= 0.4.9 the crash was additionally *masked* by an ``UnboundLocalError: outputs`` in the
-``except`` logging path; v0.4.12 fixed the masking via ``locals().get('outputs', ...)``
-but the batch-abort itself remains.)
-
-The patch, applied as a monkeypatch so it stays a minimal, upstream-tracking delta,
-prevents one exhausted generation request from cancelling its siblings. It supplies
-an empty response with a classified failure, then lets scoring finish. Evalchemy's
-local endpoint adapters retry transport failures within a separate wall-clock budget;
-other API models retain the request-timeout deadline. Loglikelihood requests still
-propagate errors because an empty logprob cannot be scored.
-
-Import for side effect (idempotent):
-
-    from eval import robust_api  # noqa: F401  (patches lm-eval async-batch error handling)
-
-``eval/eval.py`` does this at import, so every ``python -m eval.eval`` run -- and thus the
-``eval.serve_eval`` runner that shells out to it -- gets the resilient batch.
-"""
+"""Stateless completion normalization and endpoint payload formatting."""
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import logging
-import random
 import re
 from collections import Counter
-from collections.abc import Mapping, Sized
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
-from threading import Lock
-from time import monotonic
-from typing import Iterator
+from collections.abc import Mapping
 
-from evalchemy_config.limits import MAX_OUTPUT_ALIASES
 
 from eval.completion_response import (
     MISSING_FINAL_CLASSIFICATIONS,
@@ -52,104 +18,21 @@ from eval.completion_response import (
     CompletionContentPolicy,
     CompletionResponse,
     CompletionText,
-    FailedGeneration,
     completion_response_from_chat_choice,
 )
 from eval.contracts.failures import FailureCategory
 from eval.generation_stops import bounded_request_stops, chat_request_stops
-from eval.limits import ContextWindowExceededError, preflight_endpoint_generation
 
 logger = logging.getLogger("eval.robust_api")
 
-_PATCH_FLAG = "_marin_resilient_batch_patched"
-_ROLLING_PATCH_FLAG = "_marin_rolling_batch_patched"
 _COMPLETION_PATCH_FLAG = "_marin_completion_normalization_patched"
 _OPENAI_PAYLOAD_PATCH_FLAG = "_marin_openai_payload_patched"
-_SYNC_GUARD_PATCH_FLAG = "_marin_resilient_sync_call_patched"
-_GENERATION_OVERRIDES_ATTR = "_evalchemy_generation_overrides"
 _CHAT_TEMPLATE_KWARGS_ATTR = "_evalchemy_chat_template_kwargs"
 _EXTRA_BODY_ATTR = "_evalchemy_extra_body"
 _CONTEXT_OUTPUT_CAP_KWARG = "_evalchemy_context_output_cap"
 _ENCODED_MAPPING_PREFIX = "base64:"
-_ROLLING_WINDOWS_PER_CONCURRENT_SLOT = 4
 _INVALID_RESPONSE_FRACTION = 0.5
 _OPENAI_FIXED_GENERATION_MODEL = re.compile(r"^(?:gpt-5|o[134])(?:$|[-.])", re.IGNORECASE)
-_RETRYABLE_HTTP_STATUSES = frozenset({408, 429, 502, 503, 504})
-_MAX_TRANSPORT_BACKOFF = 10
-TRANSPORT_FAILURE_MARKER = "_evalchemy_transport_failure"
-ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES = (
-    FailureCategory.AGENT_TIMEOUT,
-    FailureCategory.MODEL_TRANSPORT,
-    FailureCategory.MALFORMED_MODEL_RESPONSE,
-    FailureCategory.GRADER_INFRASTRUCTURE,
-)
-_active_failure_capture: ContextVar["EndpointFailureCapture | None"] = ContextVar(
-    "evalchemy_endpoint_failure_capture",
-    default=None,
-)
-
-
-@dataclass
-class EndpointFailureCapture:
-    """Task-scoped endpoint failures and response classes for result reporting."""
-
-    counts: Counter[FailureCategory] = field(default_factory=Counter)
-    response_summary: Counter[CompletionClassification] = field(default_factory=Counter)
-    _lock: Lock = field(default_factory=Lock)
-
-    def record(self, category: FailureCategory, count: int) -> None:
-        if category not in ENDPOINT_AND_JUDGE_FAILURE_CATEGORIES:
-            raise ValueError(f"not a captured endpoint or judge failure category: {category}")
-        with self._lock:
-            self.counts[category] += count
-
-    def record_responses(self, classifications: Counter[CompletionClassification]) -> None:
-        with self._lock:
-            self.response_summary.update(classifications)
-
-
-@dataclass(frozen=True)
-class _DeferredRequestError:
-    error: Exception
-
-
-class _AdmittedSemaphore:
-    """Let ``amodel_call`` use a concurrency slot already held by its trial."""
-
-    async def acquire(self) -> bool:
-        return True
-
-    def release(self) -> None:
-        return None
-
-
-_ADMITTED_SEMAPHORE = _AdmittedSemaphore()
-
-
-@contextmanager
-def capture_endpoint_failures() -> Iterator[EndpointFailureCapture]:
-    """Isolate endpoint diagnostics to one task invocation."""
-    capture = EndpointFailureCapture()
-    token = _active_failure_capture.set(capture)
-    try:
-        yield capture
-    finally:
-        _active_failure_capture.reset(token)
-
-
-def record_endpoint_failure(category: FailureCategory, count: int = 1) -> None:
-    """Record an endpoint failure for the task outcome."""
-    capture = _active_failure_capture.get()
-    if capture is not None:
-        capture.record(category, count)
-
-
-def record_completion_responses(classifications: Counter[CompletionClassification]) -> None:
-    capture = _active_failure_capture.get()
-    if capture is not None:
-        capture.record_responses(classifications)
-
-
 def completion_response_quality_invalid(classifications: Counter[CompletionClassification]) -> bool:
     """Return whether a generation run has too many unusable chat completions."""
     total = sum(classifications.values())
@@ -166,16 +49,6 @@ def completion_response_text_unavailable(classifications: Counter[CompletionClas
 def openai_model_requires_fixed_generation(model: object) -> bool:
     """Return whether an official OpenAI model rejects stops and temperature zero."""
     return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
-
-
-def configure_generation_overrides(model: object, overrides: dict) -> None:
-    """Give endpoint adapters the caller's generation settings, including an empty set."""
-    # The runner imports this module without lm-eval installed. Import adapters
-    # only when a model is being configured by the evaluation driver.
-    from lm_eval.models.openai_completions import LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI
-
-    if isinstance(model, LocalCompletionsAPI) and not isinstance(model, (OpenAICompletionsAPI, OpenAIChatCompletion)):
-        setattr(model, _GENERATION_OVERRIDES_ATTR, dict(overrides))
 
 
 def parse_generation_overrides(value: str | dict | None) -> dict:
@@ -199,474 +72,40 @@ def _parse_request_body_mapping(value: str | Mapping | None, name: str) -> dict 
     return dict(parsed)
 
 
-def _retryable_transport_error(error: Exception) -> bool:
-    from aiohttp import ClientConnectionError, ClientPayloadError, ClientResponseError
-
-    if isinstance(error, ClientResponseError):
-        return error.status in _RETRYABLE_HTTP_STATUSES
-    return isinstance(error, (ClientConnectionError, ClientPayloadError, ConnectionError, TimeoutError))
-
-
-async def _transport_retry_sleep(delay: float) -> None:
-    await asyncio.sleep(delay)
-
-
-async def _retry_transport_call(call, *, budget: float):
-    """Retry one request within a wall-clock budget while preserving attempt timeouts."""
-    deadline = monotonic() + budget
-    backoff = 1.0
-    async with asyncio.timeout(budget):
-        while True:
-            try:
-                return await call()
-            except Exception as exc:
-                if not _retryable_transport_error(exc):
-                    raise
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    raise
-                pause = min(random.uniform(0, backoff), remaining)
-                logger.info("Retrying transport failure in %.1f seconds: %r", pause, exc)
-                await _transport_retry_sleep(pause)
-                backoff = min(backoff * 2, _MAX_TRANSPORT_BACKOFF)
-
-
-def _upstream_attempt_retry(max_retries: int):
-    """lm-eval's attempt-count retry policy, shared by the async and sync guards.
-
-    Imported lazily like the ``apply_*`` patches because this module must import in
-    a dependency-free install (the e2e harness); where it runs, importing lm-eval's
-    api models has already guaranteed tenacity.
-    """
-    from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
-
-    return retry(
-        retry=retry_if_not_exception_type((TimeoutError, asyncio.CancelledError)),
-        stop=stop_after_attempt(max_retries),
-        wait=wait_exponential(multiplier=0.5, min=1, max=10),
-        reraise=True,
-        before_sleep=lambda retry_state: logger.info("Retry attempt %s", retry_state.attempt_number),
-    )
-
-
-def _exhausted_request_category(error: BaseException) -> FailureCategory:
-    """Classify one request whose transport retries were exhausted."""
-    if isinstance(error, TimeoutError):
-        return FailureCategory.AGENT_TIMEOUT
-    return FailureCategory.MODEL_TRANSPORT
-
-
-def _exhausted_prompt_count(messages) -> int:
-    """Count the prompts a failed request carried; non-sized payloads count as one."""
-    return len(messages) if isinstance(messages, Sized) else 1
-
-
-def _record_exhausted_request(label: str, category: FailureCategory, count: int, error: BaseException) -> None:
-    record_endpoint_failure(category, count)
-    logger.error(
-        "%s ended as %s; recording an empty generation for %d prompt(s). Cause: %r",
-        label,
-        category.value,
-        count,
-        error,
-    )
-
-
-def _empty_generation_payload(category: FailureCategory, count: int) -> dict:
-    """Synthetic wire payload that ``parse_generations`` turns into classified empty text."""
-    return {
-        TRANSPORT_FAILURE_MARKER: category.value,
-        "choices": [{"index": index, "text": FailedGeneration(category.value)} for index in range(count)],
-    }
-
-
-def apply() -> bool:
-    """Patch ``TemplateAPI.get_batched_requests`` to be resilient. Idempotent.
-
-    Returns True if the patch is (now) in place, False if it could not be applied
-    (e.g. lm-eval drifted and the method/symbols are gone) -- in which case the
-    unpatched upstream behavior is left untouched and a warning is logged.
-    """
-    try:
-        from aiohttp import ClientResponseError, ClientSession, ClientTimeout, TCPConnector
-        from lm_eval.models import api_models as _api
-        from lm_eval.models.utils import chunks
-        from tqdm.asyncio import tqdm_asyncio
-
-        from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
-    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
-        logger.warning("robust_api: could not import lm-eval async deps (%r); patch skipped.", exc)
-        return False
-
-    template_api = getattr(_api, "TemplateAPI", None)
-    if template_api is None or not hasattr(template_api, "get_batched_requests"):
-        logger.warning(
-            "robust_api: lm_eval.models.api_models.TemplateAPI.get_batched_requests not found "
-            "(lm-eval drifted from v0.4.12?); leaving upstream behavior unpatched."
-        )
-        return False
-
-    if getattr(template_api, _PATCH_FLAG, False):
-        return True  # already patched (idempotent across repeated imports)
-
-    async def get_batched_requests(  # noqa: PLR0913 - mirrors the upstream signature verbatim
-        self,
-        requests,
-        cache_keys,
-        *,
-        generate: bool = True,
-        ctxlens=None,
-        **kwargs,
-    ):
-        """Resilient mirror of lm-eval v0.4.12 ``TemplateAPI.get_batched_requests``.
-
-        Identical to upstream except each per-request task is wrapped in a guard: a
-        request that exhausts its retries returns an empty classified generation
-        rather than propagating out of ``gather`` and aborting the batch.
-        """
-        ctxlens = ctxlens if ctxlens else [None] * len(requests)
-        local_endpoint = isinstance(self, (RetryingLocalChatCompletions, RetryingLocalCompletions))
-        concurrent = self.endpoint_concurrency if local_endpoint else self._concurrent
-        retry_budget = self.transport_retry_budget if local_endpoint else None
-        attempt_timeout = self.transport_attempt_timeout if local_endpoint else self.timeout
-        conn = TCPConnector(limit=concurrent, ssl=self.verify_certificate)
-        sem = asyncio.Semaphore(concurrent)
-        async with ClientSession(connector=conn, timeout=ClientTimeout(total=self.timeout)) as session:
-            if retry_budget is None:
-                retry_ = _upstream_attempt_retry(self.max_retries)(self.amodel_call)
-
-            async def _guarded(message, cache_key, ctxlen, call_kwargs):
-                request_error = None
-                async with sem:
-                    try:
-                        if retry_budget is not None:
-
-                            async def call():
-                                return await asyncio.wait_for(
-                                    self.amodel_call(
-                                        session=session,
-                                        sem=_ADMITTED_SEMAPHORE,
-                                        messages=message,
-                                        cache_keys=cache_key,
-                                        generate=generate,
-                                        ctxlens=ctxlen,
-                                        **call_kwargs,
-                                    ),
-                                    timeout=attempt_timeout,
-                                )
-
-                            return await _retry_transport_call(call, budget=retry_budget)
-                        async with asyncio.timeout(self.timeout):
-                            return await retry_(
-                                session=session,
-                                sem=_ADMITTED_SEMAPHORE,
-                                messages=message,
-                                cache_keys=cache_key,
-                                generate=generate,
-                                ctxlens=ctxlen,
-                                **call_kwargs,
-                            )
-                    except Exception as exc:  # noqa: BLE001 - classify the failed generation
-                        request_error = exc
-
-                assert request_error is not None
-                if (
-                    retry_budget is not None
-                    and isinstance(request_error, ClientResponseError)
-                    and 400 <= request_error.status < 500
-                    and request_error.status not in _RETRYABLE_HTTP_STATUSES
-                ):
-                    # A permanent request error applies to the whole evaluation;
-                    # wait for sibling requests before closing their shared session.
-                    return _DeferredRequestError(request_error)
-                category = _exhausted_request_category(request_error)
-                if not generate:
-                    # Keep the shared session alive until sibling requests settle.
-                    # Raising here lets tqdm's gather exit without awaiting them;
-                    # the session context then closes beneath their retries.
-                    return _DeferredRequestError(request_error)
-                n = _exhausted_prompt_count(message)
-                _record_exhausted_request("Request", category, n, request_error)
-                return [FailedGeneration(category.value) for _ in range(n)]
-
-            tasks = []
-            skipped_preflight_logged = False
-            for message, cache_key, ctxlen in zip(
-                chunks(requests, n=self._batch_size),
-                chunks(cache_keys, n=self._batch_size),
-                chunks(ctxlens, n=self._batch_size),
-            ):
-                request_kwargs = dict(kwargs)
-                if generate:
-                    # This is the one shared seam for lm-eval-native and every
-                    # Evalchemy benchmark: the actual text/chat payload exists,
-                    # but no HTTP request has been issued yet. ``max_length``
-                    # on TemplateAPI is stored as context-1 by lm-eval.
-                    try:
-                        bounded, prompt_tokens, effective_cap = preflight_endpoint_generation(
-                            tokenizer=self.tokenizer,
-                            payloads=message,
-                            gen_kwargs=kwargs.get("gen_kwargs"),
-                            context_length=self.max_length + 1 if self.max_length is not None else None,
-                            chat_template_kwargs=getattr(self, _CHAT_TEMPLATE_KWARGS_ATTR, None),
-                        )
-                    except ContextWindowExceededError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - add request-preflight context
-                        raise ValueError(f"endpoint context preflight failed: {exc}") from exc
-                    if bounded is not None:
-                        if effective_cap is not None:
-                            bounded[_CONTEXT_OUTPUT_CAP_KWARG] = effective_cap
-                        request_kwargs["gen_kwargs"] = bounded
-                    if (
-                        self.tokenizer is None
-                        and self.max_length is not None
-                        and prompt_tokens is None
-                        and bounded is not None
-                        and any(alias in bounded for alias in MAX_OUTPUT_ALIASES)
-                        and not skipped_preflight_logged
-                    ):
-                        logger.warning("endpoint context preflight skipped prompt-length check: no client tokenizer")
-                        skipped_preflight_logged = True
-                    if prompt_tokens is not None and effective_cap is not None:
-                        logger.info(
-                            "endpoint context preflight: largest_prompt=%d, max_output=%d, context=%d",
-                            prompt_tokens,
-                            effective_cap,
-                            self.max_length + 1,
-                        )
-                tasks.append(asyncio.create_task(_guarded(message, cache_key, ctxlen, request_kwargs)))
-            outputs = await tqdm_asyncio.gather(*tasks, desc="Requesting API")
-            for output in outputs:
-                if isinstance(output, _DeferredRequestError):
-                    # Loglikelihood has no valid placeholder, so preserve fail-fast
-                    # scoring after all requests have released the shared session.
-                    raise output.error
-            return outputs
-
-    template_api.get_batched_requests = get_batched_requests
-    setattr(template_api, _PATCH_FLAG, True)
-    logger.info("robust_api: patched TemplateAPI.get_batched_requests (failed requests yield classified empty text).")
-    return True
-
-
-def apply_sync_generation_guard() -> bool:
-    """Patch ``TemplateAPI.model_call`` so the sync generate route cannot abort a batch.
-
-    ``TemplateAPI.generate_until`` selects a synchronous ``requests``-based path at
-    ``_concurrent <= 1`` (the lm-eval default), which ``get_batched_requests`` never
-    sees: the evalchemy remap only dodges it for the two ``local-*`` model names, so
-    other ``TemplateAPI`` users still abort the whole task when ONE request exhausts
-    its retries. The guard mirrors the async one -- upstream attempt-count retries,
-    then a classified empty generation per prompt. Loglikelihood (``generate=False``)
-    keeps upstream fail-fast: an empty logprob cannot be scored.
-    """
-    try:
-        from lm_eval.models import api_models as _api
-    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
-        logger.warning("robust_api: could not import lm-eval sync deps (%r); sync guard skipped.", exc)
-        return False
-
-    template_api = getattr(_api, "TemplateAPI", None)
-    if template_api is None or not hasattr(template_api, "model_call"):
-        logger.warning(
-            "robust_api: lm_eval.models.api_models.TemplateAPI.model_call not found "
-            "(lm-eval drifted from v0.4.12?); leaving the sync path unpatched."
-        )
-        return False
-
-    if getattr(template_api, _SYNC_GUARD_PATCH_FLAG, False):
-        return True
-
-    original_model_call = template_api.model_call
-
-    def model_call(self, messages, *, generate: bool = True, gen_kwargs=None, **kwargs):
-        if not generate:
-            return original_model_call(self, messages, generate=generate, gen_kwargs=gen_kwargs, **kwargs)
-        retry_ = _upstream_attempt_retry(self.max_retries)(
-            lambda *args, **call_kwargs: original_model_call(self, *args, generate=True, **call_kwargs)
-        )
-        try:
-            return retry_(messages, gen_kwargs=gen_kwargs, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - one failed request must not nuke the batch
-            category = _exhausted_request_category(exc)
-            n = _exhausted_prompt_count(messages)
-            _record_exhausted_request("Sync request", category, n, exc)
-            return _empty_generation_payload(category, n)
-
-    template_api.model_call = model_call
-    setattr(template_api, _SYNC_GUARD_PATCH_FLAG, True)
-    logger.info("robust_api: patched TemplateAPI.model_call (exhausted sync retries yield classified empty text).")
-    return True
-
-
-def apply_rolling_loglikelihood_batching() -> bool:
-    """Batch rolling-likelihood windows across documents for API models."""
-    try:
-        from lm_eval import utils
-        from lm_eval.models.api_models import TemplateAPI
-        from tqdm import tqdm
-    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
-        logger.warning("rolling likelihood batching: could not import lm-eval symbols (%r); patch skipped.", exc)
-        return False
-
-    if getattr(TemplateAPI, _ROLLING_PATCH_FLAG, False):
-        return True
-
-    def loglikelihood_rolling(self, requests, disable_tqdm: bool = False):
-        loglikelihoods = []
-        pending_documents = []
-        pending_window_count = 0
-        target_window_count = max(1, self._concurrent * _ROLLING_WINDOWS_PER_CONCURRENT_SLOT)
-
-        def score_pending_documents():
-            nonlocal pending_documents, pending_window_count
-            if not pending_documents:
-                return
-
-            windows = [window for _, document_windows in pending_documents for window in document_windows]
-            window_scores = self._loglikelihood_tokens(windows, disable_tqdm=True)
-            offset = 0
-            for string, document_windows in pending_documents:
-                next_offset = offset + len(document_windows)
-                string_nll = sum(score for score, _ in window_scores[offset:next_offset])
-                loglikelihoods.append(string_nll)
-                self.cache_hook.add_partial("loglikelihood_rolling", (string,), string_nll)
-                offset = next_offset
-
-            pending_documents = []
-            pending_window_count = 0
-
-        for (string,) in tqdm([request.args for request in requests], disable=disable_tqdm):
-            document_windows = [
-                (None,) + window
-                for window in map(
-                    utils.make_disjoint_window,
-                    utils.get_rolling_token_windows(
-                        token_list=self.tok_encode(string),
-                        prefix_token=self.prefix_token_id,
-                        max_seq_len=self.max_length - 1,
-                        context_len=1,
-                    ),
-                )
-            ]
-            pending_documents.append((string, document_windows))
-            pending_window_count += len(document_windows)
-            if pending_window_count >= target_window_count:
-                score_pending_documents()
-
-        score_pending_documents()
-        return loglikelihoods
-
-    TemplateAPI.loglikelihood_rolling = loglikelihood_rolling
-    setattr(TemplateAPI, _ROLLING_PATCH_FLAG, True)
-    logger.info("rolling likelihood batching: patched TemplateAPI.loglikelihood_rolling.")
-    return True
-
-
 def apply_completion_normalization() -> bool:
-    """Preserve reasoning content returned by lm-eval's chat-completions adapter."""
-    try:
-        from lm_eval.models.openai_completions import LocalChatCompletion
-    except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
-        logger.warning("completion normalization: could not import lm-eval chat adapter (%r); patch skipped.", exc)
-        return False
+    """Normalize each choice without retaining completed responses on the model."""
+    from lm_eval.models.openai_completions import LocalChatCompletion
 
     if getattr(LocalChatCompletion, _COMPLETION_PATCH_FLAG, False):
         return True
-
     original_init = LocalChatCompletion.__init__
-    original_generate_until = LocalChatCompletion.generate_until
 
-    def __init__(self, *args, completion_content_policy: str = "combine", **kwargs):
+    def __init__(self, *args, completion_content_policy="combine", **kwargs):
         self.completion_content_policy = CompletionContentPolicy(completion_content_policy)
-        self.completion_responses = []
-        self.completion_response_summary = Counter()
-        self.completion_response_quality_invalid = False
         original_init(self, *args, **kwargs)
 
     def parse_generations(self, outputs, **kwargs):
-        if not isinstance(outputs, list):
-            outputs = [outputs]
-        response_start = len(self.completion_responses)
+        batches = outputs if isinstance(outputs, list) else [outputs]
         generated = []
-        for output in outputs:
-            marker = output.get(TRANSPORT_FAILURE_MARKER) if isinstance(output, Mapping) else None
-            if marker:
-                # A sync request that exhausted its retries (apply_sync_generation_guard)
-                # already recorded the endpoint failure; pass the classified empty
-                # generations through instead of scoring them as malformed responses.
-                generated.extend(FailedGeneration(marker) for _ in output["choices"])
-                continue
+        for output in batches:
             try:
-                choices = output["choices"]
-                parsed = [None] * len(choices)
-                parsed_responses = []
-                for choice in choices:
-                    completion = completion_response_from_chat_choice(output, choice)
-                    parsed[choice["index"]] = CompletionText(
-                        completion.normalized_content(self.completion_content_policy),
-                        completion,
-                        self.completion_content_policy,
-                    )
-                    parsed_responses.append(completion)
-                self.completion_responses.extend(parsed_responses)
-            except (IndexError, KeyError, TypeError, ValueError) as exc:
-                record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE)
-                logger.warning("completion normalization: could not parse generation (%s)", exc)
-                completion = CompletionResponse(
-                    content=None,
-                    reasoning_content=None,
-                    finish_reason=None,
-                    usage=None,
-                    provider_metadata={},
-                    raw_choice={},
-                    failure_category=FailureCategory.MALFORMED_MODEL_RESPONSE.value,
-                )
-                self.completion_responses.append(completion)
-                parsed = [CompletionText("", completion, self.completion_content_policy)]
-            generated.extend(parsed)
-        parsed_responses = self.completion_responses[response_start:]
-        classifications = Counter(response.classification for response in parsed_responses)
-        record_completion_responses(classifications)
-        missing_final = sum(classifications[classification] for classification in MISSING_FINAL_CLASSIFICATIONS)
-        already_classified = sum(response.failure_category is not None for response in parsed_responses)
-        if missing_final > already_classified:
-            missing_count = missing_final - already_classified
-            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE, missing_count)
-            logger.warning("completion normalization: %d responses lacked final content", missing_count)
-        return generated
-
-    def generate_until(self, requests, *args, **kwargs):
-        response_start = len(self.completion_responses)
-        generated = original_generate_until(self, requests, *args, **kwargs)
-        classifications = Counter(response.classification for response in self.completion_responses[response_start:])
-        self.completion_response_summary.update(classifications)
-        reasoning_only = sum(
-            self.completion_response_summary[classification]
-            for classification in (
-                CompletionClassification.REASONING_ONLY,
-                CompletionClassification.REASONING_ONLY_TRUNCATED,
-            )
-        )
-        total = sum(self.completion_response_summary.values())
-        self.completion_response_quality_invalid = completion_response_quality_invalid(self.completion_response_summary)
-        if classifications and reasoning_only:
-            logger.warning(
-                "completion normalization: %d/%d responses used reasoning without final content (%s)",
-                reasoning_only,
-                total,
-                dict(self.completion_response_summary),
-            )
-        if self.completion_response_quality_invalid:
-            logger.warning("completion normalization: at least half of responses lacked final content")
+                choices = sorted(output["choices"], key=lambda choice: choice["index"])
+                if not choices:
+                    raise ValueError("completion contains no choices")
+                responses = [completion_response_from_chat_choice(output, choice) for choice in choices]
+            except (IndexError, KeyError, TypeError, ValueError):
+                responses = [CompletionResponse(
+                    content=None, reasoning_content=None, finish_reason=None, usage=None,
+                    provider_metadata={}, raw_choice={}, failure_category=FailureCategory.MALFORMED_MODEL_RESPONSE.value,
+                )]
+            for response in responses:
+                generated.append(CompletionText(response.normalized_content(self.completion_content_policy),
+                                                response, self.completion_content_policy))
         return generated
 
     LocalChatCompletion.__init__ = __init__
     LocalChatCompletion.parse_generations = parse_generations
-    LocalChatCompletion.generate_until = generate_until
     setattr(LocalChatCompletion, _COMPLETION_PATCH_FLAG, True)
-    logger.info("completion normalization: patched lm-eval local-chat-completions.")
     return True
 
 
@@ -718,24 +157,6 @@ def apply_openai_payload_controls() -> bool:
         request_kwargs["until"] = chat_request_stops(stop)
         return request_kwargs
 
-    def _caller_generation_payload(self, payload):
-        overrides = getattr(self, _GENERATION_OVERRIDES_ATTR, None)
-        if overrides is None:
-            return payload
-        # The task YAML and lm-eval adapter both supply implicit sampling defaults.
-        # Only caller settings should override the serving model's defaults.
-        for key in ("temperature", "seed"):
-            payload.pop(key, None)
-        for key, value in overrides.items():
-            if key == "max_gen_toks":
-                token_key = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
-                payload[token_key] = value
-            elif key not in ("do_sample", "until"):
-                payload[key] = value
-        if overrides.get("do_sample") is False and "temperature" not in overrides:
-            payload["temperature"] = 0
-        return payload
-
     def _apply_context_output_cap(payload, context_output_cap):
         if context_output_cap is None:
             return payload
@@ -744,7 +165,6 @@ def apply_openai_payload_controls() -> bool:
         return payload
 
     def _finalize_generation_payload(self, payload, context_output_cap):
-        payload = _caller_generation_payload(self, payload)
         return _apply_context_output_cap(payload, context_output_cap)
 
     def _generation_kwargs_and_context_cap(gen_kwargs):
@@ -853,8 +273,5 @@ def apply_openai_payload_controls() -> bool:
 
 
 # Apply on import so `from eval import robust_api` is enough to activate the patch.
-_APPLIED = apply()
-_SYNC_GENERATION_GUARD_APPLIED = apply_sync_generation_guard()
-_ROLLING_LOGLIKELIHOOD_BATCHING_APPLIED = apply_rolling_loglikelihood_batching()
 _COMPLETION_NORMALIZATION_APPLIED = apply_completion_normalization()
 _OPENAI_PAYLOAD_CONTROLS_APPLIED = apply_openai_payload_controls()

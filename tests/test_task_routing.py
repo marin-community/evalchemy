@@ -94,9 +94,8 @@ def test_cli_reports_task_construction_failure_before_model_initialization(monke
     assert raised.value.preparations[0].failure.exception_type == "RuntimeError"
 
 
-def test_annotator_requirement_query_ignores_non_chat_task_without_warning(monkeypatch, caplog):
-    monkeypatch.setattr(TaskManager, "_load_benchmarks", lambda *_args: None)
-    task_manager = TaskManager()
+def test_annotator_requirement_query_ignores_non_chat_task_without_warning(caplog):
+    task_manager = TaskManager(task_list=[])
 
     with caplog.at_level(logging.WARNING):
         assert task_manager.requires_annotator_model("arc_challenge") is False

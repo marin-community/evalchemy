@@ -55,7 +55,8 @@ TIMED_OUT = "timed out"
 # frame behind. Upstream's manager process drains eagerly and does not care;
 # truncating keeps a single pipe viable. Only the message is clipped, never the
 # verdict, which is decided by comparison against PASSED.
-_MAX_OUTCOME_CHARS = 8192
+# Leave room for UTF-8 expansion and the pickle frame on small pipe buffers.
+_MAX_OUTCOME_CHARS = 512
 
 
 class TimeoutException(Exception):

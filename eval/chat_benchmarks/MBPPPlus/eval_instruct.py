@@ -1,19 +1,16 @@
-from typing import Dict, List, Any, Optional, Generator
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from typing import Dict, List, Optional, Generator
 import json
 import os
-import re
-import textwrap
-from pathlib import Path
-from tqdm import tqdm
 import logging
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from .mbpp_plus.evaluation import evaluate_functional_correctness
-from .utils.utils import extract_generation_code, language_settings
-from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
-from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
+
+
+SUITE = 'MBPPPlus'
+DATA_FILE = 'mbppplus.jsonl'
+TEST_FILE = 'mbppplus.jsonl'
 
 
 class MBPPPlusBenchmark(BaseBenchmark):
@@ -21,7 +18,7 @@ class MBPPPlusBenchmark(BaseBenchmark):
     MBPPPlus benchmark for evaluating code generation capabilities across different languages.
     """
 
-    GRADER_EXECUTION_MODE = GraderExecutionMode.SANDBOXED
+    SOURCE = SourceRef("MBPPPlus")
     METRICS = ("pass@1",)
     PRIMARY_METRIC = "pass@1"
 
@@ -32,7 +29,6 @@ class MBPPPlusBenchmark(BaseBenchmark):
     def __init__(
         self,
         data_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
-        num_workers: int = 8,
         timeout: float = 3.0,
         debug: bool = False,
         max_tokens: int = 1024,
@@ -54,7 +50,6 @@ class MBPPPlusBenchmark(BaseBenchmark):
         super().__init__(logger=logger, system_instruction=system_instruction)
         self.data_dir = data_dir
         self.max_tokens = max_tokens
-        self.num_workers = num_workers
         self.timeout = timeout
         self.debug = debug
         self.num_examples = 3
@@ -118,162 +113,20 @@ Here is my problem:
             self.logger.error(f"Error reading examples: {str(e)}")
             raise
 
-    def extract_code(self, completion: str) -> str:
-        """Extract code block from model completion."""
-        try:
-            code_block = re.findall(r"```python\n(.*?)```", completion, re.DOTALL | re.IGNORECASE)[0]
-            return textwrap.dedent(code_block).strip("\n")
-        except Exception as e:
-            self.logger.warning(f"Failed to extract code block, using full completion.\nError: {str(e)}")
-            return textwrap.dedent(completion).strip("\n")
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate code completions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        artifacts = GenerationArtifactManifest.temporary()
-        try:
 
-            problem_file = os.path.join(self.data_dir, "mbppplus.jsonl")
-            examples = list(self.read_test_examples(problem_file))
-            self.logger.info(f"Processing {len(examples)} examples")
+    REDUCER = ReducerSpec(accuracy="pass@1")
 
-            all_instances = []
-            for idx, example in enumerate(examples):
-                try:
-                    inputs = self._prepare_messages([{"role": "user", "content": example["prompt"]}], model)
-
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                inputs,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": False,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error preparing instance {idx}: {str(e)}")
-                    continue
-
-            self.logger.info("Generating responses for MBPPPlus...")
-            outputs = self.compute(model, all_instances)
-
-            # Return None early for non-primary ranks
-            if model.rank != 0:
-                return None
-
-            generated_examples = []
-            for example, output in zip(examples, outputs):
-                try:
-                    example_with_output = example.copy()
-                    example_with_output["gpt_completion"] = output
-                    example_with_output["generation"] = self.extract_code(output)
-                    generated_examples.append(example_with_output)
-                except Exception as e:
-                    self.logger.error(f"Error processing output for {example['task_id']}: {str(e)}")
-                    continue
-
-            output_path = artifacts.write_jsonl(
-                "generated-python",
-                "generated_python.jsonl",
-                generated_examples,
-                expected_count=len(examples),
-            ).path
-
-            self.logger.info(f"Saved {len(generated_examples)} examples to {output_path}")
-
-            return {
-                "artifacts": artifacts,
-                "examples": generated_examples,
-                "num_examples": len(generated_examples),
-                "total_examples": len(examples),
-            }
-
-        except Exception as e:
-            artifacts.cleanup()
-            self.logger.error(f"Error in generate_responses: {str(e)}")
-            raise
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        artifacts = results["artifacts"]
-        artifacts.validate_required()
-        temp_dir = str(artifacts.root)
-
-        evaluation_results = {}
-
-        problem_file = os.path.join(self.data_dir, f"mbppplus.jsonl")
-        temp_file_path = str(artifacts.path("generated-python"))
-
-        result = evaluate_functional_correctness(
-            input_file=temp_file_path,
-            tmp_dir=temp_dir,
-            n_workers=self.num_workers,
-            timeout=self.timeout,
-            problem_file=problem_file,
-            language="python",
+    def iter_specs(self, options):
+        with open(os.path.join(self.data_dir, TEST_FILE)) as data:
+            problems = {row["task_id"]: row for line in data if line.strip() for row in [json.loads(line)]}
+        return text_specs(
+            self.read_test_examples(os.path.join(self.data_dir, DATA_FILE)), options,
+            prompt=lambda row: row["prompt"], target=lambda row: problems[row["task_id"]]["test"],
+            grader="program_suite",
+            reference=lambda row: {"suite": SUITE, "language": "python", "problem": problems[row["task_id"]],
+                                   "timeout": self.timeout, "mbpp": False},
+            generation={"do_sample": False, "max_gen_toks": self.max_tokens},
         )
-
-        pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
-        for example in results["examples"]:
-            record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-        for metric, value in result.items():
-            evaluation_results[f"{metric}"] = value
-
-        self.logger.info(f"Completed evaluation")
-
-        return evaluation_results
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete benchmark evaluation pipeline.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation results, or None for non-primary ranks
-        """
-        self.logger.info(f"Running MBPPPlus benchmark")
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not primary rank, return None early
-            if generation_results is None:
-                return None
-
-            try:
-                return self.evaluate_responses(generation_results)
-            finally:
-                artifacts = generation_artifacts(generation_results)
-                if artifacts is not None:
-                    artifacts.cleanup()
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}

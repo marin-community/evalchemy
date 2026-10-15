@@ -6,7 +6,7 @@ import signal
 from multiprocessing import Process, Queue
 import multiprocessing.context
 
-from livebench.process_results.util import last_boxed_only_string, remove_boxed
+from eval.chat_benchmarks.LiveBench.livebench.process_results.util import last_boxed_only_string, remove_boxed
 
 import warnings
 import traceback

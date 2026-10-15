@@ -3,7 +3,8 @@
 import pytest
 
 from eval.chat_benchmarks.HumanEvalPlus.utils.utils import extract_generation_code
-from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+from eval.graders.program_suites import program_suite
 
 
 @pytest.mark.parametrize(
@@ -28,10 +29,23 @@ from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
     ],
 )
 def test_mbppplus_indented_answers_execute(completion, function, args, expected):
-    namespace = {}
-    exec(MBPPPlusBenchmark().extract_code(completion), namespace)
+    arguments = ", ".join(repr(value) for value in args)
+    problem = {
+        "task_id": "MBPP/test",
+        "prompt": f"def {function}(*args):\n",
+        "test": f"assert {function}({arguments}) == {expected!r}",
+    }
+    spec = EvalSpec(
+        task="MBPPPlus",
+        source=SourceRef("fixture"),
+        source_id="test",
+        ordinal=0,
+        requests=(),
+        grader=GraderSpec("program_suite", {"suite": "MBPPPlus", "language": "python", "problem": problem, "timeout": 3.0}),
+        doc=problem,
+    )
 
-    assert namespace[function](*args) == expected
+    assert program_suite(spec, [completion]).metrics["accuracy"] == 1.0
 
 
 @pytest.mark.parametrize(

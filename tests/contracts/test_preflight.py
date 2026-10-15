@@ -9,9 +9,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import datasets
 import pytest
-from lm_eval.api.instance import Instance
+from eval.contracts.eval_spec import ModelRequest, RequestKind, SourceRef
+from eval.sources.common import SourceOptions
+from eval.contracts.preflight import validate_model_request
 from lm_eval.models.api_models import JsonChatStr
 
 from eval.contracts.preflight import (
@@ -24,14 +25,13 @@ from eval.contracts.preflight import (
     validate_task_preparations,
 )
 from eval.contracts.task_outcome import FailureCategory, TaskRoute
-from eval.eval import cli_evaluate, setup_custom_parser
 from eval.task import BaseBenchmark, TaskManager
 
 
 class _Benchmark(BaseBenchmark):
     RESOURCE_REQUIREMENTS = ()
 
-    def generate_responses(self, model):
+    def iter_specs(self, options):
         raise NotImplementedError
 
     def evaluate_responses(self, results):
@@ -97,11 +97,14 @@ def test_persisted_preparation_rejects_unknown_schema():
         validate_task_preparations({"task": preparation}, ["task"])
 
 
-def test_requested_custom_load_failure_is_not_silently_omitted(tmp_path):
+def test_requested_custom_load_failure_is_not_silently_omitted(tmp_path, monkeypatch):
     broken = tmp_path / "Broken"
     broken.mkdir()
     (broken / "eval_instruct.py").write_text("raise RuntimeError('broken import')\n")
-    manager = TaskManager(benchmarks_dir=str(tmp_path), task_list=["Broken"])
+    monkeypatch.setattr("eval.sources.SOURCES", {"Broken": ("fixture_broken_source", "Benchmark")})
+    (tmp_path / "fixture_broken_source.py").write_text("raise RuntimeError('broken import')\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    manager = TaskManager(task_list=["Broken"])
 
     with pytest.raises(EvaluationPreflightError) as raised:
         prepare_requested_tasks(
@@ -140,25 +143,16 @@ def test_lm_eval_task_is_constructed_during_preflight():
 )
 def test_invalid_representative_request_fails_before_generation(prompt):
     model = _RecordingModel()
-    request = Instance("generate_until", {}, (prompt, {}), 0)
+    request = ModelRequest(RequestKind.GENERATE, prompt)
 
     with pytest.raises(ModelRequestValidationError):
-        _Benchmark().compute(model, [request])
+        validate_model_request(request)
 
     assert model.requests == []
 
 
-def test_json_chat_request_reaches_generation():
-    model = _RecordingModel()
-    request = Instance(
-        "generate_until",
-        {},
-        (JsonChatStr('[{"role": "user", "content": "question"}]'), {}),
-        0,
-    )
-
-    assert _Benchmark().compute(model, [request]) == ["answer"]
-    assert model.requests == [request]
+def test_json_chat_request_passes_validation():
+    validate_model_request(ModelRequest(RequestKind.GENERATE, JsonChatStr('[{"role":"user","content":"question"}]')))
 
 
 def test_mmlupro_prompt_resolution_is_independent_of_cwd(tmp_path):
@@ -209,59 +203,20 @@ def test_mmlupro_respects_shot_count_with_model_tokenizer(monkeypatch, tmp_path,
         "category": "math",
     }
     monkeypatch.setattr(
-        datasets,
-        "load_dataset",
+        "eval.chat_benchmarks.MMLUPro.eval_instruct.load_dataset",
         lambda *_args, **_kwargs: {"validation": [validation], "test": [question]},
     )
 
-    model = _RecordingModel()
-
-    class _ModelTokenizer:
-        """Callable tokenizer stand-in that can only count encoded ids."""
-
-        @staticmethod
-        def encode(_prompt):
+    class Tokenizer:
+        def encode(self, _prompt):
             if num_fewshot == 0:
-                raise AssertionError("zero-shot prompting must not load or call a tokenizer")
+                raise AssertionError("zero-shot prompting must not count tokenizer tokens")
             return [0] * 32
 
-        def __call__(self, *_args, **_kwargs):
-            raise AssertionError("prompt sizing must count encoded ids, not build tensors")
-
-    def fail_auto_tokenizer(*_args, **_kwargs):
-        raise AssertionError("few-shot prompting must use the evaluation model's tokenizer")
-
-    model.tokenizer = _ModelTokenizer()
-    monkeypatch.setattr(
-        "transformers.AutoTokenizer.from_pretrained",
-        fail_auto_tokenizer,
-    )
-    args = setup_custom_parser().parse_args(
-        [
-            "--model",
-            "hf",
-            "--tasks",
-            "MMLUPro",
-            "--num_fewshot",
-            str(num_fewshot),
-            "--batch_size",
-            "1",
-            "--max_length",
-            "65536",
-            "--max_tokens",
-            "1024",
-            "--apply_chat_template",
-            "--finestore_output_path",
-            str(tmp_path / "archive"),
-        ]
-    )
-    args.model = model
-    monkeypatch.setattr("eval.eval.setup_evaluation_tracker", lambda *_args: None)
-    monkeypatch.setattr("eval.eval.add_results_metadata", lambda *_args: None)
-    monkeypatch.setattr("eval.eval.handle_evaluation_output", lambda *_args, **_kwargs: None)
-
-    cli_evaluate(args)
-
-    messages = json.loads(model.requests[0].args[0].prompt)
-    assert "Held-out question?" in messages[0]["content"]
-    assert ("Validation demonstration?" in messages[0]["content"]) is includes_validation
+    from eval.chat_benchmarks.MMLUPro.eval_instruct import MMLUProBenchmark
+    source = MMLUProBenchmark(num_fewshot=num_fewshot)
+    items = list(source.iter_specs(SourceOptions("MMLUPro", SourceRef("fixture"), limit=1,
+                                               context_length=65536, max_tokens=1024, encode=Tokenizer().encode)))
+    text = items[0].requests[0].prompt[0]["content"]
+    assert "Held-out question?" in text
+    assert ("Validation demonstration?" in text) is includes_validation

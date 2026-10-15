@@ -1,17 +1,16 @@
-from typing import Dict, List, Any, Generator, Optional
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from typing import Dict, List, Generator, Optional
 import json
 import os
-import re
-import tempfile
 import logging
-from tqdm import tqdm
-from pathlib import Path
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from human_eval.evaluation import evaluate_functional_correctness
-from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
+
+
+SUITE = 'MBPP'
+DATA_FILE = 'mbpp.jsonl'
+TEST_FILE = 'mbpp_test.jsonl'
 
 
 class MBPPBenchmark(BaseBenchmark):
@@ -109,165 +108,23 @@ Here is my problem:
             self.logger.error(f"Error reading examples: {str(e)}")
             raise
 
-    def extract_code(self, completion: str) -> str:
-        """Extract code block from model completion."""
-        try:
-            code_block = re.findall(r"```python\n(.*?)```", completion, re.DOTALL | re.IGNORECASE)[0]
-            return code_block
-        except Exception as e:
-            self.logger.warning(f"Failed to extract code block, using full completion.\nError: {str(e)}")
-            return completion
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate code completions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        try:
-            temp_dir_obj = tempfile.TemporaryDirectory()
-            temp_dir = temp_dir_obj.name
 
-            problem_file = os.path.join(self.data_dir, "mbpp.jsonl")
-            examples = list(self.read_test_examples(problem_file))
-            self.logger.info(f"Processing {len(examples)} examples")
+    SOURCE = SourceRef("mbpp")
+    METRICS = ("pass@1",)
+    PRIMARY_METRIC = "pass@1"
+    REDUCER = ReducerSpec(accuracy="pass@1")
 
-            all_instances = []
-            for idx, example in enumerate(examples):
-                try:
-                    inputs = self._prepare_messages([{"role": "user", "content": example["prompt"]}], model)
-
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                inputs,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": False,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error preparing instance {idx}: {str(e)}")
-                    continue
-
-            self.logger.info("Generating responses for MBPP...")
-            outputs = self.compute(model, all_instances)
-
-            # Return None early for non-primary ranks
-            if model.rank != 0:
-                return None
-
-            generated_examples = []
-            for example, output in zip(examples, outputs):
-                try:
-                    example_with_output = example.copy()
-                    example_with_output["gpt_completion"] = output
-                    example_with_output["generation"] = self.extract_code(output)
-                    generated_examples.append(example_with_output)
-                except Exception as e:
-                    self.logger.error(f"Error processing output for {example['task_id']}: {str(e)}")
-                    continue
-
-            output_path = os.path.join(temp_dir, "mbpp.jsonl")
-            with open(output_path, "w", encoding="utf-8") as fw:
-                for ex in generated_examples:
-                    fw.write(json.dumps(ex) + "\n")
-
-            self.logger.info(f"Saved {len(generated_examples)} examples to {output_path}")
-
-            return {
-                "temp_dir_obj": temp_dir_obj,
-                "examples": generated_examples,
-                "num_examples": len(generated_examples),
-                "total_examples": len(examples),
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error in generate_responses: {str(e)}")
-            raise
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        try:
-            temp_dir_obj = results["temp_dir_obj"]
-            temp_dir = temp_dir_obj.name
-
-            result = evaluate_functional_correctness(
-                input_file=os.path.join(temp_dir, "mbpp.jsonl"),
-                tmp_dir=temp_dir,
-                problem_file=os.path.join(self.data_dir, "mbpp_test.jsonl"),
-                language="python",
-                is_mbpp=True,
-            )
-
-            pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
-            for example in results["examples"]:
-                record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-            result.update(
-                {
-                    "num_examples": results["num_examples"],
-                    "completion_rate": results["num_examples"] / results["total_examples"],
-                }
-            )
-
-            temp_dir_obj.cleanup()
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error in evaluate_responses: {str(e)}")
-            if temp_dir_obj:
-                temp_dir_obj.cleanup()
-            raise
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete MBPP benchmark evaluation pipeline.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        self.logger.info("Starting MBPP benchmark evaluation")
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not primary rank, return None early
-            if generation_results is None:
-                return None
-
-            evaluation_results = self.evaluate_responses(generation_results)
-
-            evaluation_results.update(
-                {"benchmark_version": "mbpp", "max_tokens": self.max_tokens, "num_shot": self.num_examples}
-            )
-
-            return evaluation_results
-
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}
+    def iter_specs(self, options):
+        with open(os.path.join(self.data_dir, TEST_FILE)) as data:
+            problems = {row["task_id"]: row for line in data if line.strip() for row in [json.loads(line)]}
+        return text_specs(
+            self.read_test_examples(os.path.join(self.data_dir, DATA_FILE)), options,
+            prompt=lambda row: row["prompt"], target=lambda row: problems[row["task_id"]]["test"],
+            grader="program_suite",
+            reference=lambda row: {"suite": SUITE, "language": "python", "problem": problems[row["task_id"]],
+                                   "timeout": 3.0, "mbpp": True},
+            generation={"do_sample": False, "max_gen_toks": self.max_tokens},
+        )

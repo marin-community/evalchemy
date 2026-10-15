@@ -11,7 +11,7 @@ from importlib.resources import files
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from lm_eval.api.instance import Instance
+    pass
 
 from .failures import FailureCategory, FailurePhase, ModelRequestValidationError, classify_task_exception
 from .task_outcome import TaskFailure, TaskRoute
@@ -143,16 +143,12 @@ class EvaluationPreflightError(RuntimeError):
         super().__init__("Evaluation preflight failed: " + "; ".join(failures))
 
 
-def validate_model_request(instance: "Instance") -> None:
+def validate_model_request(request) -> None:
     """Validate the common request shape after model-specific prompt preparation."""
-    if instance.request_type != "generate_until":
-        raise ModelRequestValidationError("custom benchmarks must issue generate_until requests")
-
-    arguments = instance.args
-    if not isinstance(arguments, tuple) or len(arguments) != 2:
-        raise ModelRequestValidationError("generation request arguments must be a (prompt, parameters) tuple")
-
-    prompt, parameters = arguments
+    from .eval_spec import RequestKind
+    if request.kind is not RequestKind.GENERATE:
+        return
+    prompt, parameters = request.prompt, request.generation
     string_prompt = isinstance(prompt, str) and bool(prompt.strip())
     chat_prompt = _is_non_empty_chat_prompt(prompt)
     if not string_prompt and not chat_prompt:

@@ -1,3 +1,6 @@
+from __future__ import annotations
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
 """NUPA-Loose numerical benchmark with permissive answer extraction.
 
 The source dataset is nested by task and digit length. This integration reads
@@ -5,26 +8,21 @@ that canonical JSON directly and reproduces the authors' text-model sampling:
 100 deterministic examples from every task/digit group.
 """
 
-from __future__ import annotations
 
 import json
 import logging
 import os
 import random
-from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import ijson
 from huggingface_hub import hf_hub_download
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .scorer import ExampleScore, extract_answer, length_bucket, mean, score_prediction
+from .scorer import length_bucket
 
 SOURCE_DATASET_NAME = "HaotongYang/NUPA_text"
 SOURCE_DATASET_REVISION = "01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7"
@@ -38,10 +36,12 @@ SMOKE_DATA = os.path.join(DATA_DIR, "nupa_smoke.jsonl")
 
 
 class NUPALooseBenchmark(BaseBenchmark):
+    SOURCE = SourceRef(SOURCE_DATASET_NAME, DEFAULT_SPLIT, SOURCE_DATASET_REVISION)
     """Evaluate NUPA tasks with permissive final answer extraction."""
 
     METRICS = ("exact_match", "digit_match", "format_valid_rate")
     PRIMARY_METRIC = "exact_match"
+    REDUCER = ReducerSpec(trial_metric="exact_match", groups={"task_bucket": "task:{group}/{metric}"})
 
     def __init__(
         self,
@@ -104,71 +104,19 @@ class NUPALooseBenchmark(BaseBenchmark):
                 num_each=self.num_each,
                 random_seed=self.random_seed,
             )
-        return self.limit_samples(records)
+        return records
 
-    def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
-        instances = []
-        for idx, record in enumerate(records):
-            messages = [{"role": "user", "content": record["prompt"]}]
-            instances.append(
-                Instance(
-                    "generate_until",
-                    record,
-                    (
-                        self._prepare_messages(messages, model),
-                        {"do_sample": False, "temperature": 0.0, "max_new_tokens": self.max_new_tokens},
-                    ),
-                    idx,
-                )
-            )
-        return instances
+    def iter_specs(self, options):
+        return text_specs(
+            self._load_records(), options, prompt=lambda row: row["prompt"], target=lambda row: row["answer"],
+            grader="nupa", reference=lambda row: {"format": row["answer_format"]},
+            generation={"do_sample": False, "temperature": 0.0, "max_gen_toks": self.max_new_tokens},
+            tags=lambda row: {"task": row["task_name"], "bucket": row["length_bucket"],
+                              "task_bucket": row["task_name"] + "/bucket:" + row["length_bucket"]},
+        )
 
-    def generate_responses(self, model: LM) -> Optional[Dict[str, Any]]:
-        records = self._load_records()
-        self.logger.info("Generating responses for NUPA-Loose (%d examples)...", len(records))
-        outputs = self.compute(model, self._build_instances(model, records))
-        if model.rank != 0:
-            return None
-        examples = []
-        for record, output in zip(records, outputs, strict=True):
-            example = dict(record)
-            example["output"] = output
-            examples.append(example)
-        return {"examples": examples}
 
-    def evaluate_responses(self, results: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        if results is None:
-            return None
 
-        scored_examples = []
-        for example in results["examples"]:
-            score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
-            example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
-            example["correct"] = bool(score.exact_match)
-            example["score"] = score
-            record_sample_metrics(
-                example,
-                exact_match=score.exact_match,
-                digit_match=score.digit_match,
-                dlength=score.dlength,
-                format_valid_rate=score.format_valid,
-                no_answer_rate=score.no_answer,
-            )
-            scored_examples.append(example)
-
-        metrics: Dict[str, float] = {}
-        metrics.update(_aggregate_scores(scored_examples, prefix=""))
-        for group_name, items in _group_by(scored_examples, "task_name").items():
-            metrics.update(_aggregate_scores(items, prefix=f"task:{group_name}/"))
-        for group_name, items in _group_by(scored_examples, "length_bucket").items():
-            metrics.update(_aggregate_scores(items, prefix=f"bucket:{group_name}/"))
-        for task_name, task_items in _group_by(scored_examples, "task_name").items():
-            for bucket, bucket_items in _group_by(task_items, "length_bucket").items():
-                metrics.update(_aggregate_scores(bucket_items, prefix=f"task:{task_name}/bucket:{bucket}/"))
-
-        results.update(metrics)
-        results["dataset_num_samples"] = len(scored_examples)
-        return results
 
 
 def download_nupa_source(*, dataset_name: str, dataset_revision: str, split: str) -> Path:
@@ -250,22 +198,8 @@ def split_prompt_answer(text: str) -> tuple[str, str]:
     return f"{prompt.rstrip()} =", answer.strip()
 
 
-def _aggregate_scores(examples: List[Dict[str, Any]], prefix: str) -> Dict[str, float]:
-    scores: List[ExampleScore] = [example["score"] for example in examples]
-    return {
-        f"{prefix}exact_match": mean(score.exact_match for score in scores),
-        f"{prefix}digit_match": mean(score.digit_match for score in scores),
-        f"{prefix}dlength": mean(score.dlength for score in scores),
-        f"{prefix}format_valid_rate": mean(score.format_valid for score in scores),
-        f"{prefix}no_answer_rate": mean(score.no_answer for score in scores),
-    }
 
 
-def _group_by(examples: Iterable[Dict[str, Any]], key: str) -> Dict[str, List[Dict[str, Any]]]:
-    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for example in examples:
-        groups[str(example[key])].append(example)
-    return dict(groups)
 
 
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:

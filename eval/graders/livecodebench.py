@@ -178,8 +178,10 @@ def _resolve_call_target(ns, fn_name):
     raise RuntimeError("no call target inferred from candidate")
 
 
-def _score(value, expected):
+def _score(value, expected, comparison="coerced"):
     """Compare a candidate output to its expected value, tolerating int/str/float and list/tuple."""
+    if comparison == "exact":
+        return value == expected
     if value == expected:
         return True
     try:
@@ -210,7 +212,7 @@ def _run_call(target, test_input):
     return target(test_input)
 
 
-def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all, connection, cap):
+def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all, connection, cap, comparison):
     """Child side: run the candidate's tests one bounded test at a time over ``connection``."""
     scratch = tempfile.mkdtemp(prefix="lcb-grader-")
     os.chdir(scratch)
@@ -230,10 +232,10 @@ def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all
                 try:
                     if stdin_mode:
                         output = _run_stdin(completion, input_value)
-                        status = PASSED if _score(output, expected) else FAILED
+                        status = PASSED if _score(output, expected, comparison) else FAILED
                     else:
                         output = _run_call(target, input_value)
-                        status = PASSED if _score(output, expected) else FAILED
+                        status = PASSED if _score(output, expected, comparison) else FAILED
                 except TimeoutException:
                     status = TIMED_OUT
                     detail = "per-test alarm expired"
@@ -258,6 +260,7 @@ def run(
     deadline=DEFAULT_DEADLINE,
     collect_all=False,
     maximum_memory_bytes=DEFAULT_MAX_MEMORY_BYTES,
+    comparison="coerced",
 ) -> dict:
     """Run a candidate program against a normalized LCB test list, bounded.
 
@@ -270,6 +273,7 @@ def run(
         deadline: Wall-clock bound for the whole run, independent of the test count.
         collect_all: On a failure, run the remaining tests; otherwise stop at the first.
         maximum_memory_bytes: The memory cap applied to the child; best-effort per platform.
+        comparison: ``exact`` preserves strict-output benchmarks; ``coerced`` uses the LCB comparison.
 
     Returns:
         A dict with ``passed``, ``num_passed``, ``num_tests``, ``timed_out``,
@@ -293,6 +297,7 @@ def run(
             collect_all,
             sender,
             maximum_memory_bytes,
+            comparison,
         ),
     )
     process.start()
@@ -335,7 +340,7 @@ def run(
             elif message[0] == "done":
                 done = True
                 break
-        elif process.poll():
+        elif not process.is_alive():
             break
     receiver.close()
 

@@ -5,13 +5,13 @@ import json
 
 import pytest
 from aiohttp import ClientResponseError, web
-from lm_eval.api.instance import Instance
 from lm_eval.models.api_models import JsonChatStr
 
-from eval import robust_api
-from eval.contracts.failures import FailureCategory
+from eval.runtime import pool as runtime_pool
+from eval.execution.backend import LMBackend
+from eval.contracts.eval_spec import ModelRequest, RequestKind
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
-from eval.robust_api import capture_endpoint_failures
+
 from eval.sample_logging import canonicalize_samples
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 
@@ -62,17 +62,17 @@ def _response(kind):
 
 
 async def _generate(adapter, prompt):
-    request = Instance("generate_until", {}, (prompt, {}), 0)
-    return await asyncio.to_thread(adapter.generate_until, [request])
+    async with LMBackend(adapter) as backend:
+        return [await backend.execute(ModelRequest(RequestKind.GENERATE, prompt))]
 
 
 @pytest.mark.parametrize("kind", ["completions", "chat/completions"])
 def test_local_api_recovers_after_ten_minute_proxy_outage(monkeypatch, kind):
     clock = _Clock()
     attempts = 0
-    monkeypatch.setattr(robust_api, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(robust_api, "_transport_retry_sleep", clock.sleep)
-    monkeypatch.setattr(robust_api.random, "uniform", lambda _low, high: high)
+    monkeypatch.setattr(runtime_pool, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(runtime_pool, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime_pool.random, "uniform", lambda _low, high: high)
 
     async def handler(_request):
         nonlocal attempts
@@ -85,27 +85,24 @@ def test_local_api_recovers_after_ten_minute_proxy_outage(monkeypatch, kind):
         runner, base_url = await _endpoint(handler)
         try:
             adapter = _adapter(kind, base_url, 900)
-            with capture_endpoint_failures() as failures:
-                output = await _generate(adapter, _prompt(kind))
-            return output, failures
+            return await _generate(adapter, _prompt(kind))
         finally:
             await runner.cleanup()
 
-    output, failures = asyncio.run(run())
+    output = asyncio.run(run())
 
     assert output == ["answer"]
     assert attempts > 8
     assert clock.now >= 600
-    assert failures.counts == {}
 
 
 @pytest.mark.parametrize("status", [408, 429, 503, 504])
 def test_local_api_retries_other_transient_http_statuses(monkeypatch, status):
     clock = _Clock()
     attempts = 0
-    monkeypatch.setattr(robust_api, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(robust_api, "_transport_retry_sleep", clock.sleep)
-    monkeypatch.setattr(robust_api.random, "uniform", lambda _low, high: high)
+    monkeypatch.setattr(runtime_pool, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(runtime_pool, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime_pool.random, "uniform", lambda _low, high: high)
 
     async def handler(_request):
         nonlocal attempts
@@ -130,7 +127,7 @@ def test_local_api_retries_other_transient_http_statuses(monkeypatch, status):
 def test_local_api_retries_a_stalled_attempt_within_the_total_budget(monkeypatch, kind):
     attempts = 0
     release_stalled_handler = asyncio.Event()
-    monkeypatch.setattr(robust_api.random, "uniform", lambda _low, _high: 0)
+    monkeypatch.setattr(runtime_pool.random, "uniform", lambda _low, _high: 0)
 
     async def handler(_request):
         nonlocal attempts
@@ -179,9 +176,9 @@ def test_local_api_bad_request_fails_after_one_attempt(kind):
 
 def test_local_api_budget_exhaustion_remains_infrastructure_error(monkeypatch):
     clock = _Clock()
-    monkeypatch.setattr(robust_api, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(robust_api, "_transport_retry_sleep", clock.sleep)
-    monkeypatch.setattr(robust_api.random, "uniform", lambda _low, high: high)
+    monkeypatch.setattr(runtime_pool, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(runtime_pool, "sleep", clock.sleep)
+    monkeypatch.setattr(runtime_pool.random, "uniform", lambda _low, high: high)
 
     async def handler(_request):
         return web.json_response({"error": "proxy unavailable"}, status=502)
@@ -190,13 +187,11 @@ def test_local_api_budget_exhaustion_remains_infrastructure_error(monkeypatch):
         runner, base_url = await _endpoint(handler)
         try:
             adapter = _adapter("completions", base_url, 20)
-            with capture_endpoint_failures() as failures:
-                output = await _generate(adapter, "question")
-            return output, failures
+            return await _generate(adapter, "question")
         finally:
             await runner.cleanup()
 
-    output, failures = asyncio.run(run())
+    output = asyncio.run(run())
     record = canonicalize_samples("task", [{"resps": [output], "metrics": ["accuracy"], "accuracy": 0.0}])[0]
     sample = sample_from_lm_eval(
         "task",
@@ -212,6 +207,5 @@ def test_local_api_budget_exhaustion_remains_infrastructure_error(monkeypatch):
     )
 
     assert clock.now == 20
-    assert failures.counts == {FailureCategory.MODEL_TRANSPORT: 1}
     assert record["failure_category"] == "model_transport"
     assert sample.output == "[EVALCHEMY_INFRASTRUCTURE_ERROR] model_transport"

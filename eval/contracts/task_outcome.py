@@ -12,8 +12,6 @@ from typing import Any, Literal
 from .failures import FailureCategory as FailureCategory
 from .failures import FailurePhase as FailurePhase
 from .failures import classify_task_exception as classify_task_exception
-from .grading import validate_serialized_artifact_manifests
-from .sample_manifest import SampleCoverageError, SampleManifest
 
 TASK_OUTCOME_SCHEMA_VERSION = 1
 
@@ -117,118 +115,6 @@ class EvaluationRunError(RuntimeError):
         super().__init__("Evaluation did not complete: " + "; ".join(failures))
 
 
-def custom_task_outcome(
-    task_name: str,
-    route: TaskRoute,
-    generation_result: Any,
-    scored_result: Any,
-    sample_manifest: SampleManifest | None = None,
-) -> TaskOutcome:
-    """Adapt a legacy custom benchmark result to the shared outcome contract."""
-    generated_count = _record_count(generation_result)
-    expected_count = _integer_field(generation_result, "total_examples")
-    scored_count = _scored_count(scored_result, generated_count)
-    manifest_result = _complete_manifest_coverage(
-        task_name,
-        route,
-        sample_manifest,
-        {"scored": _reported_scored_count(scored_result)},
-    )
-    if isinstance(manifest_result, TaskOutcome):
-        return manifest_result
-    if manifest_result is not None:
-        expected_count, generated_count, scored_count = manifest_result
-    return _adapt_completed_outcome(
-        task_name,
-        route,
-        scored_result,
-        expected_count=expected_count,
-        generated_count=generated_count,
-        scored_count=scored_count,
-    )
-
-
-def lm_eval_task_outcome(
-    task_name: str,
-    route: TaskRoute,
-    result: Any,
-    sample_manifest: SampleManifest | None = None,
-) -> TaskOutcome:
-    """Adapt one lm-eval invocation to the shared outcome contract."""
-    if not isinstance(result, Mapping):
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INVALID_RESULT,
-            "lm-eval returned no result document",
-        )
-
-    all_metrics = result.get("results")
-    if not isinstance(all_metrics, Mapping) or not all_metrics:
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INCOMPLETE_EVALUATION,
-            "lm-eval returned no task metrics",
-        )
-
-    if task_name in all_metrics:
-        metrics = all_metrics[task_name]
-    else:
-        groups = result.get("groups")
-        if not isinstance(groups, Mapping) or task_name not in groups:
-            return TaskOutcome.failed(
-                task_name,
-                route,
-                FailureCategory.INCOMPLETE_EVALUATION,
-                "lm-eval omitted the requested task from its result document",
-            )
-        metrics = groups[task_name]
-    expected_count, scored_count = lm_eval_task_counts(task_name, result)
-    manifest_result = _complete_manifest_coverage(
-        task_name,
-        route,
-        sample_manifest,
-        # lm-eval's original count is pre-limit; only effective describes scored coverage.
-        {"scored": scored_count},
-    )
-    if isinstance(manifest_result, TaskOutcome):
-        return manifest_result
-    if manifest_result is not None:
-        expected_count, generated_count, scored_count = manifest_result
-    else:
-        generated_count = scored_count
-    return _adapt_completed_outcome(
-        task_name,
-        route,
-        metrics,
-        expected_count=expected_count,
-        generated_count=generated_count,
-        scored_count=scored_count,
-    )
-
-
-def exported_task_outcome(task_name: str, route: TaskRoute, generation_result: Any) -> TaskOutcome:
-    """Represent an upload-only task that intentionally does not run a grader."""
-    generated_count = _record_count(generation_result)
-    if generated_count == 0:
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INCOMPLETE_EVALUATION,
-            "task exported zero generations",
-        )
-    return TaskOutcome(
-        task_name=task_name,
-        route=route,
-        status=TaskStatus.EXPORTED,
-        metrics={},
-        expected_count=_integer_field(generation_result, "total_examples"),
-        generated_count=generated_count,
-        scored_count=None,
-    )
-
-
 def validate_requested_outcomes(requested_tasks: Sequence[str], outcomes: Sequence[TaskOutcome]) -> None:
     """Require one outcome for each task while allowing reported task failures."""
     by_task: dict[str, list[TaskOutcome]] = {}
@@ -279,7 +165,6 @@ def validate_result_document(result: Mapping[str, Any]) -> None:
 
     try:
         validate_task_preparations(result.get("task_preparations", {}), [str(name) for name in serialized])
-        validate_serialized_artifact_manifests(result.get("generation_artifacts", {}))
     except (TypeError, ValueError) as exc:
         raise EvaluationRunError(
             [
@@ -384,52 +269,6 @@ def _serialized_route(value: Any) -> TaskRoute:
         return TaskRoute.UNKNOWN
 
 
-def _adapt_completed_outcome(
-    task_name: str,
-    route: TaskRoute,
-    metrics: Any,
-    *,
-    expected_count: int | None,
-    generated_count: int | None,
-    scored_count: int | None,
-) -> TaskOutcome:
-    if not isinstance(metrics, Mapping):
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INVALID_RESULT,
-            "task metrics must be a mapping",
-        )
-    if "error" in metrics:
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.GRADING,
-            str(metrics["error"]),
-        )
-    outcome = TaskOutcome(
-        task_name=task_name,
-        route=route,
-        status=TaskStatus.SUCCEEDED,
-        metrics=dict(metrics),
-        expected_count=expected_count,
-        generated_count=generated_count,
-        scored_count=scored_count,
-    )
-    if violation := _outcome_contract_violation(outcome):
-        return TaskOutcome(
-            task_name=task_name,
-            route=route,
-            status=TaskStatus.FAILED,
-            metrics={},
-            expected_count=expected_count,
-            generated_count=generated_count,
-            scored_count=scored_count,
-            failure=violation,
-        )
-    return outcome
-
-
 def _outcome_contract_violation(outcome: TaskOutcome) -> TaskFailure | None:
     if outcome.status is TaskStatus.FAILED:
         if outcome.failure is None:
@@ -471,113 +310,3 @@ def _contains_finite_number(value: Any) -> bool:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         return any(_contains_finite_number(item) for item in value)
     return False
-
-
-def _record_count(result: Any) -> int | None:
-    if isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
-        return len(result)
-    if not isinstance(result, Mapping):
-        return None
-    explicit = _integer_field(result, "num_examples")
-    if explicit is not None:
-        return explicit
-    for key in ("examples", "model_outputs", "generations", "responses", "samples"):
-        records = result.get(key)
-        if isinstance(records, Sequence) and not isinstance(records, (str, bytes)):
-            return len(records)
-    nested_counts = [
-        len(records)
-        for records in result.values()
-        if isinstance(records, Sequence) and not isinstance(records, (str, bytes))
-    ]
-    return sum(nested_counts) if nested_counts else None
-
-
-def _scored_count(scored_result: Any, generated_count: int | None) -> int | None:
-    reported = _reported_scored_count(scored_result)
-    return reported if reported is not None else generated_count
-
-
-def _reported_scored_count(scored_result: Any) -> int | None:
-    if isinstance(scored_result, Mapping):
-        for key in (
-            "scored_count",
-            "num_examples",
-            "total_examples",
-            "num_questions",
-            "sample_len",
-            "total_samples",
-        ):
-            count = _integer_field(scored_result, key)
-            if count is not None:
-                return count
-    return None
-
-
-def _complete_manifest_coverage(
-    task_name: str,
-    route: TaskRoute,
-    sample_manifest: SampleManifest | None,
-    reported_counts: Mapping[str, int | None],
-) -> tuple[int, int, int] | TaskOutcome | None:
-    if sample_manifest is None or not sample_manifest.expected_sample_count:
-        return None
-    try:
-        sample_manifest.validate_generated()
-        generated_count = sample_manifest.generated_sample_count
-        for label, reported in reported_counts.items():
-            if reported is not None and reported != generated_count:
-                raise SampleCoverageError(
-                    f"{task_name}: evaluator reported {reported} {label} samples but the "
-                    f"manifest contains {generated_count} generated samples"
-                )
-        sample_manifest.mark_scored(reported_counts.get("scored"))
-        sample_manifest.validate_scored()
-    except SampleCoverageError as exc:
-        return TaskOutcome.failed(
-            task_name,
-            route,
-            FailureCategory.INCOMPLETE_EVALUATION,
-            str(exc),
-            exception=exc,
-        )
-    return (
-        sample_manifest.expected_sample_count,
-        generated_count,
-        sample_manifest.scored_sample_count,
-    )
-
-
-def _integer_field(value: Any, key: str) -> int | None:
-    if not isinstance(value, Mapping):
-        return None
-    field = value.get(key)
-    return field if isinstance(field, int) and not isinstance(field, bool) else None
-
-
-def lm_eval_task_counts(task_name: str, result: Mapping[str, Any]) -> tuple[int | None, int | None]:
-    """Return lm-eval's original and effective counts from its result document."""
-    counts = result.get("n-samples")
-    if isinstance(counts, Mapping):
-        task_counts = counts.get(task_name)
-        if isinstance(task_counts, Mapping):
-            expected = _integer_field(task_counts, "original")
-            scored = _integer_field(task_counts, "effective")
-            return (
-                expected if expected is not None else scored,
-                scored if scored is not None else expected,
-            )
-
-    samples = result.get("samples")
-    if isinstance(samples, Mapping):
-        task_samples = samples.get(task_name)
-        if isinstance(task_samples, Sequence) and not isinstance(task_samples, (str, bytes)):
-            count = len(task_samples)
-            return count, count
-
-    metrics = result.get("results")
-    if isinstance(metrics, Mapping):
-        task_metrics = metrics.get(task_name)
-        count = _integer_field(task_metrics, "sample_len")
-        return count, count
-    return None, None

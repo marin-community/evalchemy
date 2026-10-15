@@ -138,7 +138,8 @@ This repo is a fork of [mlfoundations/evalchemy](https://github.com/mlfoundation
 and still tracks upstream. Most of `eval/` is upstream code.
 
 **Marin owns** `eval/serve_eval/`, `eval/regression/`, `eval/lm_eval_tasks/`,
-`eval/graders/`, `eval/contracts/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
+`eval/graders/`, `eval/contracts/`, `eval/runtime/`, `eval/execution/`, `eval/sources/`,
+`tests/e2e/`, `tests/drop/`, `tests/graders/`,
 `tests/contracts/`,
 `tests/uncheatable_eval/`, `scripts/ci/`,
 `scripts/benchmarks/`, `packages/evalchemy-config/`, `infra/`, and the Marin workflows.

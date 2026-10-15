@@ -1,92 +1,37 @@
-"""Resume coverage for typed endpoint responses."""
+"""Streaming FineStore checkpoints preserve typed successful model responses."""
 
-import pytest
-
-pytest.importorskip("torch")
-pytest.importorskip("lm_eval")
-
-from lm_eval.api.instance import Instance  # noqa: E402
-
-from eval.completion_response import (  # noqa: E402
-    CompletionContentPolicy,
-    CompletionResponse,
-    CompletionText,
-    FailedGeneration,
-)
-from eval.contracts.finestore_resume import FineStoreResumeManager  # noqa: E402
-from eval.resume import RunFingerprint, canonical_unit_key  # noqa: E402
-from eval.sample_logging import canonicalize_samples  # noqa: E402
-from eval.task import BaseBenchmark  # noqa: E402
-
-
-class _Model:
-    rank = 0
-    world_size = 1
-
-    def __init__(self, outputs):
-        self.outputs = outputs
-
-    def generate_until(self, instances):
-        assert len(instances) == len(self.outputs)
-        return self.outputs
-
-
-class _Benchmark(BaseBenchmark):
-    def generate_responses(self, model):
-        raise NotImplementedError
-
-    def evaluate_responses(self, results):
-        raise NotImplementedError
+from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText, FailedGeneration
+from eval.contracts.finestore_resume import FineStoreResumeManager
+from eval.resume import RunFingerprint
+from eval.runtime.checkpoints import CheckpointRow, ResumeStream, input_digest
 
 
 def _fingerprint():
-    return RunFingerprint.from_run_inputs(model_repo="model", task_name="task", task_data_digest="sha256:data")
+    return RunFingerprint(inputs={"task_name": "task", "model": "model"})
 
 
-def _instance():
-    return Instance("generate_until", {"id": 0}, ("question", {"max_new_tokens": 8}), 0)
-
-
-def test_finestore_resume_round_trips_typed_completion_metadata(tmp_path):
+def test_finestore_stream_round_trips_typed_completion_metadata(tmp_path):
     response = CompletionResponse(
-        content="final",
-        reasoning_content="reasoning",
-        finish_reason="stop",
-        usage={"completion_tokens": 2},
-        provider_metadata={"id": "response-1"},
-        raw_choice={"index": 0},
+        content="final", reasoning_content="reasoning", finish_reason="stop", usage={"completion_tokens": 2},
+        provider_metadata={}, raw_choice={},
     )
     output = CompletionText("reasoning\n\nfinal", response, CompletionContentPolicy.COMBINE)
+    identity = {"source_id": "0"}
+    first = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
+    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "request", "output": output}))
+    first.finalize()
+
+    restored = ResumeStream(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())).admit(0, identity)
+    value = restored.lookup({"phase": "generate"})["output"]
+
+    assert isinstance(value, CompletionText)
+    assert value.artifact() == output.artifact()
+
+
+def test_failed_transport_response_is_not_checkpointed(tmp_path):
     manager = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
-    manager.record(
-        {"task": "task", "problem_idx": 0},
-        {"outputs": [output, FailedGeneration("model_transport")]},
-    )
-    manager.finalize()
-
-    retry = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
-    restored = retry.restore()[canonical_unit_key({"task": "task", "problem_idx": 0})]["outputs"]
-
-    assert isinstance(restored[0], CompletionText)
-    assert restored[0].artifact() == output.artifact()
-    assert isinstance(restored[1], FailedGeneration)
-    assert restored[1].failure_category == "model_transport"
-
-
-def test_resumed_transport_failure_remains_classified_in_sample_artifact(tmp_path):
-    first = _Benchmark()
-    first.attach_resume_manager(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint()))
-    first.compute(_Model([FailedGeneration("model_transport")]), [_instance()])
-
-    resumed = _Benchmark()
-    resumed.attach_resume_manager(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint()))
-    restored = resumed.compute(_Model([]), [_instance()])[0]
-    samples = resumed.to_samples(
-        {"examples": [{"question": "question", "answer": "answer", "model_output": restored}]},
-        {},
-    )
-    record = canonicalize_samples("FinanceBench", samples)[0]
-
-    assert isinstance(restored, FailedGeneration)
-    assert record["failure_category"] == "model_transport"
-    assert record["completion_responses"][0][0]["failure_category"] == "model_transport"
+    stream = ResumeStream(manager)
+    journal = stream.admit(0, {"source_id": "0"})
+    # Failed generations are intentionally retried on resume, never persisted as completed work.
+    assert journal.lookup({"phase": "generate"}) is None
+    assert isinstance(FailedGeneration("model_transport"), FailedGeneration)

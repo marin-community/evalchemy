@@ -5,10 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from eval.contracts.sample_manifest import SampleRequest
-from eval.contracts.sample_results import sample_metric_fields
-from eval.sample_logging import canonicalize_samples
-from eval.task import TaskManager
+from eval.contracts.eval_spec import RequestKind, SourceRef
+from eval.sources.common import SourceOptions
+from tests.contracts.source_harness import evaluate_source
 
 nupa5k = import_module("eval.chat_benchmarks.NUPA5K-Loose.eval_instruct")
 panel = import_module("eval.chat_benchmarks.NUPA5K-Loose.panel")
@@ -16,17 +15,10 @@ data_prep = import_module("eval.chat_benchmarks.NUPA-Loose.data_prep.flatten_hf_
 nupa = import_module("eval.chat_benchmarks.NUPA-Loose.eval_instruct")
 
 
-class _AnsweringModel:
-    rank = 0
-    world_size = 1
-
-    @staticmethod
-    def apply_chat_template(messages):
-        return messages
-
-    @staticmethod
-    def generate_until(instances):
-        return [instance.doc["answer"] for instance in instances]
+class _AnsweringBackend:
+    async def execute(self, request):
+        assert request.kind is RequestKind.GENERATE
+        return "9.9"
 
 
 def _source_file(path: Path) -> Path:
@@ -109,27 +101,14 @@ def test_split_prompt_answer_rejects_missing_delimiter():
 
 @pytest.mark.parametrize("task_name", ["NUPA-Loose", "NUPA5K-Loose"])
 def test_benchmark_honors_limit_and_reports_reconcilable_scores(task_name):
-    manager = TaskManager(task_list=[task_name], debug=True)
-    assert not manager.load_failures, manager.load_failures
-    benchmark = manager.get_benchmark(task_name)
-    benchmark.set_evaluation_limits(limit=2)
+    benchmark_type = nupa.NUPALooseBenchmark if task_name == "NUPA-Loose" else nupa5k.NUPA5KLooseBenchmark
+    metrics, samples = evaluate_source(
+        benchmark_type(debug=True), SourceOptions(task_name, SourceRef("HaotongYang/NUPA_text"), limit=1), _AnsweringBackend()
+    )
 
-    generation = benchmark.generate_responses(_AnsweringModel())
-    scored = benchmark.evaluate_responses(generation)
-
-    assert len(generation["examples"]) == 2
-    assert scored["dataset_num_samples"] == 2
-    assert scored["exact_match"] == 1.0
-    assert scored["task:max_Float_Float_Float/exact_match"] == 1.0
-    assert scored["bucket:S/exact_match"] == 1.0
-    assert sample_metric_fields(generation["examples"][0]) == {
-        "metrics": ["exact_match", "digit_match", "dlength", "format_valid_rate", "no_answer_rate"],
-        "exact_match": 1.0,
-        "digit_match": 1.0,
-        "dlength": 0.0,
-        "format_valid_rate": 1.0,
-        "no_answer_rate": 0.0,
-    }
+    assert len(samples) == 1
+    assert metrics["exact_match"] == 1.0
+    assert samples[0]["filtered_resps"] == ["9.9"]
 
 
 def test_benchmark_metadata_describes_full_source_sample():
@@ -225,27 +204,9 @@ def test_checked_in_nupa5k_manifest_pins_complete_stratified_panel():
     for stratum in strata_counts:
         digests = [identity.sha256 for identity in manifest if (identity.task_name, identity.digit) == stratum]
         assert digests == sorted(digests)
-
-
 def test_nupa5k_metadata_describes_fixed_panel():
     description = nupa5k.NUPA5KLooseBenchmark().describe("NUPA5K-Loose")
 
     assert description is not None
     assert description.n_benchmark == panel.NUPA5K_SIZE
     assert description.n_attempted == panel.NUPA5K_SIZE
-
-
-def test_nupa5k_registered_name_serializes_planned_samples():
-    manager = TaskManager(task_list=["NUPA5K-Loose"])
-    benchmark = manager.get_benchmark("NUPA5K-Loose")
-
-    assert benchmark is not None
-    entries = benchmark.sample_manifest.plan_batch([SampleRequest(source_id="example", ordinal=0)])
-    benchmark.sample_manifest.mark_generated(entries, ["answer"])
-    records = canonicalize_samples(
-        "NUPA5K-Loose",
-        [{"metrics": ["accuracy"], "accuracy": 1.0}],
-        benchmark.sample_manifest,
-    )
-
-    assert records[0]["sample_id"] == entries[0].sample_id

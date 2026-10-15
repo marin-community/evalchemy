@@ -10,10 +10,10 @@ edge, or a lean benchmark that starts importing one, fails here instead of in th
 nightly.
 """
 
+import importlib
 import importlib.util
 import os
 import re
-import sys
 import tomllib
 
 # Heavy, accelerator-oriented packages that live in the local-inference extra. None may
@@ -45,37 +45,18 @@ def lean_benchmarks() -> list[str]:
 
 
 def import_benchmark(name: str):
-    """Exec-import a benchmark's eval_instruct.py the way eval/task.py loads it.
+    """Import the explicit source registry entry used by TaskManager."""
+    from eval.sources import SOURCES
+    from eval.contracts.conformance import validate_custom_benchmark_class
+    from eval.task import BaseBenchmark
 
-    Mirrors TaskManager._load_benchmarks: put the benchmark dir on sys.path and exec the
-    module from its file so its sibling imports resolve.
-    """
-    benchmark_dir = os.path.join(CHAT_BENCHMARKS_DIR, name)
-    eval_path = os.path.join(benchmark_dir, "eval_instruct.py")
-    sys.path.insert(0, benchmark_dir)
-    try:
-        spec = importlib.util.spec_from_file_location(f"eval.chat_benchmarks.{name}.eval_instruct", eval_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        from eval.contracts.conformance import find_custom_benchmark_classes, validate_custom_benchmark_class
-        from eval.task import BaseBenchmark
-
-        benchmark_classes = find_custom_benchmark_classes(module, BaseBenchmark)
-        if len(benchmark_classes) != 1:
-            raise RuntimeError(
-                f"{name} must define exactly one BaseBenchmark subclass; found {len(benchmark_classes)}"
-            )
-        validate_custom_benchmark_class(benchmark_classes[0], BaseBenchmark)
-        return module
-    finally:
-        sys.path.pop(0)
+    module_name, class_name = SOURCES[name]
+    module = importlib.import_module(module_name)
+    validate_custom_benchmark_class(getattr(module, class_name), BaseBenchmark)
+    return module
 
 
 def main() -> None:
-    # HLE constructs its judge client at import and requires a truthy key. No request is
-    # made during import, so use the same dummy value as the per-extra checker.
-    os.environ.setdefault("OPENAI_API_KEY", "ci-dummy")
-
     leaked = leaked_heavy_packages()
     if leaked:
         raise RuntimeError(
@@ -86,9 +67,7 @@ def main() -> None:
 
     benchmarks = lean_benchmarks()
     for name in benchmarks:
-        module = import_benchmark(name)
-        if name == "CruxEval":
-            module.cleanup_resources()
+        import_benchmark(name)
 
     print(
         f"lean install OK: no {', '.join(FORBIDDEN_PACKAGES)}; "

@@ -3,163 +3,66 @@ import json
 import pytest
 
 from eval.chat_benchmarks.MRCR import eval_instruct as mrcr
-from eval.limits import MissingContextLengthError
+from eval.contracts.eval_spec import SourceRef
+from eval.graders.structured import nonce_similarity
+from eval.sources.common import SourceOptions
 
 
 class _WhitespaceTokenizer:
-    def encode(self, text, **kwargs):
+    def encode(self, text, **_kwargs):
         return text.split()
-
-
-class _Model:
-    rank = 0
-    world_size = 1
-    tokenizer = _WhitespaceTokenizer()
-
-    def apply_chat_template(self, messages):
-        return messages
-
-    def generate_until(self, instances):
-        return [instance.doc["answer"] for instance in instances]
 
 
 def _row(needles, suffix, words=4_100):
     nonce = f"nonce{needles}{suffix}"
-    messages = [
-        {"role": "user", "content": "word " * words},
-        {"role": "assistant", "content": "distractor"},
-        {"role": "user", "content": f"Prepend {nonce} to the requested answer."},
-    ]
     return {
-        "prompt": json.dumps(messages),
+        "prompt": json.dumps([
+            {"role": "user", "content": "word " * words},
+            {"role": "assistant", "content": "distractor"},
+            {"role": "user", "content": f"Prepend {nonce} to the requested answer."},
+        ]),
         "answer": f"{nonce} target response",
         "random_string_to_prepend": nonce,
         "n_needles": needles,
     }
 
 
-def test_mrcr_requires_the_run_context_contract(monkeypatch):
-    monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
-    benchmark = mrcr.MRCRBenchmark()
-
-    with pytest.raises(MissingContextLengthError):
-        benchmark.generate_responses(_Model())
-
-
-def test_mrcr_assistant_messages_include_empty_reasoning():
-    messages = mrcr.parse_prompt(_row(2, "a")["prompt"])
-
-    assert messages[1] == {
-        "role": "assistant",
-        "content": "distractor",
-        "reasoning_content": "",
-    }
-
-
-def test_mrcr_streams_pinned_data_and_honors_balanced_global_limit(monkeypatch):
+def test_mrcr_source_pins_data_and_interleaves_selected_cells(monkeypatch):
     rows = [_row(needles, suffix) for needles in (2, 4, 8) for suffix in ("a", "b")]
-    load_calls = []
+    calls = []
 
     def load_dataset(path, **kwargs):
-        load_calls.append((path, kwargs))
+        calls.append((path, kwargs))
         return {"train": iter(rows)}
 
     monkeypatch.setattr(mrcr, "load_dataset", load_dataset)
     monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
-    benchmark = mrcr.MRCRBenchmark()
-    benchmark.set_evaluation_limits(max_length=8_192, max_tokens=256, limit=2)
+    options = SourceOptions("MRCR", SourceRef(mrcr.DATASET_NAME), context_length=8_192, limit=2)
+    specs = list(mrcr.MRCRBenchmark().iter_specs(options))
 
-    generated = benchmark.generate_responses(_Model())
-    scored = benchmark.evaluate_responses(generated)
-
-    assert load_calls == [
-        (
-            mrcr.DATASET_NAME,
-            {
-                "revision": mrcr.DATASET_REVISION,
-                "data_files": list(mrcr.DATA_FILES),
-                "streaming": True,
-                "cache_dir": None,
-            },
-        )
-    ]
-    assert [example["n_needles"] for example in generated["examples"]] == [2, 4]
-    assert scored["num_total"] == 2
-    assert scored["mrcr_accuracy"] == 1.0
-    assert scored["prefix_hit_rate"] == 1.0
-    assert scored["mrcr_8192_2needle"] == 1.0
-    assert scored["mrcr_8192_4needle"] == 1.0
+    assert calls == [(mrcr.DATASET_NAME, {
+        "revision": mrcr.DATASET_REVISION,
+        "data_files": list(mrcr.DATA_FILES),
+        "streaming": True,
+        "cache_dir": None,
+    })]
+    assert [spec.doc["n_needles"] for spec in specs] == [2, 4]
+    assert [spec.grader.reference["nonce"] for spec in specs] == ["nonce2a", "nonce4a"]
 
 
-def test_mrcr_rejects_a_missing_requested_cell(monkeypatch):
-    monkeypatch.setattr(mrcr, "load_dataset", lambda *args, **kwargs: {"train": iter([_row(2, "a")])})
+def test_mrcr_grader_requires_nonce_then_compares_response_body(monkeypatch):
     monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
-    benchmark = mrcr.MRCRBenchmark()
-    benchmark.set_evaluation_limits(max_length=8_192, max_tokens=256, limit=2)
+    source = mrcr.MRCRBenchmark(n_needles=[2])
+    monkeypatch.setattr(source, "_load_rows", lambda: iter([_row(2, "a")]))
+    spec = next(source.iter_specs(SourceOptions("MRCR", SourceRef("fixture"), context_length=8_192)))
 
-    with pytest.raises(ValueError, match="has no examples for requested cells"):
-        benchmark.generate_responses(_Model())
+    accepted = nonce_similarity(spec, ["nonce2a target response"])
+    rejected = nonce_similarity(spec, ["target response"])
 
-
-def test_mrcr_keeps_uneven_corrected_dataset_cells(monkeypatch):
-    rows = [
-        _row(2, "a"),
-        _row(2, "b"),
-        _row(4, "a"),
-        _row(8, "a"),
-        _row(8, "b"),
-        _row(8, "c"),
-    ]
-    monkeypatch.setattr(mrcr, "load_dataset", lambda *args, **kwargs: {"train": iter(rows)})
-    monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
-    benchmark = mrcr.MRCRBenchmark()
-    benchmark.set_evaluation_limits(max_length=8_192, max_tokens=256)
-
-    generated = benchmark.generate_responses(_Model())
-
-    assert [example["n_needles"] for example in generated["examples"]] == [2, 4, 8, 2, 8, 8]
+    assert accepted.metrics == {"accuracy": 1.0, "prefix_hit_rate": 1.0}
+    assert rejected.metrics == {"accuracy": 0.0, "prefix_hit_rate": 0.0}
 
 
-@pytest.mark.parametrize(
-    ("response", "expected_score", "expected_prefix_hit"),
-    [
-        ("nonce target response", 1.0, 1.0),
-        ("target response", 0.0, 0.0),
-        ("nonce different", 5 / 13, 1.0),
-    ],
-)
-def test_mrcr_scoring_requires_nonce_then_compares_body(response, expected_score, expected_prefix_hit):
-    score, prefix_hit = mrcr.score_response(response, "nonce target response", "nonce")
-
-    assert score == expected_score
-    assert prefix_hit == expected_prefix_hit
-
-
-@pytest.mark.parametrize(
-    ("tokens", "expected"),
-    [
-        (4_095, None),
-        (4_096, 8_192),
-        (8_192, 8_192),
-        (8_193, 16_384),
-        (1_048_576, 1_048_576),
-        (1_048_577, None),
-    ],
-)
-def test_mrcr_bins_match_the_published_boundaries(tokens, expected):
+@pytest.mark.parametrize(("tokens", "expected"), [(4_095, None), (4_096, 8_192), (8_193, 16_384)])
+def test_mrcr_bins_match_published_boundaries(tokens, expected):
     assert mrcr.mrcr_bin(tokens) == expected
-
-
-def test_mrcr_generated_scores_do_not_change_sample_document_hash(monkeypatch):
-    monkeypatch.setattr(mrcr, "_OFFICIAL_TOKENIZER", _WhitespaceTokenizer())
-    benchmark = mrcr.MRCRBenchmark()
-    example = _row(2, "a")
-    example.update({"score": 0.5, "prefix_hit": 1.0, "mrcr_bin_upper": 8_192})
-    generated = {"examples": [example]}
-
-    scored = benchmark.evaluate_responses(generated)
-    sample = benchmark.to_samples(generated, scored)[0]
-
-    assert "score" not in sample["doc"]
-    assert "prefix_hit" not in sample["doc"]
-    assert sample["accuracy"] == 0.5

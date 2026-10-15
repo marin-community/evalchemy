@@ -94,11 +94,16 @@ def _resolve_target_choice(target, choices: list[Choice]) -> int | None:
     return None
 
 
-def _parse_chat_messages(text: str) -> list[Message] | None:
-    try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
+def _parse_chat_messages(value: object) -> list[Message] | None:
+    if isinstance(value, tuple) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    else:
+        parsed = value
     if not isinstance(parsed, list) or not parsed:
         return None
     messages = []
@@ -138,22 +143,23 @@ def _grading(metrics: dict[str, float], extraction_filter: str | None) -> Gradin
 
 def _generation_fields(arguments: object, responses: object, raw: Mapping[str, object]) -> dict[str, object]:
     prompt = ""
+    messages = None
     if isinstance(arguments, list) and arguments:
-        first = arguments[0]
-        candidate = first[0] if isinstance(first, list) and first else first
+        first = arguments[-1]
+        candidate = first[0] if isinstance(first, (list, tuple)) and first else first
+        messages = _parse_chat_messages(candidate)
         if isinstance(candidate, str):
             prompt = candidate
     output = ""
     if isinstance(responses, list) and responses:
-        first = responses[0]
+        first = responses[-1]
         if isinstance(first, list) and first and isinstance(first[0], str):
             output = first[0]
         elif isinstance(first, str):
             output = first
     filtered = raw.get("filtered_resps")
     if isinstance(filtered, list) and filtered:
-        filtered = filtered[0]
-    messages = _parse_chat_messages(prompt)
+        filtered = filtered[-1]
     failure_category = raw.get("failure_category")
     if isinstance(failure_category, str) and failure_category in _INFRASTRUCTURE_FAILURE_CATEGORIES:
         output = f"{_INFRASTRUCTURE_ERROR_MARKER} {failure_category}"
@@ -170,12 +176,12 @@ def _multiple_choice_fields(arguments: list, responses: list, doc: object, targe
     labels = _choice_labels(doc, len(arguments))
     choices = []
     for index, entry in enumerate(arguments):
-        text = entry[1] if isinstance(entry, list) and len(entry) > 1 and isinstance(entry[1], str) else ""
+        text = entry[1] if isinstance(entry, (list, tuple)) and len(entry) > 1 and isinstance(entry[1], str) else ""
         pair = _loglikelihood_pair(responses[index])
         loglikelihood, is_greedy = pair if pair is not None else (None, None)
         choices.append(Choice(label=labels[index], text=text, loglikelihood=loglikelihood, is_greedy=is_greedy))
     scored = [(choice.loglikelihood, index) for index, choice in enumerate(choices) if choice.loglikelihood is not None]
-    context = arguments[0][0] if isinstance(arguments[0], list) and isinstance(arguments[0][0], str) else ""
+    context = arguments[0][0] if isinstance(arguments[0], (list, tuple)) and isinstance(arguments[0][0], str) else ""
     return {
         "prompt_text": context,
         "choices": choices,
@@ -195,7 +201,7 @@ def sample_from_lm_eval(task: str, raw: Mapping[str, object]) -> EvalSample:
     grading = _grading(metrics, extraction_filter if isinstance(extraction_filter, str) else None)
     common = {
         "task": task,
-        "doc_id": str(raw.get("doc_id")),
+        "doc_id": str(raw.get("sample_id", raw.get("doc_id"))),
         "metrics": metrics,
         "correct": grading.passed if grading is not None else None,
         "grading": grading,

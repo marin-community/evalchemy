@@ -1,188 +1,34 @@
+"""AIME 2024 source data."""
+
 import json
-import logging
-import os
-from typing import Any, Dict, List, Optional
+from pathlib import Path
 
-import numpy as np
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-
-from eval.generation_stops import END_OF_TURN_SEQUENCES
-from eval.graders.answer_equivalence import math_answers_equivalent
-from eval.graders.answer_extraction import extract_final_boxed_answer
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
 from eval.task import BaseBenchmark
 
-# Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
-# https://github.com/mlfoundations/evalchemy/blob/e70a45e41cb2ada273d6bb98e75dba303ec31f8b/eval/chat_benchmarks/AMC23/eval_instruct.py#L15
-PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
+PROMPT = "Problem: {problem}\nMark your solution with \\boxed\nAnswer:"
+DATA_FILE = Path(__file__).parent / "data" / "aime24.json"
 
 
 class AIME24Benchmark(BaseBenchmark):
-    """
-    AIME24 Benchmark for evaluating the math reasoning of LLMs.
-    Link: https://huggingface.co/datasets/zwhe99/aime24
-
-    Grades boxed final answers with shared mathematical equivalence.
-    """
-
+    SOURCE = SourceRef("zwhe99/aime24", "train")
     METRICS = ("accuracy_avg",)
     PRIMARY_METRIC = "accuracy_avg"
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
 
-    def benchmark_size(self) -> int:
+    def __init__(self, data_file: str | Path = DATA_FILE, debug: bool = False, max_tokens: int = 32768, **kwargs):
+        super().__init__(**kwargs)
+        self.data_file, self.debug, self.max_tokens = Path(data_file), debug, max_tokens
+
+    def load_questions(self):
+        rows = [json.loads(line) for line in self.data_file.read_text().splitlines()]
+        return rows[:2] if self.debug else rows
+
+    def benchmark_size(self):
         return len(self.load_questions())
 
-    def __init__(
-        self,
-        data_file: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "aime24.json"),
-        debug: bool = False,
-        seed: List[int] = [0, 1234, 1234, 1234],
-        max_tokens: int = 32768,
-        logger: Optional[logging.Logger] = None,
-        system_instruction: Optional[str] = None,
-    ):
-        """
-        Initialize AIME24 benchmark.
-
-        Args:
-            data_file: File containing the AIME24 dataset (id, problem, reference_solution, expected_answer, source)
-            debug: If set, only evaluate on 2 examples
-            seed: Random seed for reproducibility. Default is [0, 1234, 1234, 1234] for lm-eval-harness.
-            logger: Optional logger instance
-            system_instruction: Optional system instruction for the model
-        """
-        super().__init__(logger=logger, system_instruction=system_instruction)
-        self.data_file = data_file
-        self.debug = debug
-        self.max_new_tokens = max_tokens
-        self.seed = seed
-        self.n_repeat = 10
-
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
-
-        Args:
-            model: Language model
-
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        examples = self.load_questions()
-
-        def build_instances(_repeat_idx: int) -> List[Instance]:
-            all_instances = []
-            for idx, example in enumerate(examples):
-                messages = [
-                    {"role": "user", "content": PROMPT.format(problem=example["problem"])},
-                ]
-
-                templated_messages = self._prepare_messages(messages, model)
-
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "max_new_tokens": self.max_new_tokens,
-                            "until": list(END_OF_TURN_SEQUENCES),
-                        },
-                    ),
-                    idx,
-                )
-
-                instance.metadata = {
-                    "problem_id": str(example["id"]) if "id" in example else str(idx),
-                    "expected_answer": str(example["expected_answer"]),
-                    "reference_solution": str(example["reference_solution"]) if "reference_solution" in example else "",
-                }
-
-                all_instances.append(instance)
-            return all_instances
-
-        self.logger.info("Generating seeded responses for AIME24...")
-        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
-        if model.rank != 0:
-            return None
-
-        for example, outputs in zip(examples, outputs_by_problem):
-            example["model_outputs"] = outputs
-            example["model_answers"] = [self.extract_answer(o) for o in outputs]
-
-        return {"examples": examples}
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions."""
-
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        examples = results["examples"]
-        num_questions = len(examples)
-
-        # Calculate accuracy for each repetition
-        all_results = []
-        correct_by_repeat = []
-        for i in range(self.n_repeat):
-            correct = [
-                math_answers_equivalent(str(example["model_answers"][i]), [str(example["expected_answer"])])
-                for example in examples
-            ]
-            correct_by_repeat.append(correct)
-            solved = sum(correct)
-            all_results.append(
-                {
-                    "repetition": i + 1,
-                    "num_total": num_questions,
-                    "num_solved": solved,
-                    "accuracy": solved / num_questions,
-                }
-            )
-
-        self.record_repeated_accuracy(examples, correct_by_repeat)
-
-        # Calculate overall statistics
-        solved_avg = np.mean([result["num_solved"] for result in all_results])
-        accuracy_avg = np.mean([result["accuracy"] for result in all_results])
-        accuracy_std = np.std([result["accuracy"] for result in all_results])
-        accuracy_std_err = np.std([result["accuracy"] for result in all_results]) / np.sqrt(self.n_repeat)
-
-        results.update(
-            {
-                "num_total": num_questions,
-                "solved_avg": solved_avg,
-                "run_stats": all_results,
-                "accuracy_avg": accuracy_avg,
-                "accuracy_std_err": accuracy_std_err,
-                "num_repeat": self.n_repeat,
-            }
-        )
-
-        return results
-
-    def load_questions(self) -> List[Dict[str, str]]:
-        """Load AIME24 questions from the data file."""
-        with open(self.data_file, "r") as f:
-            questions = [json.loads(x) for x in f]
-
-        if self.debug:
-            questions = questions[:2]
-            self.logger.info(f"Debug mode enabled. Using only {len(questions)} questions.")
-
-        self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
-        return questions
-
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Excludes reasoning content before selecting the final box.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
-        """
-        return extract_final_boxed_answer(output)
+    def iter_specs(self, options):
+        return text_specs(self.load_questions(), options, prompt=lambda row: PROMPT.format(**row),
+                          target=lambda row: row["expected_answer"], grader="boxed_math",
+                          generation={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_tokens}, repeats=10)

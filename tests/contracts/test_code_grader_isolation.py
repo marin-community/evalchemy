@@ -10,7 +10,6 @@ from pathlib import Path
 
 import pytest
 
-from eval.task import TaskManager
 
 
 def _record_worker_process(task_id, sample, _language, _timeout, _tmp_dir, completion_id):
@@ -99,23 +98,5 @@ def test_functional_correctness_checks_run_outside_evaluator_process(
 def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, module_path, is_mbpp, test_code):
     module = __import__(module_path, fromlist=["evaluation"])
     result = _run_check_in_spawned_worker(module.check_correctness, tmp_path, is_mbpp, test_code)
-
-    assert result["passed"], result["result"]
-
-
-@pytest.mark.parametrize(
-    ("benchmark_name", "is_mbpp"),
-    [
-        ("HumanEvalPlus", False),
-        ("MBPPPlus", True),
-    ],
-)
-def test_task_manager_grader_is_importable_in_spawned_worker(tmp_path, benchmark_name, is_mbpp):
-    manager = TaskManager(task_list=[benchmark_name])
-    benchmark = manager.get_benchmark(benchmark_name)
-    check_correctness = benchmark.evaluate_responses.__globals__["evaluate_functional_correctness"].__globals__[
-        "check_correctness"
-    ]
-    result = _run_check_in_spawned_worker(check_correctness, tmp_path, is_mbpp, _PLAIN_TEST_CODE)
 
     assert result["passed"], result["result"]

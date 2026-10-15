@@ -1,25 +1,15 @@
-from typing import Dict, List, Any, Optional
-from contextlib import nullcontext
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec
+from eval.contracts.eval_spec import SourceRef
+from alpaca_eval import constants
+from typing import Optional
 import logging
 import datasets
-from tqdm import tqdm
-import pandas as pd
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from alpaca_eval.main import evaluate as alpaca_eval_evaluate
 from alpaca_eval.constants import DEFAULT_ANNOTATOR_CONFIG
 from eval.task import BaseBenchmark
 
 
-def _no_grad():
-    try:
-        import torch
-    except ModuleNotFoundError as exc:
-        if exc.name != "torch":
-            raise
-        return nullcontext()
-    return torch.no_grad()
 
 
 class AlpacaBenchmark(BaseBenchmark):
@@ -27,7 +17,10 @@ class AlpacaBenchmark(BaseBenchmark):
     Alpaca benchmark for evaluating language model responses on instruction following.
     """
 
-    REQUIRES_OPENAI_ANNOTATOR = True
+    REQUIRES_JUDGE = True
+    SOURCE = SourceRef("tatsu-lab/alpaca_eval", "eval", "alpaca_eval")
+    METRICS = ("win_rate", "standard_error", "n_total", "avg_length", "discrete_win_rate", "length_controlled_winrate", "lc_standard_error")
+    PRIMARY_METRIC = "length_controlled_winrate"
 
     ANNOTATOR_CONFIG_MAP = {
         "gpt-4o-mini-2024-07-18": "weighted_alpaca_eval_gpt-4o-mini-2024-07-18",
@@ -72,6 +65,7 @@ class AlpacaBenchmark(BaseBenchmark):
         self.do_sample = do_sample
         self.debug = debug
         self.annotator_conf = self.ANNOTATOR_CONFIG_MAP[annotator_model]
+        self.judge_model = annotator_model
 
     def load_dataset(self) -> datasets.Dataset:
         """Load the evaluation dataset."""
@@ -89,137 +83,17 @@ class AlpacaBenchmark(BaseBenchmark):
             self.logger.error(f"Error loading dataset: {str(e)}")
             raise
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate completions for instructions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing model outputs and identifier
-        """
-        try:
-            eval_set = self.load_dataset()
 
-            all_instances = []
-            for idx, example in enumerate(eval_set):
-                try:
-                    instruction = example["instruction"]
-                    formatted_instruction = self._prepare_messages([{"role": "user", "content": instruction}], model)
+    REDUCER = ReducerSpec(trial_metric=None, name="alpaca")
 
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                formatted_instruction,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": self.do_sample,
-                                    "temperature": self.temperature,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error preparing instance {idx}: {str(e)}")
-                    continue
-
-            with _no_grad():
-                self.logger.info("Generating responses for Alpaca Eval...")
-                outputs = self.compute(model, all_instances)
-
-            if model.rank != 0:
-                return None
-
-            model_outputs = []
-            for idx, (example, output) in enumerate(zip(eval_set, outputs)):
-                try:
-                    instance = {
-                        "instruction": example["instruction"],
-                        "dataset": example["dataset"],
-                        "datasplit": self.split,
-                        "generator": model.model_identifier,
-                        "output": output,
-                    }
-                    model_outputs.append(instance)
-                except Exception as e:
-                    self.logger.error(f"Error processing output {idx}: {str(e)}")
-                    continue
-
-            self.logger.info(f"Generated {len(model_outputs)} responses")
-
-            return {"model_outputs": model_outputs, "model_identifier": model.model_identifier}
-
-        except Exception as e:
-            self.logger.error(f"Error in generate_responses: {str(e)}")
-            raise
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated responses using Alpaca evaluation metrics.
-
-        Args:
-            results: Dictionary containing model outputs and identifier
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        if results is None:
-            return None
-
-        model_outputs = results["model_outputs"]
-        model_identifier = results["model_identifier"]
-
-        if not model_outputs:
-            raise ValueError("No model outputs to evaluate")
-
-        self.logger.info("Running Alpaca evaluation...")
-        leaderboard = alpaca_eval_evaluate(
-            model_outputs=model_outputs,
-            is_return_instead_of_print=True,
-            is_overwrite_leaderboard=True,
-            annotators_config=self.annotator_conf,
+    def iter_specs(self, options):
+        references = {row["instruction"]: row for row in constants.ALPACAEVAL_REFERENCE_OUTPUTS()}
+        return text_specs(
+            self.load_dataset(), options, prompt=lambda row: row["instruction"],
+            target=lambda row: references[row["instruction"]]["output"], grader="alpaca",
+            reference=lambda row: {"config": self.annotator_conf,
+                                   "baseline": references[row["instruction"]]["generator"]},
+            generation={"temperature": self.temperature, "do_sample": self.do_sample, "max_gen_toks": self.max_tokens},
         )
-
-        metrics = leaderboard[0].loc[model_identifier].to_dict()
-
-        metrics.update(
-            {
-                "num_examples": len(model_outputs),
-                "completion_rate": len(model_outputs) / len(results.get("total_examples", model_outputs)),
-            }
-        )
-
-        self.logger.info("Evaluation complete")
-        return metrics
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete Alpaca benchmark evaluation pipeline.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        self.logger.info("Starting Alpaca benchmark evaluation")
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not rank 0, return None early
-            if generation_results is None:
-                return None
-
-            evaluation_results = self.evaluate_responses(generation_results)
-            evaluation_results.update(
-                {"benchmark_version": "alpaca_eval", "temperature": self.temperature, "max_tokens": self.max_tokens}
-            )
-            return evaluation_results
-
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}

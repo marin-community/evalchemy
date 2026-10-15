@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from livebench.conversation import Conversation
-from livebench.model.model_adapter import (
+from eval.chat_benchmarks.LiveBench.livebench.conversation import Conversation
+from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import (
     BaseModelAdapter,
     ClaudeAdapter,
     ChatGPTAdapter,
@@ -14,7 +14,7 @@ from livebench.model.model_adapter import (
     NvidiaChatAdapter,
     GemmaAdapter,
 )
-from livebench.model.completions import (
+from eval.chat_benchmarks.LiveBench.livebench.model.completions import (
     chat_completion_openai,
     chat_completion_anthropic,
     chat_completion_google_generativeai,

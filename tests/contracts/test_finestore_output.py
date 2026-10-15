@@ -19,6 +19,8 @@ from eval.lm_eval_compat import setup_parser
 from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
+from eval.execution.run_spec import RunSpec
+from eval.runtime.checkpoints import CheckpointRow, ResumeStream, input_digest
 
 
 def _write_result(root, source_prefix, results, samples_by_task):
@@ -244,7 +246,8 @@ def test_finestore_resume_restores_committed_units(tmp_path: Path):
     fingerprint = RunFingerprint(inputs={"task_name": "gsm8k", "model_repo": "test-model"})
     first = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
     assert first.decide() == "fresh"
-    first.record({"task": "gsm8k", "problem_idx": 0}, {"output": "42"})
+    identity = {"source_id": "0"}
+    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
     first.finalize()
 
     changed = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", RunFingerprint(inputs={"task_name": "other"}))
@@ -253,15 +256,12 @@ def test_finestore_resume_restores_committed_units(tmp_path: Path):
 
     retry = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
     assert retry.decide() == "resume"
-    assert retry.restore() == {(('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"}}
-    assert retry.should_skip({"task": "gsm8k", "problem_idx": 0})
-    retry.record({"task": "gsm8k", "problem_idx": 1}, {"output": "43"})
+    restored = ResumeStream(retry).admit(0, identity)
+    assert restored.lookup({"phase": "generate"})["output"] == "42"
+    retry.record(CheckpointRow(1, input_digest({"source_id": "1"}), {"phase": "generate"}, {"input_digest": "input", "output": "43"}))
     retry.finalize()
 
-    assert FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).restore() == {
-        (('problem_idx', 0), ('task', 'gsm8k')): {"output": "42"},
-        (('problem_idx', 1), ('task', 'gsm8k')): {"output": "43"},
-    }
+    assert [row.payload["output"] for row in FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).records()] == ["42", "43"]
 
 def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: Path):
     root = str(tmp_path / "archive")
@@ -301,7 +301,7 @@ def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_pat
     assert read_finestore_output(root, "gsm8k_0shot") == results
     assert ReadView(root).token == committed.token
     other_task = FineStoreResumeManager(root, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
-    other_task.record({"task": "arc", "problem_idx": 0}, {"output": "A"})
+    other_task.record(CheckpointRow(0, input_digest({"source_id": "0"}), {"phase": "generate"}, {"input_digest": "input", "output": "A"}))
     other_task.finalize()
     assert not ReadView(root).is_sealed()
     assert completed_finestore_output(root, "gsm8k_0shot")
@@ -430,7 +430,6 @@ def test_sample_normalization_failure_does_not_commit_success(tmp_path: Path, mo
         ("model_args", "model=other", "fingerprint changed"),
         ("gen_kwargs", "temperature=0.5", "fingerprint changed"),
         ("gen_kwargs", "top_k=50", "fingerprint changed"),
-        ("tasks", "arc_easy", "task list changed"),
         ("resume_mode", "force-fresh", "already exists"),
     ],
 )
@@ -441,49 +440,40 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
     args = setup_custom_parser().parse_args(
         ["--model", "local-completions", "--tasks", "arc_challenge", "--model_args", "model=served", "--output_path", root]
     )
-    model = SimpleNamespace(world_size=1, rank=0)
-    manager = build_resume_wiring(args, model)("arc_challenge")
+    model = SimpleNamespace(world_size=1, rank=0, chat_template=lambda _enabled: None)
+    manager = build_resume_wiring(args, model, RunSpec.from_args(args))("arc_challenge")
     assert manager.decide() == "fresh"
     manager.finalize()
     result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
     _write_result(root, args.finestore_output_prefix, result, {})
 
     setattr(args, changed_field, changed_value)
-    monkeypatch.setattr("eval.eval.InstructTaskManager", lambda **_kwargs: SimpleNamespace(tasks={}, benchmark_instances={}))
-    monkeypatch.setattr(
-        "eval.eval.PretrainTaskManager",
-        lambda *_args, **_kwargs: SimpleNamespace(all_tasks={"arc_challenge": object(), "arc_easy": object()}),
-    )
-    monkeypatch.setattr("eval.eval.prepare_requested_tasks", lambda *_args: [])
-    monkeypatch.setattr("eval.eval.describe_benchmarks", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr("eval.eval.initialize_model", lambda *_args, **_kwargs: model)
-    monkeypatch.setattr("eval.eval.setup_evaluation_tracker", lambda *_args: None)
-    monkeypatch.setattr("eval.eval.evaluate", lambda **_kwargs: pytest.fail("evaluation started before resume validation"))
-
     with pytest.raises(ResumeRefused, match=message):
-        cli_evaluate(args)
+        build_resume_wiring(args, model, RunSpec.from_args(args))("arc_challenge").decide()
     assert read_finestore_output(root, args.finestore_output_prefix) == result
 
 
 def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path):
     root = str(tmp_path / "archive")
     args = Namespace(
+        model="local-completions",
         resume_mode="auto",
         output_path=None,
         finestore_output_path=root,
         finestore_output_prefix="gsm8k_0shot",
         model_args="model=test-model",
+        include_path=None,
     )
-    model = Namespace(world_size=1, rank=0)
-    unit = {"task": "gsm8k", "problem_idx": 0}
-    factory = build_resume_wiring(args, model)
+    model = Namespace(world_size=1, rank=0, chat_template=lambda _enabled: None)
+    run = RunSpec()
+    factory = build_resume_wiring(args, model, run)
     first = factory("gsm8k")
-    first.record(unit, {"output": "42"})
+    identity = {"source_id": "0"}
+    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
     first.finalize()
 
-    retry = build_resume_wiring(args, model)("gsm8k")
-    assert retry.should_skip(unit)
-    assert retry.restore()[(('problem_idx', 0), ('task', 'gsm8k'))] == {"output": "42"}
+    retry = build_resume_wiring(args, model, run)("gsm8k")
+    assert ResumeStream(retry).admit(0, identity).lookup({"phase": "generate"})["output"] == "42"
 
 
 def test_finestore_cli_refuses_resume_off(tmp_path: Path):

@@ -20,7 +20,7 @@ else:
 import psutil
 from fastchat.constants import CPU_ISA
 
-from livebench.conversation import Conversation, get_conv_template
+from eval.chat_benchmarks.LiveBench.livebench.conversation import Conversation, get_conv_template
 
 try:
     import torch

@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX, read_finestore_output
-from eval.contracts.task_outcome import TaskOutcome, lm_eval_task_counts, validate_result_document
+from eval.contracts.task_outcome import TaskOutcome, validate_result_document
 
 
 class EvalResults(BaseModel):
@@ -19,7 +19,6 @@ class EvalResults(BaseModel):
     results: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     task_outcomes: Dict[str, TaskOutcome] = Field(default_factory=dict)
     task_preparations: Dict[str, Any] = Field(default_factory=dict)
-    generation_artifacts: Dict[str, Any] = Field(default_factory=dict)
     n_samples: Dict[str, Any] = Field(default_factory=dict, alias="n-samples")
     lm_eval_version: Optional[str] = None
     config: Dict[str, Any] = Field(default_factory=dict)
@@ -51,9 +50,9 @@ class EvalResults(BaseModel):
         return {k: float(v) for k, v in task_results.items() if isinstance(v, (int, float))}
 
     def sample_count(self, task: str) -> Optional[int]:
-        """Return lm-eval's effective sample count when the result supplies one."""
-        _, effective = lm_eval_task_counts(
-            task,
-            {"n-samples": self.n_samples, "results": self.results},
-        )
-        return effective
+        """Return completed coverage for a requested task or a native group leaf."""
+        outcome = self.task_outcomes.get(task)
+        if outcome is not None and outcome.scored_count is not None:
+            return outcome.scored_count
+        counts = self.n_samples.get(task, {})
+        return counts.get("effective") if isinstance(counts, Mapping) else counts

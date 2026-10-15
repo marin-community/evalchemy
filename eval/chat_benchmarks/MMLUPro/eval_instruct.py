@@ -1,23 +1,18 @@
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
+
 import re
-import random
-import time
 import logging
-from collections import defaultdict
 from importlib.resources import files
 from typing import Any, Dict, List, Optional
-import math
-import numpy as np
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 from eval.contracts.preflight import (
     NetworkDatasetRequirement,
     PackageFileRequirement,
     PythonDependencyRequirement,
 )
-from eval.contracts.sample_results import record_sample_metrics
 from eval.completion_response import CompletionClassification, CompletionText
 from eval.graders.answer_extraction import final_response_text
 from eval.task import BaseBenchmark
@@ -109,10 +104,14 @@ def preprocess(df: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 class MMLUProBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("TIGER-Lab/MMLU-Pro", "test")
+    METRICS = ("accuracy_avg",)
+    PRIMARY_METRIC = "accuracy_avg"
     """
     MMLU-Pro CoT Benchmark: harness-style but with dynamic few-shot CoT prompts
     and multi-stage regex answer extraction, reporting both overall and per-area accuracy.
     """
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
 
     RESOURCE_REQUIREMENTS = (
         PackageFileRequirement(PROMPT_PACKAGE, PROMPT_RESOURCE),
@@ -140,130 +139,52 @@ class MMLUProBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
 
-        ds = load_dataset(self.dataset_name)
-        self.test_examples = preprocess(ds["test"])
-        self.val_examples = preprocess(ds["validation"])
-
-        # prepare tokenizer for dynamic prompt length checks
-        # model name will be set later in generate_responses
+        self.test_examples = None
+        self.val_examples = None
         self.tokenizer: Optional[AutoTokenizer] = None
+
+    def load_questions(self):
+        if self.test_examples is None:
+            dataset = load_dataset(self.dataset_name)
+            self.test_examples = preprocess(dataset["test"])
+            self.val_examples = preprocess(dataset["validation"])
+        return self.test_examples, self.val_examples
 
     def validate_prepared_data(self) -> None:
         required_fields = {"answer", "category", "cot_content", "options", "question"}
-        if not self.test_examples or not self.val_examples:
+        test_examples, val_examples = self.load_questions()
+        if not test_examples or not val_examples:
             raise ValueError("MMLU-Pro test and validation splits must both be non-empty")
-        for split_name, records in (("test", self.test_examples), ("validation", self.val_examples)):
+        for split_name, records in (("test", test_examples), ("validation", val_examples)):
             missing = required_fields - set(records[0])
             if missing:
                 raise ValueError(f"MMLU-Pro {split_name} records are missing fields: {sorted(missing)}")
         representative = generate_cot_prompt(
-            self.val_examples,
-            self.test_examples[0],
+            val_examples,
+            test_examples[0],
             min(1, self.num_fewshot),
         )
         if not representative.strip():
             raise ValueError("MMLU-Pro representative prompt is empty")
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        # Use the evaluation model's tokenizer for prompt sizing. Loading a fixed
-        # tokenizer here makes the context check wrong for every other model family.
-        if self.tokenizer is None and self.num_fewshot > 0:
-            model_tokenizer = getattr(model, "tokenizer", None)
-            if callable(model_tokenizer):
-                self.tokenizer = model_tokenizer
-            else:
-                model_name = getattr(model, "pretrained", None)
-                model_args = getattr(model, "model_args", None)
-                if model_name is None and isinstance(model_args, dict):
-                    model_name = model_args.get("model")
-                if not isinstance(model_name, str) or not model_name:
-                    raise ValueError(
-                        "MMLU-Pro few-shot prompt sizing requires the evaluation "
-                        "model's tokenizer or model identifier"
-                    )
-                self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    def iter_specs(self, options):
+        test_examples, val_examples = self.load_questions()
+        def prompt(example):
+            shots = self.num_fewshot
+            text = generate_cot_prompt(val_examples, example, shots)
+            encode = self.tokenizer.encode if self.tokenizer is not None else options.encode
+            if shots and encode is None:
+                raise ValueError("MMLU-Pro few-shot prompt sizing requires a tokenizer")
+            context = options.context_length or self.max_model_length
+            output = options.max_tokens or self.max_new_tokens
+            while shots > 0 and len(encode(text)) >= context - output:
+                shots -= 1
+                text = generate_cot_prompt(val_examples, example, shots)
+            return text
 
-        instances = []
-        for idx, ex in enumerate(self.test_examples):
-            if self.debug and idx >= 2:
-                break
-
-            # dynamically choose k so prompt fits
-            k = self.num_fewshot
-            prompt = generate_cot_prompt(self.val_examples, ex, k)
-            while k > 0:
-                if self.tokenizer is None:
-                    raise RuntimeError("MMLU-Pro tokenizer is required for few-shot prompt sizing")
-                length = len(self.tokenizer.encode(prompt))
-                if length < self.max_model_length - self.max_new_tokens:
-                    break
-                k -= 1
-                prompt = generate_cot_prompt(self.val_examples, ex, k)
-
-            # wrap prompt for harness
-            messages = [{"role": "user", "content": prompt}]
-            templated = self._prepare_messages(messages, model)
-            params = {"temperature": 0.0, "max_new_tokens": self.max_new_tokens, "seed": self.seed}
-            inst = Instance("generate_until", ex, (templated, params), idx)
-            instances.append(inst)
-
-        outputs = self.compute(model, instances)
-        examples = []
-        for ex, out in zip(self.test_examples, outputs):
-            # unwrap different output types
-            if isinstance(out, str):
-                text = out
-            elif hasattr(out, "outputs") and out.outputs:
-                text = out.outputs[0].text
-            elif hasattr(out, "text"):
-                text = out.text
-            else:
-                text = str(out)
-
-            pred = extract_answer(text)
-            ex_copy = ex.copy()
-            ex_copy["model_output"] = text
-            ex_copy["model_answer"] = pred
-            examples.append(ex_copy)
-
-        return {"examples": examples}
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        if results is None:
-            return None
-
-        examples: List[Dict[str, Any]] = results["examples"]
-        area_stats = defaultdict(lambda: {"corr": 0, "total": 0})
-        correct_flags: List[int] = []  # collect 1/0 for each example
-
-        # accumulate per‑example correctness
-        for ex in examples:
-            cat = ex["category"]
-            correct = int(ex["model_answer"] == ex["answer"])
-            area_stats[cat]["total"] += 1
-            area_stats[cat]["corr"] += correct
-            correct_flags.append(correct)
-            record_sample_metrics(ex, accuracy=correct)
-
-        n = len(correct_flags)
-        flags_arr = np.asarray(correct_flags, dtype=float)
-
-        # micro accuracy and its **empirical** standard error
-        overall_accuracy = float(flags_arr.mean())
-        overall_accuracy_stderr = float(flags_arr.std(ddof=1) / math.sqrt(n))
-
-        out: Dict[str, float] = {
-            "accuracy_avg": overall_accuracy,
-            "accuracy_std_err": overall_accuracy_stderr,
-            "total_examples": n,
-        }
-
-        # per‑category stats (needed for macro‑averages)
-        per_area_acc: List[float] = []
-        for cat, vals in area_stats.items():
-            acc = vals["corr"] / vals["total"]
-            out[f"accuracy_{cat}"] = acc
-            out[f"count_{cat}"] = vals["total"]
-            per_area_acc.append(acc)
-
-        return out
+        examples = test_examples[:2] if self.debug else test_examples
+        return text_specs(
+            examples, options, prompt=prompt, target=lambda example: example["answer"],
+            grader="mmlu_choice", generation={"do_sample": False, "max_gen_toks": self.max_new_tokens},
+            tags=lambda example: {"category": example["category"]},
+        )

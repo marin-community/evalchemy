@@ -7,6 +7,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
+from eval.contracts.eval_spec import SourceRef
 from .panel import NUPA5K_SIZE, load_nupa5k_manifest, load_panel_records
 
 nupa = import_module("eval.chat_benchmarks.NUPA-Loose.eval_instruct")
@@ -61,4 +62,5 @@ class NUPA5KLooseBenchmark(nupa.NUPALooseBenchmark):
             split=self.dataset_split,
             identities=load_nupa5k_manifest(),
         )
-        return self.limit_samples(records)
+        return records
+    SOURCE = SourceRef(nupa.SOURCE_DATASET_NAME, nupa.DEFAULT_SPLIT, nupa.SOURCE_DATASET_REVISION)

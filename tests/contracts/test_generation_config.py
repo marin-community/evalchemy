@@ -1,5 +1,6 @@
 """Generation settings observed at an OpenAI-compatible endpoint."""
 
+import asyncio
 import base64
 import json
 import subprocess
@@ -13,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 import transformers
 import yaml
-from lm_eval import evaluator
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
@@ -23,17 +23,11 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE
 from finestore.reader import ReadView
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
-from eval.chat_benchmarks.GPQADiamond import eval_instruct as gpqa_module
-from eval.chat_benchmarks.GPQADiamond.eval_instruct import GPQADiamondBenchmark
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
-from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
-from eval.contracts.sample_manifest import SampleManifest
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.eval import LM_EVAL_ROUTE, evaluate
-from eval.resume.lm_eval_native import resume_simple_evaluate
-from eval.sample_logging import canonicalize_sample
-from eval.robust_api import configure_generation_overrides
+from eval.execution.backend import LMBackend
+from eval.contracts.eval_spec import ModelRequest, RequestKind
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
 
@@ -111,7 +105,8 @@ def test_served_chat_checkpoint_generates_without_client_tokenizer(endpoint, che
     model = LocalChatCompletion(**simple_parse_args_string(build_model_args(served, LOCAL_CHAT_COMPLETIONS)))
     request = Instance("generate_until", {"question": "Question"}, ([{"role": "user", "content": "Question"}], {}), 0)
 
-    assert model.generate_until([request]) == ["\\boxed{42}"]
+    normalized = ModelRequest(RequestKind.GENERATE, request.args[0], request.args[1])
+    assert generate(model, normalized) == "\\boxed{42}"
     assert endpoint.requests[0]["model"] == checkpoint
     assert endpoint.requests[0]["messages"] == [{"role": "user", "content": "Question"}]
 
@@ -128,7 +123,8 @@ def test_served_chat_forwards_template_kwargs_and_extra_body(endpoint):
     model = LocalChatCompletion(**model_args)
     request = Instance("generate_until", {"question": "Question"}, ([{"role": "user", "content": "Question"}], {}), 0)
 
-    assert model.generate_until([request]) == ["\\boxed{42}"]
+    normalized = ModelRequest(RequestKind.GENERATE, request.args[0], request.args[1])
+    assert generate(model, normalized) == "\\boxed{42}"
     assert endpoint.requests[0]["chat_template_kwargs"] == template_kwargs
     assert endpoint.requests[0]["priority"] == 7
     assert "extra_body" not in endpoint.requests[0]
@@ -179,208 +175,22 @@ def test_served_completions_loads_transformers5_tokenizer_config(tmp_path):
     assert model.tok_encode("<|video|>") == [2]
 
 
-def _assert_temperature_and_seed(payload, expected):
-    for key in ("temperature", "seed"):
-        if key in expected:
-            assert payload[key] == expected[key]
-        else:
-            assert key not in payload
 
 
-@pytest.mark.parametrize("model_class", [LocalChatCompletion, LocalCompletionsAPI])
-@pytest.mark.parametrize(
-    "overrides, expected",
-    [
-        ({}, {}),
-        ({"do_sample": False}, {"temperature": 0}),
-        ({"top_p": 0.91}, {"top_p": 0.91}),
-        ({"temperature": 0.85, "seed": 27, "top_p": 0.91}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}),
-    ],
-)
-def test_native_generation_respects_caller_overrides_at_endpoint(endpoint, model_class, overrides, expected):
-    model = _model(endpoint, model_class)
-    prompt = [{"role": "user", "content": "Question"}] if model_class is LocalChatCompletion else "Question"
-    request = Instance(
-        "generate_until",
-        {"question": "Question"},
-        (prompt, {"temperature": 0.0, "top_p": 0.4, "do_sample": False}),
-        0,
-    )
-    request.task_name = "example"
-    request.doc_id = 0
-    request.repeats = 1
-
-    def evaluate_one_request(**kwargs):
-        return kwargs["model"].generate_until([request])
-
-    assert resume_simple_evaluate(
-        evaluate_one_request,
-        model=model,
-        tasks=["example"],
-        gen_kwargs=overrides,
-        sample_manifest=SampleManifest("example"),
-    ) == ["\\boxed{42}"]
-    payload = endpoint.requests[0]
-    _assert_temperature_and_seed(payload, expected)
-    if "top_p" in expected:
-        assert payload["top_p"] == expected["top_p"]
 
 
-@pytest.mark.parametrize("overrides", [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}])
-def test_math500_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_path, overrides):
-    data_file = tmp_path / "math.jsonl"
-    data_file.write_text(json.dumps({"problem": "What is 6 times 7?", "answer": "42"}) + "\n")
-    benchmark = MATH500Benchmark(data_file=str(data_file))
-    benchmark.set_evaluation_generation_kwargs(overrides)
-    model = _model(endpoint, LocalChatCompletion)
-    configure_generation_overrides(model, overrides)
-
-    result = benchmark.generate_responses(model)
-
-    assert result["examples"][0]["model_output"] == "\\boxed{42}"
-    payload = endpoint.requests[0]
-    _assert_temperature_and_seed(payload, overrides)
-    if "top_p" in overrides:
-        assert payload["top_p"] == overrides["top_p"]
-    else:
-        assert "top_p" not in payload
 
 
-def _assert_seeded_requests(requests, first_seed, count):
-    assert [request["seed"] for request in requests] == list(range(first_seed, first_seed + count))
-    assert all(request["temperature"] == 0.7 for request in requests)
 
 
-def test_aime24_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):
-    data_file = tmp_path / "aime24.jsonl"
-    data_file.write_text(json.dumps({"id": "one", "problem": "What is 6 times 7?", "expected_answer": "42"}) + "\n")
-    benchmark = AIME24Benchmark(data_file=str(data_file), seed=[42, 42, 42, 42])
-
-    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
-
-    assert len(result["examples"][0]["model_outputs"]) == 10
-    _assert_seeded_requests(endpoint.requests, 42, 10)
 
 
-def test_gpqa_repeats_use_distinct_sampling_seeds(endpoint, monkeypatch):
-    dataset = {
-        "train": [
-            {
-                "Question": "What is 6 times 7?",
-                "Correct Answer": "42",
-                "Incorrect Answer 1": "40",
-                "Incorrect Answer 2": "41",
-                "Incorrect Answer 3": "43",
-            }
-        ]
-    }
-    monkeypatch.setattr(gpqa_module, "load_dataset", lambda *_args, **_kwargs: dataset)
-    benchmark = GPQADiamondBenchmark(seed=[42, 42, 42, 42])
-
-    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
-
-    assert len(result["examples"][0]["model_outputs"]) == 3
-    _assert_seeded_requests(endpoint.requests, 42, 3)
 
 
-def test_olympiadbench_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):
-    data_file = tmp_path / "olympiadbench.jsonl"
-    data_file.write_text(json.dumps({"problem": "What is 6 times 7?", "answer": ["42"]}) + "\n")
-    benchmark = OlympiadBenchBenchmark(
-        data_file=str(data_file),
-        seed=[42, 42, 42, 42],
-        judge_api_key="test-key",
-    )
-
-    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
-
-    assert len(result["examples"][0]["model_outputs"]) == 10
-    _assert_seeded_requests(endpoint.requests, 42, 10)
 
 
-@pytest.mark.parametrize(
-    "overrides",
-    [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}, {"max_gen_toks": 16000}],
-)
-def test_lm_eval_task_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_path, overrides):
-    dataset = tmp_path / "questions.jsonl"
-    dataset.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
-    task = {
-        "task": "generation_config_probe",
-        "dataset_path": "json",
-        "dataset_kwargs": {"data_files": {"test": str(dataset)}},
-        "test_split": "test",
-        "output_type": "generate_until",
-        "doc_to_text": "{{question}}",
-        "doc_to_target": "{{answer}}",
-        "metric_list": [{"metric": "bypass"}],
-        "generation_kwargs": {"temperature": 0.0, "top_p": 0.4, "do_sample": False},
-    }
-    (tmp_path / "generation_config_probe.yaml").write_text(yaml.safe_dump(task))
-
-    results = resume_simple_evaluate(
-        evaluator.simple_evaluate,
-        model=_model(endpoint, LocalChatCompletion),
-        tasks=["generation_config_probe"],
-        task_manager=TaskManager(include_path=str(tmp_path)),
-        sample_manifest=SampleManifest("generation_config_probe"),
-        gen_kwargs=overrides,
-        apply_chat_template=True,
-        limit=1,
-    )
-
-    assert "generation_config_probe" in results["results"]
-    payload = endpoint.requests[0]
-    _assert_temperature_and_seed(payload, overrides)
-    assert payload["top_p"] == overrides.get("top_p", 0.4)
-    if "max_gen_toks" in overrides:
-        assert payload["max_tokens"] == overrides["max_gen_toks"]
-        assert "max_gen_toks" not in payload
 
 
-def test_lm_eval_stages_scored_sample_before_aggregate_result(tmp_path):
-    dataset = tmp_path / "questions.jsonl"
-    dataset.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
-    task = {
-        "task": "streaming_probe",
-        "dataset_path": "json",
-        "dataset_kwargs": {"data_files": {"test": str(dataset)}},
-        "test_split": "test",
-        "output_type": "generate_until",
-        "doc_to_text": "{{question}}",
-        "doc_to_target": "{{answer}}",
-        "metric_list": [{"metric": "exact_match"}],
-    }
-    (tmp_path / "streaming_probe.yaml").write_text(yaml.safe_dump(task))
-    root = str(tmp_path / "archive")
-    manifest = SampleManifest("streaming_probe")
-    model = _PlainLM()
-
-    with FineStoreOutput(root, "streaming_probe", ["streaming_probe"]) as output:
-        def stage(task_name, sample, index):
-            entry = manifest.sample_entries(namespace=task_name)[index]
-            output.write_sample(task_name, canonicalize_sample(task_name, sample, index, entry))
-
-        result = resume_simple_evaluate(
-            evaluator.simple_evaluate,
-            model=model,
-            tasks=["streaming_probe"],
-            task_manager=TaskManager(include_path=str(tmp_path)),
-            sample_manifest=manifest,
-            sample_callback=stage,
-            limit=1,
-        )
-        output.finish_task()
-
-        rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
-        assert rows is not None
-        assert rows.num_rows == 1
-        assert read_finestore_output(root, "streaming_probe") is None
-        assert not result.get("samples", {}).get("streaming_probe")
-        output.finish({"results": result["results"]})
-
-    assert len(model.requests) == 1
-    assert read_finestore_output(root, "streaming_probe")["results"] == result["results"]
 
 
 def test_evaluation_driver_streams_lm_eval_samples_without_result_list(tmp_path):
@@ -443,25 +253,6 @@ def test_evaluation_driver_streams_lm_eval_samples_without_result_list(tmp_path)
     assert len(model.requests) == 1
 
 
-def test_context_preflight_caps_the_final_caller_generation_override(endpoint):
-    class Tokenizer:
-        def apply_chat_template(self, _messages, **_kwargs):
-            return list(range(900))
-
-    model = _model(endpoint, LocalChatCompletion)
-    model._concurrent = 2
-    model.tokenizer = Tokenizer()
-    model.max_length = 999
-    configure_generation_overrides(model, {"max_gen_toks": 4096})
-    request = Instance(
-        "generate_until",
-        {"question": "Question"},
-        ([{"role": "user", "content": "Question"}], {"max_gen_toks": 4096}),
-        0,
-    )
-
-    assert model.generate_until([request]) == ["\\boxed{42}"]
-    assert endpoint.requests[0]["max_tokens"] == 36
 
 
 @pytest.mark.parametrize("task", ["AIME24", "MATH500"])
@@ -497,7 +288,7 @@ def test_cli_output_cap_wins_over_math_benchmark_defaults(endpoint, tmp_path, ta
     )
 
     assert result.returncode == 0, result.stderr
-    assert endpoint.requests
+    assert endpoint.requests, result.stdout + result.stderr
     for payload in endpoint.requests:
         assert payload["max_tokens"] == 16000
         assert "max_gen_toks" not in payload
@@ -544,6 +335,96 @@ def test_cli_generation_limits_win_over_config_defaults(endpoint, tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    assert endpoint.requests
+    assert endpoint.requests, result.stdout + result.stderr
     assert all(payload["max_tokens"] == 16000 for payload in endpoint.requests)
     assert all("max_gen_toks" not in payload for payload in endpoint.requests)
+
+
+def test_unified_driver_persists_mixed_sources_through_one_endpoint(endpoint, tmp_path):
+    math_data = tmp_path / "math.jsonl"
+    math_data.write_text(json.dumps({"id": "one", "problem": "What is 6 times 7?", "answer": "42"}) + "\n")
+    native_data = tmp_path / "native.jsonl"
+    native_data.write_text(json.dumps({"question": "What is 6 times 7?", "answer": "\\boxed{42}"}) + "\n")
+    native_task = {
+        "task": "mixed_probe", "dataset_path": "json",
+        "dataset_kwargs": {"data_files": {"test": str(native_data)}},
+        "test_split": "test", "output_type": "generate_until",
+        "doc_to_text": "{{question}}", "doc_to_target": "{{answer}}",
+        "metric_list": [{"metric": "exact_match"}], "num_fewshot": 0,
+    }
+    (tmp_path / "mixed_probe.yaml").write_text(yaml.safe_dump(native_task))
+    benchmark = MATH500Benchmark(data_file=str(math_data))
+    args = Namespace(
+        model="local-chat-completions", model_args="num_concurrent=2", gen_kwargs=None,
+        limit=1, num_fewshot=0, seed=[0, 1234, 1234, 1234], max_tokens=8,
+        apply_chat_template=True,
+    )
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "mixed", ["MATH500", "mixed_probe"]) as output:
+        result = evaluate(
+            lm=_model(endpoint, LocalChatCompletion),
+            task_manager=SimpleNamespace(get_benchmark=lambda _task: benchmark),
+            pretrain_task_manager=TaskManager(include_path=str(tmp_path)),
+            task_list=["MATH500", "mixed_probe"],
+            task_routes={"MATH500": "Evalchemy chat benchmark", "mixed_probe": "lm-eval"},
+            batch_sizes_list=[1, 1], args=args, output_sink=output,
+        )
+        output.finish_task()
+        samples = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+        assert samples is not None and samples.num_rows == 2
+        assert read_finestore_output(root, "mixed") is None
+        assert not result.get("samples")
+        assert result["results"]["MATH500"]["accuracy"] == 1.0
+        assert result["results"]["mixed_probe"]["exact_match,none"] == 1.0
+        assert all(outcome["status"] == "succeeded" for outcome in result["task_outcomes"].values())
+        output.finish(result)
+    assert len(endpoint.requests) == 2
+    assert all(request["max_tokens"] == 8 for request in endpoint.requests)
+
+
+@pytest.mark.parametrize("model_class", [LocalChatCompletion, LocalCompletionsAPI])
+@pytest.mark.parametrize("overrides", [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}, {"max_gen_toks": 16000}])
+def test_native_source_preserves_defaults_and_applies_caller_settings(endpoint, tmp_path, model_class, overrides):
+    dataset = tmp_path / "questions.jsonl"
+    dataset.write_text(json.dumps({"question": "Six times seven?", "answer": "\\boxed{42}"}) + "\n")
+    config = {
+        "task": "generation_probe", "dataset_path": "json",
+        "dataset_kwargs": {"data_files": {"test": str(dataset)}}, "test_split": "test",
+        "output_type": "generate_until", "doc_to_text": "{{question}}", "doc_to_target": "{{answer}}",
+        "metric_list": [{"metric": "exact_match"}], "num_fewshot": 0,
+        "generation_kwargs": {"temperature": 0.0, "top_p": 0.4, "do_sample": False},
+    }
+    (tmp_path / "generation_probe.yaml").write_text(yaml.safe_dump(config))
+    args = Namespace(model_args="", gen_kwargs=overrides, num_fewshot=0, limit=1,
+                     seed=[0, 1234, 1234, 1234], apply_chat_template=model_class is LocalChatCompletion)
+    result = evaluate(
+        _model(endpoint, model_class), SimpleNamespace(tasks={}), TaskManager(include_path=str(tmp_path)),
+        ["generation_probe"], {"generation_probe": LM_EVAL_ROUTE}, [1], args=args,
+    )
+    assert result["results"]["generation_probe"]["exact_match,none"] == 1.0
+    payload = endpoint.requests[0]
+    assert payload["temperature"] == overrides.get("temperature", 0.0)
+    assert payload["top_p"] == overrides.get("top_p", 0.4)
+    if "seed" in overrides:
+        assert payload["seed"] == overrides["seed"]
+    if "max_gen_toks" in overrides:
+        assert payload["max_tokens"] == overrides["max_gen_toks"]
+
+
+def test_context_preflight_caps_the_effective_generation_request(endpoint):
+    class Tokenizer:
+        def apply_chat_template(self, _messages, **_kwargs):
+            return list(range(900))
+    model = _model(endpoint, LocalChatCompletion)
+    model.tokenizer = Tokenizer()
+    model.max_length = 999
+    request = ModelRequest(RequestKind.GENERATE, [{"role": "user", "content": "Question"}], {"max_gen_toks": 4096})
+    assert generate(model, request) == "\\boxed{42}"
+    assert endpoint.requests[0]["max_tokens"] == 36
+
+
+def generate(model, request):
+    async def run():
+        async with LMBackend(model) as backend:
+            return await backend.execute(request)
+    return asyncio.run(run())

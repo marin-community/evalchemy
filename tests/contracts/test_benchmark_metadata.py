@@ -20,7 +20,7 @@ class _ChatBenchmark(BaseBenchmark):
     def benchmark_size(self) -> int:
         return 120
 
-    def generate_responses(self, model):
+    def iter_specs(self, options):
         raise NotImplementedError
 
     def evaluate_responses(self, results):
@@ -83,7 +83,7 @@ def test_chat_metadata_tracks_native_pass_at_k_configuration():
 
 def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():
     chat = _ChatBenchmark()
-    chat.set_evaluation_limits(limit=20)
+    chat.evaluation_limit = 20
     custom_manager = SimpleNamespace(get_benchmark=lambda name: chat)
     lm_eval_manager = SimpleNamespace(
         load_task_or_group=lambda names: {"group": {"leaf": _LMEvalTask()}},
@@ -119,6 +119,9 @@ def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():
             ],
             "n_benchmark": 120,
             "n_attempted": 20,
+            "source": {"dataset": "local", "split": "test", "revision": None},
+            "reducers": [{"name": "mean", "accuracy": "accuracy", "stderr": "accuracy_stderr", "repeat_ddof": 0, "groups": {}, "group_suffix": "", "group_weights": {}, "trial_metric": "accuracy"}],
+            "prompt_length": None, "requires_judge": False,
         },
         {
             "schema_version": 1,

@@ -1,17 +1,12 @@
-from typing import Dict, List, Any, Optional
-import tempfile
-import json
-import os
+from types import SimpleNamespace
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
+from typing import List, Optional
 import logging
-from tqdm import tqdm
 from datasets import load_dataset
-from itertools import islice
 
-from lm_eval.api.model import LM
-from lm_eval.api.instance import Instance
-from archive_data.utils import load_data, construct_trainable_data, get_first_line_not_comment
-from data.utils import construct_prompt
-from evaluation.metrics import exact_match_score, edit_similarity_score, codebleu_score
+from .archive_data.utils import load_data, construct_trainable_data
+from .data.utils import construct_prompt
 from eval.task import BaseBenchmark
 
 
@@ -48,238 +43,31 @@ class RepoBenchmark(BaseBenchmark):
         self.debug = debug
         self.legacy_mode = legacy_mode
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate code completions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing temporary directory with generated responses,
-            or None for non-primary ranks
-        """
-        if self.legacy_mode:
-            return self._generate_responses_legacy(model)
 
-        if model.rank == 0:
-            temp_dir_obj = tempfile.TemporaryDirectory()
-            temp_dir = temp_dir_obj.name
 
-        for lang in self.languages:
-            datasets = load_dataset(f"tianyang/repobench_{lang}_v1.1", verification_mode="no_checks")
-
-            for subset, dataset in datasets.items():
-                if subset not in self.subsets:
-                    continue
-
+    def iter_specs(self, options):
+        tokenizer = SimpleNamespace(encode=options.encode) if options.encode is not None else None
+        for language in self.languages:
+            for subset in self.subsets:
+                if self.legacy_mode:
+                    rows = construct_trainable_data(load_data(split="test", task="completion", language=language, length="2k", setting=subset), language=language)
+                    prompt = lambda row: row["data"]
+                    target = lambda row: row["label"]
+                else:
+                    rows = load_dataset(f"tianyang/repobench_{language}_v1.1", verification_mode="no_checks")[subset]
+                    prompt = lambda row: construct_prompt(row, tokenizer=tokenizer, max_token_nums=self.max_tokens, language=language)
+                    target = lambda row: row["next_line"]
                 if self.debug:
-                    dataset = dataset.select(range(2))
-                    self.logger.info(f"Debug mode: using 2 examples")
-
-                all_instances = []
-                # Split dataset across ranks for parallel construction
-                # Get subset of dataset for this rank using built-in slice functionality
-                rank_dataset = list(
-                    islice(enumerate(dataset), model.rank, len(dataset), model.world_size)
+                    rows = list(rows)[:2]
+                yield from text_specs(
+                    rows, options, namespace=f"{language}:{subset}", prompt=prompt, target=target,
+                    grader="code_line", reference=lambda row: {"language": language},
+                    generation={"temperature": 0.2, "top_p": 0.95, "do_sample": True, "max_gen_toks": self.max_tokens},
+                    tags=lambda row: {"subset": f"{language}_{subset}"},
                 )
-
-                # Process examples for this rank's shard
-                for idx, example in rank_dataset:
-                    prompt = construct_prompt(
-                        example, tokenizer=model.tokenizer, max_token_nums=self.max_tokens, language=lang
-                    )
-
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                prompt,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "temperature": 0.2,
-                                    "top_p": 0.95,
-                                    "do_sample": True,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-                    all_instances[-1].sample_ordinal = idx
-                self.logger.info("Generating responses for RepoBench...")
-                outputs = self.compute(
-                    model,
-                    all_instances,
-                    do_slice=False,
-                    sample_namespace=f"{lang}:{subset}",
-                )
-
-                # Only rank 0 should save the results
-                if model.rank != 0:
-                    continue
-
-                generated_examples = []
-                for idx, (example, output) in enumerate(zip(dataset, outputs)):
-                    generated_examples.append(
-                        {
-                            "idx": idx,
-                            "gpt_completion": get_first_line_not_comment(output, language=lang),
-                            "label": example["next_line"],
-                        }
-                    )
-
-                output_path = f"{temp_dir}/repobench_{subset}_{lang}.jsonl"
-                with open(output_path, "w", encoding="utf-8") as fw:
-                    for ex in generated_examples:
-                        fw.write(json.dumps(ex) + "\n")
-
-        if model.rank == 0:
-            return {"temp_dir_obj": temp_dir_obj}
-
-    def _generate_responses_legacy(self, model: LM) -> Dict[str, Any]:
-        """Legacy (v0) generation implementation."""
-        prefix_token = "<fim_prefix>"
-        suffix_token = "<fim_suffix><fim_middle>"
-
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        temp_dir = temp_dir_obj.name
-
-        for lang in self.languages:
-            for subset in self.subsets:
-                dataset = load_data(split="test", task="completion", language=lang, length="2k", setting=subset)
-
-                examples = construct_trainable_data(dataset, language=lang)
-
-                all_instances = []
-                for idx, example in enumerate(examples):
-                    prompt = example["data"]
-
-                    if "star" in model._model.config._name_or_path:
-                        prompt = prefix_token + prompt + suffix_token
-
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                prompt,
-                                {"max_new_tokens": 128, "temperature": 0.2, "top_p": 0.95, "do_sample": True},
-                            ),
-                            idx,
-                        )
-                    )
-
-                outputs = self.compute(
-                    model,
-                    all_instances,
-                    sample_namespace=f"legacy:{lang}:{subset}",
-                )
-
-                if model.rank != 0:
-                    continue
-
-                generated_examples = []
-                for idx, (example, output) in enumerate(zip(examples, outputs)):
-                    generated_examples.append(
-                        {
-                            "idx": idx,
-                            "gpt_completion": get_first_line_not_comment(output, language=lang),
-                            "label": example["label"],
-                        }
-                    )
-
-                output_path = f"{temp_dir}/repobench_{subset}_{lang}.jsonl"
-                with open(output_path, "w", encoding="utf-8") as fw:
-                    for ex in generated_examples:
-                        fw.write(json.dumps(ex) + "\n")
-
-        return {"temp_dir_obj": temp_dir_obj}
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing temporary directory with generations
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        temp_dir_obj = results["temp_dir_obj"]
-        temp_dir = temp_dir_obj.name
-
-        evaluation_results = {}
-        aggregated_stats = {"total_samples": 0, "total_em": 0, "total_es": 0}
-
-        for lang in self.languages:
-            for subset in self.subsets:
-                filepath = os.path.join(temp_dir, f"repobench_{subset}_{lang}.jsonl")
-
-                if not os.path.exists(filepath):
-                    print(f"Missing file: {filepath}")
-                    continue
-
-                with open(filepath, "r") as f:
-                    data = [json.loads(line) for line in f]
-
-                if not data:
-                    continue
-
-                ground_truth = [d["label"] for d in data]
-                generated = [d["gpt_completion"] for d in data]
-
-                em_score = round(exact_match_score(ground_truth, generated) * 100, 2)
-                es_score = round(edit_similarity_score(ground_truth, generated), 2)
-
-                # Store individual scores
-                evaluation_results[f"{lang}_{subset}_EM"] = em_score
-                evaluation_results[f"{lang}_{subset}_ES"] = es_score
-
-                # Update aggregated statistics
-                aggregated_stats["total_samples"] += len(data)
-                aggregated_stats["total_em"] += em_score * len(data)
-                aggregated_stats["total_es"] += es_score * len(data)
-
-                print(f"{lang}/{subset}: EM={em_score}, ES={es_score}, n={len(data)}")
-
-        # Calculate weighted averages if we have data
-        if aggregated_stats["total_samples"] > 0:
-            for lang in self.languages:
-                evaluation_results[f"{lang}_weighted_avg_EM"] = round(
-                    aggregated_stats["total_em"] / aggregated_stats["total_samples"], 2
-                )
-                evaluation_results[f"{lang}_weighted_avg_ES"] = round(
-                    aggregated_stats["total_es"] / aggregated_stats["total_samples"], 2
-                )
-
-        temp_dir_obj.cleanup()
-        return evaluation_results
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete benchmark evaluation pipeline.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not primary rank, return None early
-            if generation_results is None:
-                return None
-
-            evaluation_results = self.evaluate_responses(generation_results)
-            return evaluation_results
-
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}
+    SOURCE = SourceRef("tianyang/repobench_v1.1")
+    METRICS = ("EM", "ES")
+    PRIMARY_METRIC = "EM"
+    REDUCER = ReducerSpec(trial_metric=None, groups={"subset": "{group}_{metric}"})

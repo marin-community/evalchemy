@@ -127,7 +127,6 @@ class PrecomputedHFLM(TemplateLM):
             A list of precomputed model outputs corresponding to each instance.
         """
         outputs = []
-        request_idx = 0
         for instance in requests:
             # Extract metadata to identify the corresponding example
             task_name = instance.task_name
@@ -135,7 +134,7 @@ class PrecomputedHFLM(TemplateLM):
                 repeat_idx = instance.repeat_idx
             else:
                 repeat_idx = 0
-            key = (task_name, repeat_idx, request_idx)
+            key = (task_name, repeat_idx, instance.doc_id)
             example = self.examples_by_task_repeat_and_id.get(key)
             if example:
                 self.logger.debug(f"Found example using task key: {key}")
@@ -148,7 +147,6 @@ class PrecomputedHFLM(TemplateLM):
             else:
                 self.logger.warning(f"No precomputed output found for {key}")
                 outputs.append("")  # Return empty string if no match found
-            request_idx += 1
         self.logger.info(f"Retrieved {len(outputs)} precomputed outputs")
         return outputs
 

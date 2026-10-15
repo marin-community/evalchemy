@@ -15,9 +15,6 @@ class _TransportRetryBudget:
         if self.transport_attempt_timeout <= 0:
             raise ValueError("transport_attempt_timeout must be positive")
         self.endpoint_concurrency = self._concurrent
-        # lm-eval selects an unbounded synchronous retry path at _concurrent=1.
-        # Select its async path and keep the HTTP limit at the requested value.
-        self._concurrent = max(2, self._concurrent)
 
 
 class RetryingLocalCompletions(_TransportRetryBudget, LocalCompletionsAPI):

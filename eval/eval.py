@@ -1,3 +1,6 @@
+import asyncio
+from eval.execution.driver import source_plans, run_evaluations
+from eval.execution.run_spec import RunSpec
 import argparse
 import difflib
 import json
@@ -5,9 +8,7 @@ import logging
 import os
 import sys
 import time
-from collections import Counter
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Union
 
 import lm_eval.api.metrics
@@ -20,7 +21,6 @@ try:  # torch is optional: endpoint-only installs (no [vllm]/[benchmarks]) run t
 except ModuleNotFoundError:
     dist = None
 import yaml
-from lm_eval import evaluator as pretrain_evaluator
 from lm_eval import utils
 
 # Upstream EleutherAI lm-eval (>=0.4.8) refactored the CLI into lm_eval._cli and
@@ -44,13 +44,6 @@ from evalchemy_config.limits import MAX_OUTPUT_ALIASES, MODEL_LENGTH_ALIASES
 from eval import robust_api  # noqa: F401
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 
-from eval.robust_api import (
-    EndpointFailureCapture,
-    capture_endpoint_failures,
-    completion_response_text_unavailable,
-    configure_generation_overrides,
-    parse_generation_overrides,
-)
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
 from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
@@ -61,39 +54,15 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.custom_streaming import CustomSampleEmitter, SampleEmissionError
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import ResumeRefused
-from eval.contracts.grading import execute_grading_jobs, generation_artifacts
-from eval.contracts.lm_eval_streaming import FineStoreSampleCallback, streams_scored_samples
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.result_serialization import handle_non_serializable_extended
-from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
-from eval.contracts.sample_results import emit_scored_samples
-from eval.contracts.task_outcome import (
-    FailureCategory,
-    FailurePhase,
-    TaskFailure,
-    TaskOutcome,
-    TaskRoute,
-    TaskStatus,
-    classify_task_exception,
-    custom_task_outcome,
-    exported_task_outcome,
-    lm_eval_task_outcome,
-    validate_requested_outcomes,
-    validate_result_document,
-)
+from eval.contracts.task_outcome import TaskRoute, validate_result_document
 from eval.eval_tracker import DCEvaluationTracker
 from eval.limits import parse_key_value_args, resolve_evaluation_limits
-from eval.resume import lm_eval_native
-from eval.resume.wiring import attach_to_chat_benchmarks, build_resume_wiring
-from eval.sample_logging import (
-    canonicalize_samples,
-    is_scored_result,
-    without_embedded_samples,
-)
-from eval.task import BaseBenchmark, TaskManager as InstructTaskManager
+from eval.resume.wiring import build_resume_wiring
+from eval.task import TaskManager as InstructTaskManager
 
 # Evalchemy-owned lm-eval task overrides (marin-community/evalchemy#31). include_path
 # task configs take precedence over lm-eval's packaged defaults, so shipping
@@ -105,182 +74,17 @@ CHAT_BENCHMARK_ROUTE = TaskRoute.CUSTOM
 LM_EVAL_ROUTE = TaskRoute.LM_EVAL
 
 
-@dataclass(frozen=True)
-class _CustomTaskWork:
-    task_name: str
-    benchmark: BaseBenchmark
-    generation_result: Any
-
-
-def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | None = None) -> tuple[TaskOutcome, Any]:
-    try:
-        artifacts = generation_artifacts(work.generation_result)
-        if artifacts is not None:
-            artifacts.validate_required()
-        with capture_endpoint_failures() as grader_failures:
-            if output_sink is None:
-                scored_result = work.benchmark.evaluate_responses(work.generation_result)
-            else:
-                emitter = CustomSampleEmitter(work.task_name, work.benchmark, work.generation_result, output_sink)
-                with emit_scored_samples(emitter.emit):
-                    scored_result = work.benchmark.evaluate_responses(work.generation_result)
-                if is_scored_result(scored_result):
-                    emitter.finish()
-    except Exception as exc:
-        category = (
-            FailureCategory.INCOMPLETE_EVALUATION
-            if isinstance(exc, SampleCoverageError)
-            else classify_task_exception(
-                FailurePhase.SERIALIZATION if isinstance(exc, SampleEmissionError) else FailurePhase.GRADING,
-                exc,
-            )
-        )
-        return (
-            TaskOutcome.failed(
-                work.task_name,
-                CHAT_BENCHMARK_ROUTE,
-                category,
-                str(exc),
-                exception=exc,
-            ),
-            {},
-        )
-    metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
-    outcome = custom_task_outcome(
-        work.task_name,
-        CHAT_BENCHMARK_ROUTE,
-        work.generation_result,
-        metrics,
-        work.benchmark.sample_manifest,
-    )
-    return replace(outcome, failure_counts=dict(grader_failures.counts)), scored_result
-
-
-def _cleanup_generation_result(generation_result: Any) -> None:
-    artifacts = generation_artifacts(generation_result)
-    if artifacts is not None:
-        artifacts.cleanup()
-
-
-def _outcome_with_response_quality(outcome: TaskOutcome, capture: EndpointFailureCapture) -> TaskOutcome:
-    """Fail a scored task when most chat completions contain no scorer text."""
-    if outcome.status is not TaskStatus.SUCCEEDED or not completion_response_text_unavailable(
-        capture.response_summary
-    ):
-        return outcome
-    return replace(
-        outcome,
-        status=TaskStatus.FAILED,
-        metrics={},
-        failure=TaskFailure(
-            FailureCategory.MALFORMED_MODEL_RESPONSE,
-            "at least half of chat completions were empty",
-        ),
-    )
-
-
-def _record_generation_artifacts(results: dict[str, Any], work: _CustomTaskWork) -> None:
-    artifacts = generation_artifacts(work.generation_result)
-    if artifacts is not None:
-        results.setdefault("generation_artifacts", {})[work.task_name] = artifacts.to_dict()
-
-
-def _attach_benchmark_metadata(
-    results: dict[str, Any], args: argparse.Namespace, outcomes: Sequence[TaskOutcome]
-) -> None:
-    """Attach resolved or conservatively inferred metadata and canonical scores."""
+def _attach_benchmark_metadata(results: dict[str, Any], args: argparse.Namespace) -> None:
+    """Attach source descriptions and canonical scores to the shared result."""
     metadata = list(getattr(args, "resolved_benchmark_metadata", ()))
-    described_tasks = {description.task for description in metadata}
-    for outcome in outcomes:
-        if (
-            outcome.status is TaskStatus.FAILED
-            or outcome.task_name in described_tasks
-            or outcome.task_name not in results["results"]
-        ):
+    described = {description.task for description in metadata}
+    for task, metrics in results["results"].items():
+        if task in described:
             continue
-        try:
-            metadata.append(
-                infer_benchmark_metadata(
-                    outcome.task_name,
-                    results["results"][outcome.task_name],
-                    n_attempted=outcome.expected_count,
-                )
-            )
-        except ValueError as exc:
-            eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
+        count = results["task_outcomes"].get(task, {}).get("expected_count")
+        metadata.append(infer_benchmark_metadata(task, metrics, n_attempted=count))
     results["benchmark_metadata"] = {description.task: description.to_dict() for description in metadata}
     results["canonical_results"] = canonicalize_results(results["results"], metadata)
-
-
-def _grade_custom_tasks(
-    generation_work: Sequence[_CustomTaskWork],
-    args: argparse.Namespace,
-    results: dict[str, Any],
-    output_sink: FineStoreOutput | None = None,
-) -> list[TaskOutcome]:
-    """Score, serialize, and clean up custom work under the shared contracts."""
-    try:
-        try:
-            evaluated = execute_grading_jobs(
-                generation_work,
-                mode_for=lambda work: work.benchmark.GRADER_EXECUTION_MODE,
-                grade=_score_custom_task if output_sink is None else lambda work: _score_custom_task(work, output_sink),
-            )
-        except Exception as exc:
-            return [
-                TaskOutcome.failed(
-                    work.task_name,
-                    CHAT_BENCHMARK_ROUTE,
-                    classify_task_exception(FailurePhase.GRADING, exc),
-                    str(exc),
-                    exception=exc,
-                )
-                for work in generation_work
-            ]
-
-        outcomes: list[TaskOutcome] = []
-        for work, (outcome, scored_result) in zip(generation_work, evaluated):
-            if outcome.status is TaskStatus.FAILED:
-                outcomes.append(outcome)
-                continue
-            results["results"][work.task_name] = scored_result
-            _record_generation_artifacts(results, work)
-            if not is_scored_result(scored_result):
-                outcomes.append(outcome)
-                continue
-
-            try:
-                if output_sink is None:
-                    task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
-                    if not task_samples:
-                        utils.eval_logger.warning(
-                            "Scored task %s produced no sample records; keeping aggregate score", work.task_name
-                        )
-                        outcomes.append(outcome)
-                        continue
-                    results.setdefault("samples", {})[work.task_name] = canonicalize_samples(
-                        work.task_name,
-                        task_samples,
-                        work.benchmark.sample_manifest,
-                    )
-                results["results"][work.task_name] = without_embedded_samples(scored_result)
-                outcomes.append(outcome)
-            except Exception as exc:
-                results["results"].pop(work.task_name, None)
-                results.get("generation_artifacts", {}).pop(work.task_name, None)
-                outcomes.append(
-                    TaskOutcome.failed(
-                        work.task_name,
-                        CHAT_BENCHMARK_ROUTE,
-                        classify_task_exception(FailurePhase.SERIALIZATION, exc),
-                        str(exc),
-                        exception=exc,
-                    )
-                )
-        return outcomes
-    finally:
-        for work in generation_work:
-            _cleanup_generation_result(work.generation_result)
 
 
 def resolve_task_routes(
@@ -430,269 +234,19 @@ def evaluate(
     output_sink: FineStoreOutput | None = None,
     **eval_kwargs,
 ) -> Dict[str, Dict]:
-    """
-    Evaluate the language model on the given tasks.
-
-    Args:
-        lm (LM):
-            Language model instance to evaluate.
-        task_manager (InstructTaskManager):
-            Manager for instruction-based evaluation tasks.
-        pretrain_task_manager (PretrainTaskManager):
-            Manager for pre-training evaluation tasks.
-        task_list (List[str]):
-            List of task names to evaluate the model on.
-        task_routes (Dict[str, str]):
-            Registry selected for each task.
-        batch_sizes_list (List[int]):
-            List of batch sizes for each task.
-        verbosity (str, optional):
-            Logging verbosity level. Defaults to "INFO".
-        args (Any, optional):
-            Additional arguments to pass to the evaluation. Defaults to None.
-        output_sink (FineStoreOutput, optional):
-            Stage samples during a CLI run. Direct in-process callers without a
-            sink receive canonical samples in the returned result document.
-        **eval_kwargs:
-            Additional keyword arguments for evaluation configuration.
-
-    Returns:
-        Dict[str, Dict]:
-            Dictionary mapping task names to their evaluation results.
-            Each result dictionary contains metrics specific to that task.
-    """
-    eval_logger = utils.eval_logger
-    eval_logger.setLevel(getattr(logging, f"{verbosity}"))
-
-    # Split tasks according to the registry resolved before model initialization.
-    benchmark_tasks = [task for task in task_list if task_routes[task] == CHAT_BENCHMARK_ROUTE]
-    benchmark_batch_sizes = [
-        batch_size
-        for task, batch_size in zip(task_list, batch_sizes_list)
-        if task_routes[task] == CHAT_BENCHMARK_ROUTE
-    ]
-    pretrain_tasks = [task for task in task_list if task_routes[task] == LM_EVAL_ROUTE]
-    pretrain_batch_sizes = [
-        batch_size for task, batch_size in zip(task_list, batch_sizes_list) if task_routes[task] == LM_EVAL_ROUTE
-    ]
-
-    if benchmark_tasks:
-        eval_logger.info(f"Benchmark tasks to evaluate: {benchmark_tasks}")
-    if pretrain_tasks:
-        eval_logger.info(f"Pretrain tasks to evaluate: {pretrain_tasks}")
-
-    results = {
-        "results": {},
-        "task_outcomes": {},
-        "task_preparations": getattr(args, "task_preparations", {}),
-    }
-    outcomes: list[TaskOutcome] = []
-    endpoint_captures: dict[str, EndpointFailureCapture] = {}
-
-    # Run benchmark evaluations - sequential generation, parallel evaluation
-    if benchmark_tasks:
-        # Sequential generation since it's GPU-bound
-        generation_work = []
-        for task, batch_size in zip(benchmark_tasks, benchmark_batch_sizes):
-            benchmark = task_manager.get_benchmark(task)
-            if benchmark is None:
-                outcomes.append(
-                    TaskOutcome.failed(
-                        task,
-                        CHAT_BENCHMARK_ROUTE,
-                        FailureCategory.INCOMPLETE_EVALUATION,
-                        "requested task is absent from the custom benchmark registry",
-                    )
-                )
-                continue
-            if args.model == "hf":
-                lm.batch_size_per_gpu = batch_size
-            elif args.model == "vllm":
-                lm.batch_size = batch_size
-            try:
-                with capture_endpoint_failures() as endpoint_failures:
-                    endpoint_captures[task] = endpoint_failures
-                    generation_result = benchmark.generate_responses(lm)
-            except Exception as exc:
-                outcomes.append(
-                    TaskOutcome.failed(
-                        task,
-                        CHAT_BENCHMARK_ROUTE,
-                        classify_task_exception(FailurePhase.GENERATION, exc),
-                        str(exc),
-                        exception=exc,
-                    )
-                )
-                continue
-            if generation_result is None:
-                if getattr(lm, "rank", 0) == 0:
-                    outcomes.append(
-                        TaskOutcome.failed(
-                            task,
-                            CHAT_BENCHMARK_ROUTE,
-                            FailureCategory.INCOMPLETE_EVALUATION,
-                            "custom benchmark returned no generation result",
-                        )
-                    )
-                continue
-            generation_work.append(
-                _CustomTaskWork(
-                    task_name=task,
-                    benchmark=benchmark,
-                    generation_result=generation_result,
-                )
-            )
-
-        if lm is not None and hasattr(lm, "upload_to_hub"):
-            try:
-                for work in generation_work:
-                    outcome = exported_task_outcome(work.task_name, CHAT_BENCHMARK_ROUTE, work.generation_result)
-                    outcomes.append(outcome)
-                    if outcome.status is not TaskStatus.FAILED:
-                        _record_generation_artifacts(results, work)
-            finally:
-                for work in generation_work:
-                    _cleanup_generation_result(work.generation_result)
-        elif generation_work and (lm.world_size <= 1 or lm.rank == 0):
-            outcomes.extend(_grade_custom_tasks(generation_work, args, results, output_sink))
-        else:
-            for work in generation_work:
-                _cleanup_generation_result(work.generation_result)
-
-    # Run pretrain evaluations if any exist
-    if pretrain_tasks and args is not None:
-        # Route lm-eval through the shared resume wrapper.
-        resume_factory = getattr(args, "resume_manager_factory", None)
-        for pretrain_task, batch_size in zip(pretrain_tasks, pretrain_batch_sizes):
-            sample_manifest = SampleManifest(pretrain_task)
-            stream_samples = output_sink is not None and streams_scored_samples(
-                pretrain_task_manager, pretrain_task, args.predict_only
-            )
-            sample_callback = FineStoreSampleCallback(sample_manifest, output_sink) if stream_samples else None
-
-            try:
-                with capture_endpoint_failures() as endpoint_failures:
-                    endpoint_captures[pretrain_task] = endpoint_failures
-                    pretrain_results = lm_eval_native.resume_simple_evaluate(
-                        pretrain_evaluator.simple_evaluate,
-                        resume_manager_factory=resume_factory,
-                        sample_manifest=sample_manifest,
-                        sample_callback=sample_callback,
-                        model=args.model,
-                        model_args=args.model_args,
-                        tasks=[pretrain_task],
-                        num_fewshot=args.num_fewshot,
-                        batch_size=batch_size,
-                        max_batch_size=args.max_batch_size,
-                        device=args.device,
-                        limit=args.limit,
-                        check_integrity=args.check_integrity,
-                        write_out=args.write_out,
-                        log_samples=True,
-                        evaluation_tracker=args.evaluation_tracker if hasattr(args, "evaluation_tracker") else None,
-                        system_instruction=args.system_instruction,
-                        apply_chat_template=args.apply_chat_template,
-                        fewshot_as_multiturn=args.fewshot_as_multiturn,
-                        gen_kwargs=args.gen_kwargs,
-                        task_manager=pretrain_task_manager,
-                        verbosity=args.verbosity,
-                        predict_only=args.predict_only,
-                        confirm_run_unsafe_code=args.confirm_run_unsafe_code,
-                        random_seed=args.seed[0] if hasattr(args, "seed") else None,
-                        numpy_random_seed=args.seed[1] if hasattr(args, "seed") else None,
-                        torch_random_seed=args.seed[2] if hasattr(args, "seed") else None,
-                        fewshot_random_seed=args.seed[3] if hasattr(args, "seed") else None,
-                    )
-            except Exception as exc:
-                outcomes.append(
-                    TaskOutcome.failed(
-                        pretrain_task,
-                        LM_EVAL_ROUTE,
-                        classify_task_exception(FailurePhase.EVALUATION, exc),
-                        str(exc),
-                        exception=exc,
-                    )
-                )
-                continue
-
-            outcome = lm_eval_task_outcome(
-                pretrain_task,
-                LM_EVAL_ROUTE,
-                pretrain_results,
-                sample_manifest,
-            )
-            outcome = _outcome_with_response_quality(outcome, endpoint_captures[pretrain_task])
-            outcomes.append(outcome)
-            if outcome.status is TaskStatus.FAILED:
-                if output_sink is not None:
-                    output_sink.finish_task()
-                continue
-            results["results"].update(pretrain_results.get("results", {}))
-            if pretrain_results.get("n-samples"):
-                results.setdefault("n-samples", {}).update(pretrain_results["n-samples"])
-            if not stream_samples:
-                native_samples = pretrain_results.get("samples", {})
-                for task, scored_result in pretrain_results.get("results", {}).items():
-                    if not is_scored_result(scored_result):
-                        continue
-                    task_samples = native_samples.get(task, [])
-                    if not task_samples:
-                        eval_logger.warning("scored task %s produced no sample records", task)
-                        continue
-                    canonical = canonicalize_samples(
-                        task,
-                        task_samples,
-                        sample_manifest,
-                    )
-                    if output_sink is None:
-                        results.setdefault("samples", {})[task] = canonical
-                    else:
-                        for record in canonical:
-                            output_sink.write_sample(task, record)
-            if output_sink is not None:
-                output_sink.finish_task()
-
-    finalized_outcomes = []
-    for outcome in outcomes:
-        capture = endpoint_captures.get(outcome.task_name)
-        if capture is not None:
-            validated = _outcome_with_response_quality(outcome, capture)
-            if validated.status is TaskStatus.FAILED and outcome.status is TaskStatus.SUCCEEDED:
-                results["results"].pop(outcome.task_name, None)
-            outcome = replace(
-                validated,
-                failure_counts=dict(Counter(validated.failure_counts) + capture.counts),
-                completion_response_summary=dict(capture.response_summary),
-            )
-        finalized_outcomes.append(outcome)
-    outcomes = finalized_outcomes
-    results["task_outcomes"] = {outcome.task_name: outcome.to_dict() for outcome in outcomes}
-    _attach_benchmark_metadata(results, args, outcomes)
-    if getattr(lm, "rank", 0) == 0:
-        validate_requested_outcomes(task_list, outcomes)
-
-    # If we're using UploadInstancesToHF, make sure to call upload_to_hub
-    if lm is not None and hasattr(lm, "upload_to_hub") and callable(lm.upload_to_hub):
-        try:
-            eval_logger.info("Uploading accumulated instances to HuggingFace Hub...")
-            lm.upload_to_hub()
-        except Exception as e:
-            eval_logger.error(f"Error uploading instances to HF: {str(e)}")
-            import traceback
-
-            traceback.print_exc()
-
-    # If we're using PrecomputedHFLM, update the README with evaluation results
-    if lm is not None and hasattr(lm, "update_repo_readme") and callable(lm.update_repo_readme):
-        try:
-            eval_logger.info("Updating repository README with evaluation results...")
-            lm.update_repo_readme(results)
-        except Exception as e:
-            eval_logger.error(f"Error updating repository README: {str(e)}")
-            import traceback
-
-            traceback.print_exc()
-
+    """Normalize every source into EvalSpec items and execute one shared flow."""
+    run = RunSpec.from_args(args)
+    plans = source_plans(task_list, task_routes, task_manager, pretrain_task_manager, run, lm)
+    factory = build_resume_wiring(args, lm, run) if getattr(args, "finestore_output_path", None) else None
+    checkpoints = {
+        task: factory(task) for plan in plans for task in plan.task_names
+    } if factory is not None else {}
+    model_options = parse_key_value_args(getattr(args, "model_args", ""))
+    workers = int(model_options.get("num_concurrent", 1))
+    results = asyncio.run(run_evaluations(lm, plans, workers=workers, sink=output_sink, checkpoints=checkpoints,
+                                         predict_only=run.predict_only or isinstance(lm, UploadInstancesToHF)))
+    results["task_preparations"] = getattr(args, "task_preparations", {})
+    _attach_benchmark_metadata(results, args)
     return results
 
 
@@ -822,9 +376,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
         num_samples=getattr(args, "num_samples", 1),
         pass_at_k=getattr(args, "pass_at_k", None),
     )
-    generation_overrides = parse_generation_overrides(args.gen_kwargs)
-    for benchmark in task_manager.benchmark_instances.values():
-        benchmark.set_evaluation_generation_kwargs(generation_overrides)
     # Always scan the evalchemy-owned overrides first; a user --include_path is appended
     # last so it still wins (later include paths take precedence).
     _include_paths = [DEFAULT_LM_EVAL_INCLUDE_DIR]
@@ -886,7 +437,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
     except Exception as e:
         utils.eval_logger.error(f"Failed to initialize model: {str(e)}")
         sys.exit(1)
-    configure_generation_overrides(lm, generation_overrides)
 
     # Log experiment configuration
     if evaluation_tracker is not None:
@@ -897,16 +447,6 @@ def cli_evaluate(args: Optional[argparse.Namespace] = None) -> None:
             chat_template=lm.chat_template(args.apply_chat_template),
             fewshot_as_multiturn=args.fewshot_as_multiturn,
         )
-
-    # One per-task factory feeds the native lm-eval and chat benchmark resume paths.
-    _resume_factory = build_resume_wiring(args, lm)
-    for task in task_list:
-        manager = _resume_factory(task)
-        try:
-            manager.decide()
-        finally:
-            manager.finalize()
-    attach_to_chat_benchmarks(task_manager, task_list, _resume_factory)
 
     # Initialize logging and environment
     eval_logger = utils.eval_logger

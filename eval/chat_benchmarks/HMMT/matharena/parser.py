@@ -3,13 +3,13 @@ from typing import Optional
 from loguru import logger
 import re
 from fractions import Fraction
-from matharena.utils import latex2sympy_fixed
+from eval.chat_benchmarks.HMMT.matharena.utils import latex2sympy_fixed
 from sympy import N, Integer
 import sympy
 from typing import Any
 from enum import Enum
 from functools import total_ordering
-from matharena.parse_manual import manual_mapper
+from eval.chat_benchmarks.HMMT.matharena.parse_manual import manual_mapper
 
 
 @total_ordering

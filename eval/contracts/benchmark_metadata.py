@@ -5,11 +5,13 @@ from __future__ import annotations
 import re
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
 from eval.contracts.task_outcome import TaskRoute
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.contracts.prompt_length import BenchmarkPromptLength
 
 BENCHMARK_METADATA_SCHEMA_VERSION = 1
 
@@ -50,6 +52,10 @@ class BenchmarkMetadata:
     n_benchmark: int | None
     n_attempted: int | None
     schema_version: Literal[1] = BENCHMARK_METADATA_SCHEMA_VERSION
+    source: SourceRef | None = None
+    reducers: tuple[ReducerSpec, ...] = ()
+    prompt_length: BenchmarkPromptLength | None = None
+    requires_judge: bool = False
 
     def __post_init__(self) -> None:
         names = [metric.name for metric in self.metrics]
@@ -71,7 +77,7 @@ class BenchmarkMetadata:
             raise ValueError(f"{self.task}: n_attempted exceeds n_benchmark")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema_version": self.schema_version,
             "task": self.task,
             "primary_metric": self.primary_metric,
@@ -80,6 +86,11 @@ class BenchmarkMetadata:
             "n_benchmark": self.n_benchmark,
             "n_attempted": self.n_attempted,
         }
+        if self.source is not None:
+            document.update(source=asdict(self.source), reducers=[asdict(reducer) for reducer in self.reducers],
+                            prompt_length=self.prompt_length.to_dict() if self.prompt_length else None,
+                            requires_judge=self.requires_judge)
+        return document
 
 
 @dataclass(frozen=True)

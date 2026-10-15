@@ -69,6 +69,7 @@ class FineStoreOutput:
             primary_key=SAMPLES_MERGE_KEY,
             schema=samples_schema(),
             schema_version=SCHEMA_VERSION,
+            on_conflict=OnConflict.SUPERSEDE,
         )
         self._results = self._store.table(
             RESULTS_TABLE,

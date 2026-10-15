@@ -1,17 +1,17 @@
-from typing import Dict, List, Any, Generator, Optional
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from typing import Dict, Generator, Optional
 import json
 import logging
-import tempfile
 import os
 
-from lm_eval.api.model import LM
-from lm_eval.api.instance import Instance
-from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
-from .evaluation import PER_PROMPT_FOLLOW_RATE, evaluate_accuracy
 
 
 class IFEvalBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("google/IFEval", "input_data")
+    METRICS = ("prompt_level_strict", "instruction_level_strict", "prompt_level_loose", "instruction_level_loose")
+    PRIMARY_METRIC = "prompt_level_strict"
     def __init__(
         self,
         data_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),
@@ -74,147 +74,14 @@ class IFEvalBenchmark(BaseBenchmark):
             self.logger.error(f"Error reading examples: {str(e)}")
             raise
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate responses to prompts using provided model
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing generated responses and temporary directory
-        """
-        try:
-            temp_dir_obj = tempfile.TemporaryDirectory()
-            temp_dir = temp_dir_obj.name
 
-            problem_file = os.path.join(self.data_dir, "input_data.jsonl")
-            examples = list(self.read_test_examples(problem_file))
-            self.logger.info(f"Process {len(examples)} examples")
+    REDUCER = ReducerSpec(trial_metric="prompt_level_strict", name="instructions")
 
-            all_instances = []
-            for idx, example in enumerate(examples):
-                try:
-                    inputs = self._prepare_messages([{"role": "user", "content": example["prompt"]}], model)
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                inputs,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": False,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-
-                except Exception as e:
-                    self.logger.error(f"Error preparing instance {idx}: {str(e)}")
-                    continue
-
-            self.logger.info("Generating responses...")
-            outputs = self.compute(model, all_instances)
-
-            if model.rank != 0:
-                return None
-
-            generated_examples = []
-            for example, output in zip(examples, outputs):
-                try:
-                    example_with_output = example.copy()
-                    example_with_output["response"] = output
-                    generated_examples.append(example_with_output)
-
-                except Exception as e:
-                    self.logger.error(f"Error processing output for {example['key']}: {str(e)}")
-                    continue
-
-            output_path = os.path.join(temp_dir, "ifeval.jsonl")
-
-            with open(output_path, "w", encoding="utf-8") as fw:
-                for ex in generated_examples:
-                    fw.write(json.dumps(ex) + "\n")
-
-            return {
-                "temp_dir_obj": temp_dir_obj,
-                "examples": generated_examples,
-                "num_examples": len(generated_examples),
-                "total_examples": len(examples),
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error in generate_responses: {str(e)}")
-            raise
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Evaluate generated responses for specific instructions
-
-        Args:
-            results: Dictionary containing generation responses
-
-        Returns:
-            Dictionary containing evaluation metrics -- i.e. strict and loose
-        """
-        try:
-            temp_dir_obj = results["temp_dir_obj"]
-            temp_dir = temp_dir_obj.name
-
-            input_file = os.path.join(self.data_dir, "input_data.jsonl")
-            response_file = os.path.join(temp_dir, "ifeval.jsonl")
-            result = evaluate_accuracy(response_file)
-            follow_rates = result.pop(PER_PROMPT_FOLLOW_RATE)
-            for example in results["examples"]:
-                rates = follow_rates[example["prompt"]]
-                record_sample_metrics(
-                    example,
-                    prompt_level_strict=rates["strict"],
-                    prompt_level_loose=rates["loose"],
-                )
-
-            result.update(
-                {
-                    "num_examples": results["num_examples"],
-                    "completion_rate": results["num_examples"] / results["total_examples"],
-                }
-            )
-
-            temp_dir_obj.cleanup()
-
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error in evaluate_responses: {str(e)}")
-            if temp_dir_obj:
-                temp_dir_obj.cleanup()
-
-            raise
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete Instruction Following Evaluation pipeline
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        self.logger.info("Starting IF benchmark evaluation")
-
-        try:
-            generation_results = self.generate_responses(model)
-            evaluation_results = self.evaluate_responses(generaiton_results)
-
-            evaluation_results.update(
-                {"benchmark_version": "ifeval", "max_tokens": self.max_tokens, "num_shot": self.num_examples}
-            )
-
-            return evaluation_results
-
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}
+    def iter_specs(self, options):
+        return text_specs(
+            self.read_test_examples(os.path.join(self.data_dir, "input_data.jsonl")), options, prompt=lambda row: row["prompt"], target=lambda row: row["instruction_id_list"],
+            grader="instructions", reference=lambda row: {"protocol": 'ifeval'},
+            generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_tokens},
+        )

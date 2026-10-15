@@ -1,32 +1,15 @@
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
 import json
 import logging
 import os
-import tempfile
-import traceback
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
-from datasets import load_dataset
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-import re
-import itertools
 
-from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .evaluation import evaluate_generations
 
-try:
-    from vllm.distributed import (
-        cleanup_dist_env_and_memory,
-        destroy_distributed_environment,
-        destroy_model_parallel,
-        init_distributed_environment,
-    )
-except ImportError:
-    print("Error importing vllm.distributed")
 
-import gc
 
 # suppress warnings
 import warnings
@@ -36,32 +19,6 @@ warnings.filterwarnings("ignore")
 CruxEval_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
-def cleanup_resources():
-    # Explicitly destroy distributed resources
-    try:
-        destroy_model_parallel()
-    except Exception as e:
-        print(f"Error in destroy_model_parallel: {e}")
-
-    try:
-        destroy_distributed_environment()
-    except Exception as e:
-        print(f"Error in destroy_distributed_environment: {e}")
-
-    try:
-        cleanup_dist_env_and_memory()
-    except Exception as e:
-        print(f"Error in cleanup_dist_env_and_memory: {e}")
-
-    # Force garbage collection
-    gc.collect()
-    try:
-        import torch
-    except ModuleNotFoundError as exc:
-        if exc.name != "torch":
-            raise
-        return
-    torch.cuda.empty_cache()
 
 
 def make_cot_output_prompt(s):
@@ -121,12 +78,6 @@ assert f(??) == {output}
 """
 
 
-def extract_answer(generation):
-    if "[ANSWER]" in generation and "[/ANSWER]" in generation:
-        start = generation.index("[ANSWER]") + len("[ANSWER]")
-        end = generation.index("[/ANSWER]")
-        return generation[start:end].strip()
-    return generation
 
 
 class CruxEvalBenchmark(BaseBenchmark):
@@ -141,7 +92,6 @@ class CruxEvalBenchmark(BaseBenchmark):
         self,
         data_dir: str = CruxEval_PATH,
         max_tokens: int = 2048,
-        num_workers: int = 32,
         timeout: float = 120,
         debug: bool = False,
         logger: Optional[logging.Logger] = None,
@@ -160,196 +110,16 @@ class CruxEvalBenchmark(BaseBenchmark):
             system_instruction: Optional system instruction for the model
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
-        self.language = "python"
-        os.makedirs(data_dir, exist_ok=True)
         self.data_dir = data_dir
         self.max_tokens = max_tokens
-        self.num_workers = num_workers
         self.timeout = timeout
         self.debug = debug
         self.tasks = ["input", "output"]
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate code completions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        results = {}
-        temp_dir_obj = tempfile.TemporaryDirectory()
-        temp_dir = temp_dir_obj.name
-        for task in self.tasks:
-            all_instances = []
-            try:
-                problem_file = os.path.join(self.data_dir, f"cruxeval.jsonl")
-                if not os.path.exists(problem_file):
-                    self.logger.warning(f"Dataset file not found: {problem_file}")
-                    continue
 
-                examples = []
 
-                with open(problem_file, "r", encoding="utf-8") as fr:
-                    for line in fr:
-                        examples.append(json.loads(line))
-
-                if self.debug:
-                    examples = examples[:10]
-                    self.logger.info(f"Debug mode enabled. Using only {len(examples)} examples.")
-
-                self.logger.info(f"Loaded {len(examples)} examples for CruxEval-{task}")
-
-                formatted_inputs = []
-                for example in examples:
-                    task_prompt = self._prompt_for_task(example, task)
-                    inputs = self._prepare_messages([{"role": "user", "content": task_prompt}], model)
-                    formatted_inputs.append(inputs)
-
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                inputs,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": self.DO_SAMPLE,
-                                    "temperature": self.TEMPERATURE,
-                                },
-                            ),
-                            example["id"],
-                        )
-                    )
-
-                self.logger.info(f"Generating responses for CruxEval-{task}...")
-
-                outputs = self.compute(model, all_instances, sample_namespace=task)
-                if model.rank != 0:
-                    continue
-
-                generated_examples = []
-                for example, output in zip(examples, outputs):
-                    example_with_output = example.copy()
-
-                    example_with_output["generation"] = extract_answer(output)
-                    example_with_output["task_id"] = example_with_output.pop("id")
-
-                    generated_examples.append(example_with_output)
-
-                results[task] = generated_examples
-                temp_file_path = os.path.join(temp_dir, f"generated_{task}.jsonl")
-
-                with open(temp_file_path, "w", encoding="utf-8") as fw:
-                    for ex in generated_examples:
-                        fw.write(json.dumps(ex) + "\n")
-
-                self.logger.info(f"Generated and saved {len(generated_examples)} examples for {task}")
-
-            except Exception as e:
-                self.logger.error(f"Error processing: {str(e)}")
-                traceback.print_exc()
-
-                continue
-
-        try:
-            cleanup_resources()
-        except Exception as e:
-            self.logger.warning(f"Error cleaning up resources: {str(e)}")
-        results["temp_dir_obj"] = temp_dir_obj
-        return results
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        temp_dir_obj = results["temp_dir_obj"]
-        temp_dir = temp_dir_obj.name
-
-        evaluation_results = {}
-
-        for task in self.tasks:
-            try:
-                problem_file = os.path.join(self.data_dir, f"cruxeval.jsonl")
-                temp_file_path = os.path.join(temp_dir, f"generated_{task}.jsonl")
-
-                examples = []
-
-                with open(problem_file, "r", encoding="utf-8") as fr:
-                    for line in fr:
-                        examples.append(json.loads(line))
-
-                if self.debug:
-                    examples = examples[:10]
-                    self.logger.info(f"Debug mode enabled. Using only {len(examples)} examples.")
-
-                if not os.path.exists(temp_file_path):
-                    self.logger.warning(f"Generated file not found: {temp_file_path}")
-                    continue
-
-                result = evaluate_generations(
-                    input_file=temp_file_path,
-                    mode=task,
-                    examples=examples,
-                    tmp_dir=temp_dir,
-                )
-
-                pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
-                for example in results[task]:
-                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-                for metric, value in result.items():
-                    evaluation_results[f"{task}_{metric}"] = value
-
-                self.logger.info(f"Completed evaluation for {task}")
-
-            except Exception as e:
-                traceback.print_exc()
-                self.logger.error(f"Error evaluating {task}: {str(e)}")
-                continue
-
-        temp_dir_obj.cleanup()
-        return evaluation_results
-
-    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
-        """Expose both CruxEval directions to the scored-sample sink."""
-        return {task: generation_result[task] for task in self.tasks if task in generation_result}
-
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> list[Dict[str, Any]]:
-        """Serialize both CruxEval directions as auditable sample records."""
-        examples = []
-        for task in self.tasks:
-            for example in (generation_result or {}).get(task, []):
-                sample = dict(example)
-                sample["cruxeval_task"] = task
-                sample["function_output"] = example["output"]
-                sample["prompt"] = self._prompt_for_task(example, task)
-                if task == "input":
-                    sample["answer"] = example["input"]
-                else:
-                    sample["answer"] = example["output"]
-                examples.append(sample)
-
-        return super().to_samples({"examples": examples}, scored_result)
-
-    def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        kwargs = super()._sample_gen_kwargs(example)
-        kwargs.setdefault("max_new_tokens", self.max_tokens)
-        kwargs.update({"do_sample": self.DO_SAMPLE, "temperature": self.TEMPERATURE})
-        return kwargs
 
     @staticmethod
     def _prompt_for_task(example: Dict[str, Any], task: str) -> str:
@@ -357,26 +127,21 @@ class CruxEvalBenchmark(BaseBenchmark):
             return make_cot_input_prompt((example["code"], example["output"]))
         return make_cot_output_prompt((example["code"], example["input"]))
 
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete benchmark evaluation pipeline.
 
-        Args:
-            model: Language model instance
+    SOURCE = SourceRef("cruxeval")
+    METRICS = ("pass@1",)
+    PRIMARY_METRIC = "pass@1"
+    REDUCER = ReducerSpec(accuracy="pass@1", groups={"direction": "{group}_{metric}"})
 
-        Returns:
-            Dictionary containing evaluation results, or None for non-primary ranks
-        """
-        self.logger.info(f"Running CruxEval benchmark for languages: {self.languages}")
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not primary rank, return None early
-            if generation_results is None:
-                return None
-
-            evaluation_results = self.evaluate_responses(generation_results)
-            return evaluation_results
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}
+    def iter_specs(self, options):
+        with open(os.path.join(self.data_dir, "cruxeval.jsonl")) as data:
+            rows = [json.loads(line) for line in data if line.strip()]
+        if self.debug:
+            rows = rows[:10]
+        for direction in self.tasks:
+            yield from text_specs(
+                rows, options, namespace=direction, prompt=lambda row: self._prompt_for_task(row, direction),
+                target=lambda row: row[direction], grader="crux", reference=lambda row: {"direction": direction},
+                generation={"do_sample": self.DO_SAMPLE, "temperature": self.TEMPERATURE, "max_gen_toks": self.max_tokens},
+                tags=lambda row: {"direction": direction},
+            )

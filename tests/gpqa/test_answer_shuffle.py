@@ -1,13 +1,8 @@
 """Regression tests for GPQA-Diamond answer placement."""
 
-import sys
-from pathlib import Path
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
 from eval.chat_benchmarks.GPQADiamond.eval_instruct import GPQADiamondBenchmark
+from eval.contracts.eval_spec import SourceRef
+from eval.sources.common import SourceOptions
 
 
 def _question(index: int) -> dict[str, str]:
@@ -20,12 +15,14 @@ def _question(index: int) -> dict[str, str]:
     }
 
 
-def test_answer_positions_vary_reproducibly_across_questions():
-    benchmark = GPQADiamondBenchmark.__new__(GPQADiamondBenchmark)
+def test_source_assigns_reproducibly_varied_answer_positions(monkeypatch):
+    benchmark = GPQADiamondBenchmark()
     questions = [_question(index) for index in range(32)]
+    monkeypatch.setattr(benchmark, "load_questions", lambda: questions)
+    options = SourceOptions("GPQADiamond", SourceRef("Idavidrein/gpqa"))
 
-    first = [benchmark.generate_multiple_choice_answers(question)[1] for question in questions]
-    second = [benchmark.generate_multiple_choice_answers(question)[1] for question in questions]
+    first = [(spec.target, spec.requests[0].prompt[0]["content"]) for spec in benchmark.iter_specs(options)]
+    second = [(spec.target, spec.requests[0].prompt[0]["content"]) for spec in benchmark.iter_specs(options)]
 
-    assert set(first) == {"A", "B", "C", "D"}
+    assert {answer for answer, _ in first} == {"A", "B", "C", "D"}
     assert first == second

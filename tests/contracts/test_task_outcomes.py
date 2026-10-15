@@ -1,624 +1,169 @@
-# Copyright The Marin Authors
-# SPDX-License-Identifier: Apache-2.0
-"""Behavioral coverage for the task-outcome boundary."""
+"""Task outcomes from the single execution lifecycle."""
 
+import asyncio
 from argparse import Namespace
-from collections import Counter
-from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE
 from finestore.reader import ReadView
-from lm_eval.models.openai_completions import LocalChatCompletion
 
-from eval.completion_response import CompletionClassification, CompletionContentPolicy
-from eval.contracts.failures import ModelRequestValidationError
-from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
-from eval.contracts.grading import GenerationArtifactManifest
-from eval.contracts.sample_manifest import SampleManifest, SampleRequest
-from eval.contracts.sample_results import record_sample_metrics
-from eval.contracts.task_outcome import (
-    EvaluationRunError,
-    FailureCategory,
-    FailurePhase,
-    TaskRoute,
-    TaskStatus,
-    classify_task_exception,
-    lm_eval_task_outcome,
-    validate_result_document,
-)
-from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
+from eval.completion_response import CompletionContentPolicy, CompletionText, FailedGeneration, completion_response_from_chat_choice
+from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
+from eval.contracts.failures import FailureCategory
+from eval.contracts.finestore_output import FineStoreOutput
+from eval.contracts.task_outcome import EvaluationRunError, TaskRoute, TaskStatus, validate_result_document
+from eval.eval import handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.robust_api import record_completion_responses, record_endpoint_failure
+from eval.execution.driver import SourcePlan, run_evaluations
+from eval.execution.grading import Grader
+from eval.execution.metrics import SourceMetrics
 from eval.serve_eval.results import EvalResults
-from eval.task import BaseBenchmark
 
 
-class _Model:
-    rank = 0
+class Model:
     world_size = 1
+    rank = 0
+
+    def __init__(self, outputs):
+        self.outputs = iter(outputs)
+
+    def generate_until(self, requests):
+        output = next(self.outputs)
+        if isinstance(output, Exception):
+            raise output
+        return [output for _ in requests]
 
 
-class _Benchmark(BaseBenchmark):
-    def __init__(self, generation_result, scored_result=None, generation_error=None, grading_error=None):
-        super().__init__()
-        self.generation_result = generation_result
-        self.scored_result = scored_result
-        self.generation_error = generation_error
-        self.grading_error = grading_error
-
-    def generate_responses(self, model):
-        if self.generation_error is not None:
-            raise self.generation_error
-        return self.generation_result
-
-    def evaluate_responses(self, results):
-        if self.grading_error is not None:
-            raise self.grading_error
-        if self.scored_result and "accuracy" in self.scored_result:
-            examples = results.get("examples", [])
-            correct_count = round(self.scored_result["accuracy"] * len(examples))
-            for index, example in enumerate(examples):
-                record_sample_metrics(example, accuracy=index < correct_count)
-        return self.scored_result
+def spec(task="task", ordinal=0):
+    return EvalSpec(task, SourceRef("fixture"), str(ordinal), ordinal,
+                    (ModelRequest(RequestKind.GENERATE, "question"),), GraderSpec("exact_match"), target="yes")
 
 
-class _CustomTasks:
-    def __init__(self, task_name, benchmark):
-        self.tasks = {task_name: benchmark}
-        self.benchmark = benchmark
-
-    def get_benchmark(self, task_name):
-        return self.benchmark
+def plan(task="task", items=None, graders=None):
+    return SourcePlan(task, TaskRoute.CUSTOM, (items if items is not None else [spec(task)],),
+                      (task,), SourceMetrics(repeated=False), graders or {})
 
 
-class _NoCustomTasks:
-    tasks = {}
+def run(outputs, plans=None, **kwargs):
+    return asyncio.run(run_evaluations(Model(outputs), plans or [plan()], workers=1, **kwargs))
 
 
-def _args(**overrides):
-    values = {
-        "model": "local-completions",
-        "model_args": "model=test-model",
-        "gen_kwargs": None,
-        "num_fewshot": 0,
-        "max_tokens": None,
-        "limit": None,
-        "evaluation_tracker": None,
-        "max_batch_size": None,
-        "device": None,
-        "check_integrity": False,
-        "write_out": False,
-        "system_instruction": None,
-        "apply_chat_template": False,
-        "fewshot_as_multiturn": False,
-        "verbosity": "INFO",
-        "predict_only": False,
-        "confirm_run_unsafe_code": False,
-        "seed": [0, 1234, 1234, 1234],
-        "finestore_output_prefix": "run",
-    }
-    values.update(overrides)
-    return Namespace(**values)
-
-
-def _custom_evaluate(benchmark, output_sink=None, **arg_overrides):
-    task = "contract_task"
-    return evaluate(
-        lm=_Model(),
-        task_manager=_CustomTasks(task, benchmark),
-        pretrain_task_manager=SimpleNamespace(all_tasks={}),
-        task_list=[task],
-        task_routes={task: CHAT_BENCHMARK_ROUTE},
-        batch_sizes_list=[1],
-        args=_args(**arg_overrides),
-        output_sink=output_sink,
-    )
-
-
-def _lm_eval_evaluate(monkeypatch, result=None, error=None, **arg_overrides):
-    def fake_simple_evaluate(*args, **kwargs):
-        if error is not None:
-            raise error
-        if callable(result):
-            return result(*args, **kwargs)
-        return result
-
-    monkeypatch.setattr("eval.resume.lm_eval_native.resume_simple_evaluate", fake_simple_evaluate)
-    task = "arc_easy"
-    return evaluate(
-        lm=_Model(),
-        task_manager=_NoCustomTasks(),
-        pretrain_task_manager=SimpleNamespace(all_tasks={task: object()}),
-        task_list=[task],
-        task_routes={task: LM_EVAL_ROUTE},
-        batch_sizes_list=[1],
-        args=_args(**arg_overrides),
-    )
-
-
-def test_custom_task_empty_metrics_are_reported_without_a_score():
-    benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={})
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["results"] == {}
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
+def test_zero_score_is_a_successful_typed_outcome():
+    result = run(["no"])
+    outcome = result["task_outcomes"]["task"]
+    assert outcome["status"] is TaskStatus.SUCCEEDED
+    assert outcome["metrics"]["accuracy"] == 0.0
+    assert (outcome["expected_count"], outcome["generated_count"], outcome["scored_count"]) == (1, 1, 1)
     validate_result_document(result)
+    assert EvalResults.model_validate(result).task_outcomes["task"].status is TaskStatus.SUCCEEDED
 
 
-def test_generation_exception_taxonomy_distinguishes_policy_and_timeout_failures():
-    assert (
-        classify_task_exception(FailurePhase.GENERATION, ModelRequestValidationError("empty prompt"))
-        is FailureCategory.GENERATION_POLICY
-    )
-    assert (
-        classify_task_exception(FailurePhase.GENERATION, TimeoutError("endpoint timeout"))
-        is FailureCategory.AGENT_TIMEOUT
-    )
-
-
-def test_custom_task_zero_score_is_a_successful_typed_outcome():
-    benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 0.0})
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["results"]["contract_task"] == {"accuracy": 0.0}
-    assert result["task_outcomes"]["contract_task"] == {
-        "schema_version": 1,
-        "task_name": "contract_task",
-        "route": CHAT_BENCHMARK_ROUTE,
-        "status": TaskStatus.SUCCEEDED,
-        "metrics": {"accuracy": 0.0},
-        "expected_count": None,
-        "generated_count": 1,
-        "scored_count": 1,
-        "failure": None,
-        "failure_counts": {},
-        "completion_response_summary": {},
-    }
-
-
-def test_custom_task_stages_samples_before_aggregate_result(tmp_path):
+def test_samples_are_durable_before_aggregate_commit(tmp_path):
     root = str(tmp_path / "archive")
-    benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 0.0})
-
-    with FineStoreOutput(root, "run", ["contract_task"]) as output:
-        result = _custom_evaluate(benchmark, output_sink=output)
+    with FineStoreOutput(root, "run", ["task"]) as output:
+        result = run(["yes"], sink=output)
         assert "samples" not in result
-        staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
-        assert staged is not None
-        assert staged.num_rows == 1
+        assert ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).num_rows == 1
         output.finish(result)
 
 
-def test_custom_grader_persists_scored_sample_before_interruption_and_retry(tmp_path):
-    root = str(tmp_path / "archive")
-
-    class _InterruptedBenchmark(_Benchmark):
-        def evaluate_responses(self, results):
-            record_sample_metrics(results["examples"][0], accuracy=True)
-            self.output.finish_task()
-            raise RuntimeError("grader interrupted")
-
-    interrupted = _InterruptedBenchmark(
-        {"examples": [{"prompt": "first"}, {"prompt": "second"}]},
-        scored_result={"accuracy": 1.0},
-    )
-    with FineStoreOutput(root, "run", ["contract_task"]) as output:
-        interrupted.output = output
-        result = _custom_evaluate(interrupted, output_sink=output)
-        assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.FAILED
-        assert read_finestore_output(root, "run") is None
-        staged = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
-        assert staged is not None
-        assert staged.num_rows == 1
-
-    retry = _Benchmark(
-        {"examples": [{"prompt": "first"}, {"prompt": "second"}]},
-        scored_result={"accuracy": 1.0},
-    )
-    with FineStoreOutput(root, "run", ["contract_task"]) as output:
-        result = _custom_evaluate(retry, output_sink=output)
-        output.finish(result)
-
-    samples = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
-    assert samples is not None
-    assert samples.num_rows == 2
-    assert {row["doc_id"] for row in samples.to_pylist(maps_as_pydicts="strict")} == {"0", "1"}
-    assert read_finestore_output(root, "run") is not None
+@pytest.mark.parametrize(("error", "category"), [
+    (ConnectionError("offline"), FailureCategory.MODEL_TRANSPORT),
+    (TimeoutError(), FailureCategory.AGENT_TIMEOUT),
+])
+def test_generation_failure_has_no_score_and_does_not_stop_other_tasks(error, category):
+    result = run([error, "yes"], [plan("broken"), plan("healthy")])
+    assert result["task_outcomes"]["broken"]["failure"]["category"] is category
+    assert "broken" not in result["results"]
+    assert result["task_outcomes"]["healthy"]["status"] is TaskStatus.SUCCEEDED
 
 
-def test_custom_grader_missing_sample_score_fails_task(tmp_path):
-    class _PartialBenchmark(_Benchmark):
-        def evaluate_responses(self, results):
-            record_sample_metrics(results["examples"][0], accuracy=True)
-            return {"accuracy": 1.0}
-
-    benchmark = _PartialBenchmark({"examples": [{"prompt": "first"}, {"prompt": "second"}]})
-    with FineStoreOutput(str(tmp_path / "archive"), "run", ["contract_task"]) as output:
-        result = _custom_evaluate(benchmark, output_sink=output)
-
+def test_exhausted_transport_is_not_an_incorrect_answer():
+    result = run([FailedGeneration("model_transport")])
     assert result["results"] == {}
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
+    outcome = result["task_outcomes"]["task"]
+    assert outcome["failure"]["category"] is FailureCategory.MODEL_TRANSPORT
+    assert outcome["failure_counts"] == {FailureCategory.MODEL_TRANSPORT: 1}
+    record = result["samples"]["task"][0]
+    assert record["failure_category"] == "model_transport"
+    assert record["metrics"] == []
 
 
-def test_custom_grader_infrastructure_failure_is_reported_without_a_score():
-    benchmark = _Benchmark(
-        {"examples": [{"prompt": "x"}]},
-        grading_error=RuntimeError("sandbox failed"),
-    )
+def test_grader_failure_is_classified_at_the_grading_boundary():
+    def broken(_spec, _outputs):
+        raise ConnectionError("judge unavailable")
 
-    result = _custom_evaluate(benchmark)
-
+    task = plan(items=[replace(spec(), grader=GraderSpec("broken"))], graders={"broken": Grader(broken)})
+    result = run(["yes"], [task])
     assert result["results"] == {}
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
-    validate_result_document(result)
+    assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
 
 
-def test_failed_task_is_saved_in_the_results_package(tmp_path):
-    result = _custom_evaluate(_Benchmark({"examples": [{"prompt": "x"}]}, grading_error=RuntimeError("sandbox failed")))
-    result["config"] = {"batch_sizes": [1]}
-    tracker = DCEvaluationTracker()
-    tracker.general_config_tracker.model_name_sanitized = "test-model"
-    args = _args(
-        finestore_output_path=str(tmp_path / "archive"),
-        show_config=False,
-        use_database=False,
-        debug=False,
-        annotator_model=None,
-        batch_size=1,
-    )
-
-    with FineStoreOutput(args.finestore_output_path, args.finestore_output_prefix, ["contract_task"]) as output:
-        handle_evaluation_output(result, args, tracker, output_sink=output)
-
-    saved = EvalResults.load_archive(str(tmp_path / "archive"))
-    assert saved.task_outcomes["contract_task"].failure.category is FailureCategory.GRADER_INFRASTRUCTURE
-    assert saved.task_outcomes["contract_task"].status is TaskStatus.FAILED
-    assert saved.results == {}
-
-
-def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
-    class _TransportFailureBenchmark(_Benchmark):
-        def generate_responses(self, model):
-            record_endpoint_failure(FailureCategory.MODEL_TRANSPORT)
-            return {"examples": [{"output": ""}]}
-
-        def evaluate_responses(self, results):
-            return super().evaluate_responses(results)
-
-    benchmark = _TransportFailureBenchmark({}, scored_result={"accuracy": 0.0})
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["results"]["contract_task"]["accuracy"] == 0.0
-    assert result["task_outcomes"]["contract_task"]["failure_counts"] == {FailureCategory.MODEL_TRANSPORT: 1}
-    validate_result_document(result)
-
-
-def test_custom_task_with_majority_reasoning_only_content_keeps_score_and_diagnostics():
-    class _MalformedResponsesBenchmark(_Benchmark):
-        def generate_responses(self, model):
-            record_completion_responses(
-                Counter({CompletionClassification.REASONING_ONLY: 2, CompletionClassification.FINAL: 1})
-            )
-            record_endpoint_failure(FailureCategory.MALFORMED_MODEL_RESPONSE, 2)
-            return {"examples": [{"output": "reasoning"}, {"output": "reasoning"}, {"output": "answer"}]}
-
-    result = _custom_evaluate(_MalformedResponsesBenchmark({}, scored_result={"accuracy": 1.0 / 3.0}))
-
-    outcome = result["task_outcomes"]["contract_task"]
-    assert outcome["status"] is TaskStatus.SUCCEEDED
-    assert outcome["failure"] is None
-    assert outcome["generated_count"] == 3
-    assert outcome["scored_count"] == 3
-    assert outcome["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 2}
-    assert outcome["completion_response_summary"] == {"reasoning_only": 2, "final": 1}
-    assert result["results"]["contract_task"]["accuracy"] == 1.0 / 3.0
-    assert result["canonical_results"]["contract_task"]["accuracy"] == 1.0 / 3.0
-    validate_result_document(result)
-
-
-def test_artifacts_are_cleaned_when_grader_infrastructure_fails():
-    artifacts = GenerationArtifactManifest.temporary()
-    artifact = artifacts.write_jsonl("generated", "generated.jsonl", [{"id": "a"}], expected_count=1)
-    benchmark = _Benchmark(
-        {"examples": [{"prompt": "x"}], "artifacts": artifacts},
-        grading_error=RuntimeError("grader crashed"),
-    )
-
-    result = _custom_evaluate(benchmark)
-
-    assert not artifact.path.parent.exists()
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
-
-
-def test_successful_artifact_manifest_is_persisted_before_cleanup():
-    artifacts = GenerationArtifactManifest.temporary()
-    artifact = artifacts.write_jsonl("generated", "generated.jsonl", [{"id": "a"}], expected_count=1)
-    benchmark = _Benchmark(
-        {"examples": [{"prompt": "x"}], "artifacts": artifacts},
-        scored_result={"accuracy": 1.0},
-    )
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["generation_artifacts"]["contract_task"]["artifacts"][0]["expected_count"] == 1
-    assert not artifact.path.parent.exists()
-    validate_result_document(result)
-
-
-def test_requested_sample_serialization_failure_is_typed_and_reported():
-    class _SerializationFailureBenchmark(_Benchmark):
-        def to_samples(self, generation_result, scored_result):
-            raise TypeError("sample is not serializable")
-
-    benchmark = _SerializationFailureBenchmark(
-        {"examples": [{"prompt": "x"}]},
-        scored_result={"accuracy": 1.0},
-    )
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.SERIALIZATION
-
-
-def test_scored_task_without_sample_records_keeps_its_aggregate():
-    class _AggregateOnlyBenchmark(_Benchmark):
-        def to_samples(self, generation_result, scored_result):
-            return []
-
-    benchmark = _AggregateOnlyBenchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 1.0})
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["results"]["contract_task"]["accuracy"] == 1.0
-    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.SUCCEEDED
-    assert "contract_task" not in result.get("samples", {})
-
-
-def test_custom_task_rejects_scoring_coverage_drift():
-    benchmark = _Benchmark(
-        {"examples": [{"prompt": "a"}, {"prompt": "b"}]},
-        scored_result={"accuracy": 1.0, "scored_count": 1},
-    )
-    benchmark._sample_manifest = SampleManifest("contract_task")
-    entries = benchmark.sample_manifest.plan_batch(
-        [SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)]
-    )
-    benchmark.sample_manifest.mark_generated(entries, ["x", "y"])
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
-
-
-def test_custom_generation_exception_is_classified():
-    benchmark = _Benchmark(None, generation_error=RuntimeError("endpoint stopped"))
-
-    result = _custom_evaluate(benchmark)
-
-    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.GENERATION
-    assert result["task_outcomes"]["contract_task"]["failure"]["exception_type"] == "RuntimeError"
-
-
-def test_lm_eval_empty_results_are_reported_without_a_score(monkeypatch):
-    result = _lm_eval_evaluate(monkeypatch, result={"results": {}})
-
-    assert result["task_outcomes"]["arc_easy"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
-
-
-def test_lm_eval_result_for_a_different_task_fails_the_requested_task(monkeypatch):
-    result = _lm_eval_evaluate(
-        monkeypatch,
-        result={"results": {"arc_challenge": {"acc,none": 1.0}}},
-    )
-
-    assert result["task_outcomes"]["arc_easy"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
-
-
-def test_lm_eval_zero_score_is_a_successful_typed_outcome(monkeypatch):
-    result = _lm_eval_evaluate(
-        monkeypatch,
-        result={
-            "results": {"arc_easy": {"acc,none": 0.0}},
-            "n-samples": {"arc_easy": {"original": 1, "effective": 1}},
-        },
-    )
-
-    assert result["results"]["arc_easy"] == {"acc,none": 0.0}
-    assert result["task_outcomes"]["arc_easy"]["status"] is TaskStatus.SUCCEEDED
-    assert result["task_outcomes"]["arc_easy"]["scored_count"] == 1
-
-
-def test_malformed_completion_keeps_other_samples_and_reports_failure(monkeypatch):
-    adapter = object.__new__(LocalChatCompletion)
-    adapter.completion_content_policy = CompletionContentPolicy.COMBINE
-    adapter.completion_responses = []
-
-    def evaluate_responses(*_args, **_kwargs):
-        responses = adapter.parse_generations(
-            [
-                {"choices": [{"index": 0, "message": {"content": "correct"}}]},
-                {"choices": [{"index": 0, "message": {"content": "correct"}}]},
-                {"choices": [{"index": 4, "message": {"content": "unparseable"}}]},
-            ]
-        )
-        assert responses == ["correct", "correct", ""]
-        return {
-            "results": {"arc_easy": {"acc,none": 2 / 3}},
-            "n-samples": {"arc_easy": {"original": 3, "effective": 3}},
-            "samples": {
-                "arc_easy": [
-                    {"resps": [[response]], "metrics": ["acc,none"], "acc,none": float(index < 2)}
-                    for index, response in enumerate(responses)
-                ]
-            },
-        }
-
-    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
-
-    assert result["results"]["arc_easy"]["acc,none"] == 2 / 3
-    assert result["task_outcomes"]["arc_easy"]["failure_counts"] == {FailureCategory.MALFORMED_MODEL_RESPONSE: 1}
-    assert result["task_outcomes"]["arc_easy"]["completion_response_summary"] == {"final": 2, "empty": 1}
-    assert result["samples"]["arc_easy"][2]["resps"] == [[""]]
-    assert result["samples"]["arc_easy"][2]["failure_category"] == FailureCategory.MALFORMED_MODEL_RESPONSE
-    validate_result_document(result)
-
-
-def test_lm_eval_task_with_half_reasoning_only_content_keeps_score_and_diagnostics(monkeypatch):
-    def evaluate_responses(*_args, **_kwargs):
-        record_completion_responses(
-            Counter({CompletionClassification.REASONING_ONLY: 1, CompletionClassification.FINAL: 1})
-        )
-        return {
-            "results": {"arc_easy": {"acc,none": 0.5}},
-            "n-samples": {"arc_easy": {"original": 2, "effective": 2}},
-        }
-
-    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
-
-    outcome = result["task_outcomes"]["arc_easy"]
-    assert outcome["status"] is TaskStatus.SUCCEEDED
-    assert outcome["failure"] is None
-    assert outcome["completion_response_summary"] == {"reasoning_only": 1, "final": 1}
-    assert result["results"]["arc_easy"]["acc,none"] == 0.5
-    validate_result_document(result)
-
-
-def test_lm_eval_task_with_half_empty_content_has_no_score(monkeypatch):
-    def evaluate_responses(*_args, **_kwargs):
-        record_completion_responses(
-            Counter({CompletionClassification.EMPTY: 1, CompletionClassification.FINAL: 1})
-        )
-        return {
-            "results": {"arc_easy": {"acc,none": 0.5}},
-            "n-samples": {"arc_easy": {"original": 2, "effective": 2}},
-        }
-
-    result = _lm_eval_evaluate(monkeypatch, result=evaluate_responses)
-
-    outcome = result["task_outcomes"]["arc_easy"]
-    assert outcome["status"] is TaskStatus.FAILED
-    assert outcome["failure"]["category"] is FailureCategory.MALFORMED_MODEL_RESPONSE
-    assert outcome["completion_response_summary"] == {"empty": 1, "final": 1}
+def test_missing_per_sample_metrics_cannot_become_an_aggregate_success():
+    task = plan(items=[replace(spec(), grader=GraderSpec("empty"))], graders={"empty": Grader(lambda *_: Grade({}))})
+    result = run(["yes"], [task])
     assert result["results"] == {}
-    assert result["canonical_results"] == {}
-    validate_result_document(result)
+    assert result["task_outcomes"]["task"]["status"] is TaskStatus.FAILED
 
 
-def test_lm_eval_outcome_rejects_result_count_that_disagrees_with_manifest():
-    manifest = SampleManifest("arc_easy")
-    entries = manifest.plan_batch([SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)])
-    manifest.mark_generated(entries, ["x", "y"])
+def test_sample_serialization_failure_is_typed_and_closes_the_sink():
+    closed = []
 
-    outcome = lm_eval_task_outcome(
-        "arc_easy",
-        TaskRoute.LM_EVAL,
-        {
-            "results": {"arc_easy": {"acc,none": 1.0}},
-            "n-samples": {"arc_easy": {"original": 2, "effective": 1}},
-        },
-        manifest,
-    )
+    class Sink:
+        def write_sample(self, task, record):
+            raise ValueError("invalid sample")
 
-    assert outcome.status is TaskStatus.FAILED
-    assert outcome.failure.category is FailureCategory.INCOMPLETE_EVALUATION
-    assert "manifest" in outcome.failure.message
+        def finish_task(self):
+            closed.append(True)
+
+    result = run(["yes"], sink=Sink())
+    assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.SERIALIZATION
+    assert closed == [True]
 
 
-def test_lm_eval_outcome_accepts_limited_manifest_coverage():
-    manifest = SampleManifest("arc_easy")
-    entries = manifest.plan_batch([SampleRequest(source_id="a", ordinal=0), SampleRequest(source_id="b", ordinal=1)])
-    manifest.mark_generated(entries, ["x", "y"])
-
-    outcome = lm_eval_task_outcome(
-        "arc_easy",
-        TaskRoute.LM_EVAL,
-        {
-            "results": {"arc_easy": {"acc,none": 1.0}},
-            "n-samples": {"arc_easy": {"original": 100, "effective": 2}},
-        },
-        manifest,
-    )
-
-    assert outcome.status is TaskStatus.SUCCEEDED
-    assert outcome.expected_count == 2
-    assert outcome.generated_count == 2
-    assert outcome.scored_count == 2
+def completion(content=None, reasoning=None):
+    choice = {"message": {"content": content, "reasoning_content": reasoning}, "finish_reason": "stop"}
+    response = completion_response_from_chat_choice({"choices": [choice]}, choice)
+    return CompletionText(response.normalized_content(), response, CompletionContentPolicy.COMBINE)
 
 
-def test_lm_eval_exception_is_classified_instead_of_becoming_empty_success(monkeypatch):
-    result = _lm_eval_evaluate(monkeypatch, error=RuntimeError("grader crashed"))
-
-    assert result["task_outcomes"]["arc_easy"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
-    assert result["task_outcomes"]["arc_easy"]["failure"]["exception_type"] == "RuntimeError"
-
-
-def test_lm_eval_timeout_without_message_is_a_valid_agent_timeout(monkeypatch):
-    result = _lm_eval_evaluate(monkeypatch, error=TimeoutError())
-
-    failure = result["task_outcomes"]["arc_easy"]["failure"]
-    assert failure["category"] is FailureCategory.AGENT_TIMEOUT
-    assert failure["message"]
-    assert failure["exception_type"] == "TimeoutError"
-    validate_result_document(result)
+@pytest.mark.parametrize("outputs, status", [
+    ([completion(), completion("yes")], TaskStatus.FAILED),
+    ([completion(reasoning="yes"), completion("yes")], TaskStatus.SUCCEEDED),
+])
+def test_empty_response_quality_guard_preserves_reasoning_scores(outputs, status):
+    result = run(outputs, [plan(items=[spec(ordinal=0), spec(ordinal=1)])])
+    outcome = result["task_outcomes"]["task"]
+    assert outcome["status"] is status
+    assert sum(outcome["completion_response_summary"].values()) == 2
+    assert len(result["samples"]["task"]) == 2
 
 
-def test_one_task_infrastructure_failure_does_not_stop_other_tasks(monkeypatch):
-    def fake_evaluate(*_args, **kwargs):
-        if kwargs["tasks"] == ["broken"]:
-            raise TimeoutError("endpoint timeout")
-        return {
-            "results": {"healthy": {"acc,none": 0.75}},
-            "n-samples": {"healthy": {"original": 4, "effective": 4}},
-        }
-
-    monkeypatch.setattr("eval.resume.lm_eval_native.resume_simple_evaluate", fake_evaluate)
-    result = evaluate(
-        lm=_Model(),
-        task_manager=_NoCustomTasks(),
-        pretrain_task_manager=SimpleNamespace(all_tasks={"broken": object(), "healthy": object()}),
-        task_list=["broken", "healthy"],
-        task_routes={"broken": LM_EVAL_ROUTE, "healthy": LM_EVAL_ROUTE},
-        batch_sizes_list=[1, 1],
-        args=_args(),
-    )
-
-    assert result["task_outcomes"]["broken"]["failure"]["category"] is FailureCategory.AGENT_TIMEOUT
-    assert result["results"]["healthy"]["acc,none"] == 0.75
-    validate_result_document(result)
+def test_empty_source_is_an_incomplete_evaluation():
+    result = run([], [plan(items=[])])
+    assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
 
 
-@pytest.mark.parametrize(
-    "result",
-    [
-        {"results": {"task": {"accuracy": 1.0}}},
-        {
-            "results": {"task": {"accuracy": 1.0}},
-            "task_outcomes": {"task": {"status": "succeeded"}},
-        },
-    ],
-)
-def test_aggregate_writer_rejects_results_without_a_valid_task_outcome(result, tmp_path):
+@pytest.mark.parametrize("result", [{"results": {}}, {"results": {"task": {"accuracy": 1.0}}, "task_outcomes": {"task": {"status": "succeeded"}}}])
+def test_aggregate_writer_rejects_missing_or_invalid_task_outcomes(result, tmp_path):
     args = Namespace(show_config=False, wandb_args=None, finestore_output_path=str(tmp_path / "archive"))
-    tracker = DCEvaluationTracker()
-
     with pytest.raises(EvaluationRunError):
-        handle_evaluation_output(result, args, tracker)
+        handle_evaluation_output(result, args, DCEvaluationTracker())
     assert not (tmp_path / "archive").exists()
 
 
-def test_persisted_result_reader_retains_typed_task_outcomes():
-    benchmark = _Benchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 0.0})
-
-    loaded = EvalResults.model_validate(_custom_evaluate(benchmark))
-
-    assert loaded.task_outcomes["contract_task"].status is TaskStatus.SUCCEEDED
-    assert loaded.task_outcomes["contract_task"].metrics == {"accuracy": 0.0}
-
-
-def test_persisted_result_reader_rejects_legacy_results_without_outcomes():
+def test_result_reader_rejects_results_without_outcomes():
     with pytest.raises(EvaluationRunError, match="no task outcomes"):
         EvalResults.model_validate({"results": {"task": {"accuracy": 1.0}}})
+
+
+def test_predict_only_exports_through_the_same_pool_without_invoking_a_grader():
+    task = plan(items=[replace(spec(), grader=GraderSpec("must_not_run"))])
+    result = run(["candidate output"], [task], predict_only=True)
+    outcome = result["task_outcomes"]["task"]
+    assert outcome["status"] is TaskStatus.EXPORTED
+    assert outcome["generated_count"] == 1
+    assert outcome["scored_count"] is None
+    assert result["results"] == {}
+    assert result["samples"]["task"][0]["resps"] == [["candidate output"]]

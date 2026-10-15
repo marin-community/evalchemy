@@ -1,3 +1,5 @@
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
 """GSM8KPerturbed: chat-mode GSM8K under meaning-preserving prompt noise and
 irrelevant chat history.
 
@@ -33,18 +35,14 @@ candidate follow-up if that rate matters for a target model.
 Design: marin-community/marin#7776 (part of marin-community/marin#7090).
 """
 
-import hashlib
 import json
 import logging
 import os
 import re
 from typing import Any, Dict, List, Optional
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.sample_results import record_sample_metrics
-from eval.generation_stops import GSM8K_STOP_SEQUENCES, truncate_at_stop
+from eval.generation_stops import GSM8K_STOP_SEQUENCES
 from eval.task import BaseBenchmark
 
 # lm-eval-harness's gsm8k prompt, sent zero-shot through the chat template --
@@ -70,30 +68,16 @@ def load_static_records(filename: str) -> List[Dict[str, Any]]:
         return [json.loads(line) for line in f]
 
 
-def extract_flexible_answer(text: str) -> Optional[str]:
-    """Return the last number-like token before a next-turn boundary.
-
-    Faithful to the harness convention, a digitless token like ".." still
-    counts as an (incorrect) answer rather than no-answer.
-    """
-    matches = FLEXIBLE_RE.findall(truncate_at_stop(text, GSM8K_STOP_SEQUENCES))
-    if not matches:
-        return None
-    return matches[-1][0] or matches[-1][1]
 
 
-def sanitize_numeric(answer: str) -> str:
-    """Strip currency symbols and thousands separators before comparison."""
-    return answer.replace("$", "").replace(",", "").strip()
 
 
-def numeric_match(model_answer: str, gold: str) -> bool:
-    got = NUMBER_RE.search(sanitize_numeric(model_answer))
-    want = NUMBER_RE.search(sanitize_numeric(gold))
-    return got is not None and want is not None and float(got.group()) == float(want.group())
 
 
 class GSM8KPerturbedBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("marin-community/gsm8k-perturbed", "test")
+    METRICS = ("gsm8k-clean", "gsm8k-perturbed")
+    PRIMARY_METRIC = "gsm8k-perturbed"
     def __init__(
         self,
         max_tokens: int = 4096,
@@ -105,131 +89,33 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.debug = debug
 
-    def _unit_key(self, task_name: str, instance: Instance) -> Dict[str, Any]:
-        """Key resume units by record id plus a hash of the rendered prompt.
 
-        The base key is (benchmark, instance index); with two tasks both
-        numbering instances from zero, a resumed run would replay clean
-        outputs as perturbed. Record ids ("gsm8k-test-#N" vs
-        "gsm8k-test-#N::<condition>") make collisions impossible, and the
-        prompt hash invalidates stored outputs whenever the data or the
-        prompt template changes -- without it, a resumed run silently
-        replays outputs generated from different prompts.
-        """
-        prompt_sha = hashlib.sha256(json.dumps(instance.args[0], sort_keys=True, default=str).encode()).hexdigest()[:12]
-        return {"task": task_name, "problem_id": str(instance.doc["id"]), "prompt_sha": prompt_sha}
 
-    def _build_instances(self, model: LM, records: List[Dict[str, Any]]) -> List[Instance]:
-        instances = []
-        for idx, record in enumerate(records):
-            messages = []
-            for exchange in record.get("history_exchanges") or []:
-                messages.append({"role": "user", "content": exchange["question"]})
-                messages.append({"role": "assistant", "content": exchange["answer"]})
-            prompt = PROMPT_TEMPLATE.replace("{question}", record["question"])
-            messages.append({"role": "user", "content": prompt})
-            templated = self._prepare_messages(messages, model)
-            instances.append(
-                Instance(
-                    "generate_until",
-                    record,
-                    (
-                        templated,
-                        {
-                            "do_sample": False,
-                            "temperature": 0.0,
-                            "max_new_tokens": self.max_new_tokens,
-                            "until": list(GSM8K_STOP_SEQUENCES),
-                        },
-                    ),
-                    idx,
-                )
-            )
-        return instances
 
-    def generate_responses(self, model: LM) -> Optional[Dict[str, Any]]:
-        examples: List[Dict[str, Any]] = []
+
+
+
+
+
+
+    REDUCER = ReducerSpec(name="paired_conditions")
+
+    def iter_specs(self, options):
         for task, filename in TASK_FILES.items():
-            records = load_static_records(filename)
+            rows = load_static_records(filename)
             if self.debug:
-                records = records[:10]
-            for record in records:
-                record["task"] = task
-            self.logger.info(f"Generating responses for {task} ({len(records)} instances)...")
-            outputs = self.compute(model, self._build_instances(model, records))
-            if model.rank != 0:
-                continue
-            for record, output in zip(records, outputs):
-                record["output"] = output
-            examples.extend(records)
-        if model.rank != 0:
-            return None
-        # The {"examples": [...]} convention feeds BaseBenchmark.to_samples, so
-        # per-sample records (--log_samples, wandb) work without an override.
-        return {"examples": examples}
-
-    def evaluate_responses(self, results: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
-        if results is None:  # non-primary ranks
-            return None
-        eval_results: Dict[str, float] = {}
-        for record in results["examples"]:
-            answer = extract_flexible_answer(record["output"])
-            record["model_answer"] = answer
-            record["no_answer"] = answer is None
-            record["correct"] = answer is not None and numeric_match(answer, record["answer"])
-            record_sample_metrics(record, accuracy=record["correct"], no_answer=record["no_answer"])
-        clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
-        for task in TASK_FILES:
-            records = [r for r in results["examples"] if r["task"] == task]
-            if not records:
-                continue
-            eval_results[task] = _accuracy(records)
-            eval_results[f"{task}_no_answer"] = _no_answer_rate(records)
-            if task == PERTURBED_TASK:
-                eval_results.update(self._per_condition(records, task, clean_correct))
-        return eval_results
-
-    @staticmethod
-    def _per_condition(records: List[Dict[str, Any]], task: str, clean_correct: Dict[str, bool]) -> Dict[str, float]:
-        """Paired per-condition metrics.
-
-        Each condition covers a different item subset, so comparing a
-        condition's accuracy against overall clean accuracy conflates the
-        perturbation effect with subset difficulty (observed at +/-5-8pp).
-        Every metric here therefore pairs each instance with the clean run
-        of the same item: `_clean_subset` is clean accuracy over exactly the
-        condition's items and `_paired_delta` is the condition's effect.
-        `_harmed`/`_helped` count items whose verdict flipped.
-        """
-        by_condition: Dict[str, List[Dict[str, Any]]] = {}
-        for record in records:
-            by_condition.setdefault(record["condition"], []).append(record)
-        out: Dict[str, float] = {}
-        for condition, items in sorted(by_condition.items()):
-            prefix = f"{task}:{condition}"
-            paired = [
-                (i, clean_correct[i["id"].split("::")[0]]) for i in items if i["id"].split("::")[0] in clean_correct
-            ]
-            out[prefix] = _accuracy(items)
-            out[f"{prefix}_no_answer"] = _no_answer_rate(items)
-            if paired:
-                clean_subset = 100.0 * sum(1 for _, c in paired if c) / len(paired)
-                out[f"{prefix}_clean_subset"] = clean_subset
-                out[f"{prefix}_paired_delta"] = out[prefix] - clean_subset
-                out[f"{prefix}_harmed"] = float(sum(1 for i, c in paired if c and not i["correct"]))
-                out[f"{prefix}_helped"] = float(sum(1 for i, c in paired if i["correct"] and not c))
-            changed = [i for i in items if i.get("changed")]
-            if changed and len(changed) != len(items):
-                out[f"{prefix}_changed_only"] = _accuracy(changed)
-            number_words = [i for i in items if i.get("number_words_affected")]
-            if number_words:
-                out[f"{prefix}_number_words"] = _accuracy(number_words)
-        return out
-
-
-def _accuracy(records: List[Dict[str, Any]]) -> float:
-    return 100.0 * sum(1 for r in records if r["correct"]) / len(records)
-
-
-def _no_answer_rate(records: List[Dict[str, Any]]) -> float:
-    return 100.0 * sum(1 for r in records if r["no_answer"]) / len(records)
+                rows = rows[:10]
+            def prompt(row):
+                messages = []
+                for exchange in row.get("history_exchanges") or []:
+                    messages.extend([{"role": "user", "content": exchange["question"]},
+                                     {"role": "assistant", "content": exchange["answer"]}])
+                return [*messages, {"role": "user", "content": PROMPT_TEMPLATE.format(question=row["question"])}]
+            yield from text_specs(
+                rows, options, prompt=prompt, target=lambda row: row["answer"], grader="gsm8k_flexible", namespace=task,
+                reference=lambda row: {"pair_id": row["id"].split("::")[0]},
+                generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens,
+                            "until": list(GSM8K_STOP_SEQUENCES)},
+                tags=lambda row: {"task": task, "condition": row.get("condition", "baseline"),
+                                  "changed": str(bool(row.get("changed"))), "number_words": str(bool(row.get("number_words_affected")))},
+            )

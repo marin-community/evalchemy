@@ -15,8 +15,8 @@ import numpy as np
 from tqdm import tqdm
 
 from eval.graders import livecodebench as _lcb_grader
-from livebench.lcb_runner.evaluation.testing_util import run_test
-from livebench.lcb_runner.evaluation.pass_k_utils import compute_metrics_from_results
+from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.evaluation.testing_util import run_test
+from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.evaluation.pass_k_utils import compute_metrics_from_results
 
 _logger = logging.getLogger(__name__)
 
