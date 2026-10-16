@@ -274,6 +274,7 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["."]
 
 # Marin coding standards (https://github.com/marin-community/marin-style), run via
 # `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so this is

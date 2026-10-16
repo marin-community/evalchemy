@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from eval.execution.engine import ItemResult
 from eval.execution.grading import MeanMetrics, TrialMetrics
+from eval.contracts.aggregation import outcome_report
 from eval.contracts.eval_spec import ReducerSpec
 from eval.execution.paired import PairedConditions
 
@@ -29,6 +30,9 @@ class SourceMetrics:
         self.pass_at_k = TrialMetrics(pass_at_k, policy.trial_metric) if pass_at_k else None
         self.paired = PairedConditions() if policy.name == "paired_conditions" else None
         self.annotations = [] if policy.name == "alpaca" else None
+        self.report_outcomes = defaultdict(list) if policy.name == "outcome_report" else None
+        self.report_population = ()
+        self.report_metadata = {}
 
     def add(self, result: ItemResult) -> None:
         if self.policy.selected_trial is not None and (result.spec.trial or 0) != self.policy.selected_trial:
@@ -38,6 +42,12 @@ class SourceMetrics:
             self.paired.add(result)
         if self.annotations is not None:
             self.annotations.append(result.grade.audit["alpaca_annotation"])
+        if self.report_outcomes is not None:
+            self.report_outcomes[result.spec.trial or 0].append(result.grade.audit["report_outcome"])
+            reference = result.spec.grader.reference
+            if "report_population" in reference:
+                self.report_population = reference["report_population"]
+                self.report_metadata = reference["report_metadata"]
         self.means.add(result.grade.metrics, result.grade.weights)
         self.examples.add(result.record["sample_id"])
         self.trials[result.spec.trial or 0].add(result.grade.metrics, result.grade.weights)
@@ -156,6 +166,16 @@ class SourceMetrics:
             else:
                 metrics = {"win_rate": None, "length_controlled_winrate": None, "n_total": 0}
             metrics.update(coverage)
+        if self.report_outcomes is not None:
+            metrics.update(self.report_metadata)
+            reports = {
+                str(trial): outcome_report(rows, self.report_population)
+                for trial, rows in sorted(self.report_outcomes.items())
+            }
+            if self.repeated:
+                metrics["reports_by_trial"] = reports
+            else:
+                metrics.update(reports["0"])
         return {"results": {task: metrics}}
 
     def _last_trial_metrics(self) -> dict:

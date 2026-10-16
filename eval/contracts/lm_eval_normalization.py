@@ -132,7 +132,9 @@ def _sample_metrics(raw: Mapping[str, object]) -> dict[str, float]:
 
 def _grading(metrics: dict[str, float], extraction_filter: str | None, raw: Mapping[str, object]) -> Grading | None:
     detail = json.dumps(
-        {key: raw[key] for key in ("failure_category", "judge_error", "judge_label", "judge_raw") if key in raw},
+        {key: raw[key] for key in (
+            "failure_category", "judge_error", "judge_label", "judge_raw", "report_outcome", "report_status", "report",
+        ) if key in raw},
         ensure_ascii=False,
     )
     picked = _primary_metric(metrics)
