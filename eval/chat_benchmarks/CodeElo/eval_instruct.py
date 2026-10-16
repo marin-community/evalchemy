@@ -250,8 +250,8 @@ class CodeEloBenchmark(BaseBenchmark):
                 "reason": f"Critical error: {str(outer_e)}",
             }
 
-    def evaluate_responses(self, responses: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions in parallel using threads."""
+    def grade_responses(self, responses: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if responses is None:
             return None
@@ -273,10 +273,9 @@ class CodeEloBenchmark(BaseBenchmark):
                 examples_by_repeat[i].append(example_copy)
 
         # Evaluate each set of completions separately
-        all_metrics = []
-        run_stats = []
         correct_by_repeat = []
-        num_questions = len(responses["examples"])
+        for example in responses["examples"]:
+            example["grading_results"] = []
 
         for repeat_idx, examples in examples_by_repeat.items():
             # Use ThreadPoolExecutor with limited concurrency
@@ -306,6 +305,28 @@ class CodeEloBenchmark(BaseBenchmark):
                             example,
                         )
 
+            for source, (verdict, _) in zip(responses["examples"], results, strict=True):
+                source["grading_results"].append(verdict)
+            correct_by_repeat.append([result["correctness"] for result, _ in results])
+
+        self.record_repeated_accuracy(responses["examples"], correct_by_repeat)
+        return responses
+
+    def aggregate_results(self, responses: Dict[str, Any]) -> Dict[str, Any]:
+        examples = responses["examples"]
+        num_questions = len(examples)
+        if not examples:
+            raise ValueError("cannot aggregate an empty set of code verdicts")
+        all_metrics = []
+        run_stats = []
+        num_repeat = len(examples[0]["grading_results"])
+        for repeat_idx in range(num_repeat):
+            results = [
+                (example["grading_results"][repeat_idx], example) for example in examples
+                if repeat_idx in example.get("valid_repeats", range(num_repeat))
+            ]
+            if not results:
+                continue
             # Calculate metrics for this repeat
             total_correct = sum(1 for result, _ in results if result["correctness"])
             total_finish = len(results)
@@ -342,9 +363,6 @@ class CodeEloBenchmark(BaseBenchmark):
                     "accuracy": total_correct / total_finish,
                 }
             )
-            correct_by_repeat.append([result["correctness"] for result, _ in results])
-
-        self.record_repeated_accuracy(responses["examples"], correct_by_repeat)
 
         final_metrics = {}
 
@@ -356,9 +374,9 @@ class CodeEloBenchmark(BaseBenchmark):
         self.logger.info(f"Overall accuracy: {mean_acc:.2%} ± {stderr_acc:.2%}")
 
         # Calculate stats for each difficulty level
-        difficulties = all_metrics[0]["per_difficulty_correct"].keys()
+        difficulties = sorted({difficulty for metrics in all_metrics for difficulty in metrics["per_difficulty_correct"]})
         for diff in difficulties:
-            acc_values = [m[f"accuracy_{diff}"] for m in all_metrics]
+            acc_values = [m[f"accuracy_{diff}"] for m in all_metrics if f"accuracy_{diff}" in m]
             mean_acc, stderr_acc = calc_stats(acc_values)
             final_metrics[f"accuracy_{diff}_avg"] = mean_acc
             final_metrics[f"accuracy_{diff}_std_err"] = stderr_acc

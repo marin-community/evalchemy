@@ -4,6 +4,7 @@ import dataclasses
 import json
 
 from .evaluation_main import (
+    OutputExample,
     test_instruction_following_strict,
     test_instruction_following_loose,
     read_prompt_to_response_dict,
@@ -60,27 +61,45 @@ def get_report(outputs):
     return {"prompt-level": prompt_correct / prompt_total, "instruction-level": instruction_correct / instruction_total}
 
 
-def evaluate_accuracy(response_filename):
+def grade_accuracy(response_filename):
+    """Check each response and retain all instruction verdicts."""
     inputs = read_prompt_list(response_filename)
-    prompt_to_response = read_prompt_to_response_dict(response_filename)
+    responses = read_prompt_to_response_dict(response_filename)
+    return [
+        {
+            "prompt": inp.prompt,
+            "instruction_id_list": inp.instruction_id_list,
+            "strict_instruction_pass": test_instruction_following_strict(inp, responses).follow_instruction_list,
+            "loose_instruction_pass": test_instruction_following_loose(inp, responses).follow_instruction_list,
+        }
+        for inp in inputs
+    ]
 
-    follow_rate_by_prompt = collections.defaultdict(dict)
-    for func, protocol in [
-        (test_instruction_following_strict, "strict"),
-        (test_instruction_following_loose, "loose"),
-    ]:
-        outputs = []
-        for inp in inputs:
-            outputs.append(func(inp, prompt_to_response))
 
-        follow_all_instructions = [o.follow_all_instructions for o in outputs]
-        accuracy = sum(follow_all_instructions) / len(outputs)
+def aggregate_accuracy(graded):
+    """Reduce the loose instruction verdicts with their original prompt and instruction denominators."""
+    outputs = [
+        OutputExample(
+            instruction_id_list=row["instruction_id_list"],
+            prompt=row["prompt"],
+            response="",
+            follow_all_instructions=all(row["loose_instruction_pass"]),
+            follow_instruction_list=row["loose_instruction_pass"],
+        )
+        for row in graded
+    ]
+    return get_report(outputs)
 
-        logging.info(f"Accuracy: {accuracy}")
-        for output in outputs:
-            follow_rate_by_prompt[output.prompt][protocol] = float(output.follow_all_instructions)
 
-    report = get_report(outputs)
-    # Per-prompt outcomes so the caller can record per-sample metrics.
-    report[PER_PROMPT_FOLLOW_RATE] = dict(follow_rate_by_prompt)
-    return report
+def evaluate_accuracy(response_filename):
+    graded = grade_accuracy(response_filename)
+    return {
+        **aggregate_accuracy(graded),
+        PER_PROMPT_FOLLOW_RATE: {
+            row["prompt"]: {
+                protocol: float(all(row[f"{protocol}_instruction_pass"]))
+                for protocol in ("strict", "loose")
+            }
+            for row in graded
+        },
+    }

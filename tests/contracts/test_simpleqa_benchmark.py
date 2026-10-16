@@ -84,7 +84,7 @@ def test_simpleqa_reports_canonical_aggregate_metrics(monkeypatch):
         return [EquivalenceJudgment(label, letter) for label, letter in zip(labels, "ABC", strict=True)]
 
     benchmark = SimpleQABenchmark(judge_api_key="judge-key")
-    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_simpleqa", fake_judge)
+    monkeypatch.setitem(benchmark.grade_responses.__globals__, "judge_simpleqa", fake_judge)
     examples = [
         {"question": f"Question {index}", "answer": "answer", "model_output": "candidate"} for index in range(3)
     ]

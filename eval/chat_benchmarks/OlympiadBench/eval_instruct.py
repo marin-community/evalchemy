@@ -10,6 +10,7 @@ import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.aggregation import repeated_accuracy_results
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
 from eval.contracts.task_outcome import TaskFailure
@@ -324,97 +325,70 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             example["answer_extraction_errors"] = [error for _, error in extracted]
         return {"examples": examples, "pass_at_k": True}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions."""
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        multiple = results.get("pass_at_k") or self.n_repeat > 1
+        answers = [example["model_answers"] if multiple else [example["model_answer"]] for example in examples]
+        correct_by_example = self._grade_model_answers(examples, answers)
+        for example, correct in zip(examples, correct_by_example, strict=True):
+            example["num_correct"] = sum(correct)
+        if results.get("pass_at_k"):
+            self.record_pass_at_k_metrics(examples, [example["num_correct"] for example in examples])
+        elif self.n_repeat > 1:
+            self.record_repeated_accuracy(examples, list(zip(*correct_by_example)))
+        else:
+            for example, correct in zip(examples, correct_by_example, strict=True):
+                record_sample_metrics(example, accuracy=correct[0])
+        return results
 
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         examples = results["examples"]
         total = len(examples)
-
-        # ---- native pass@k aggregation ----
+        if not examples:
+            raise ValueError("OlympiadBench cannot aggregate an empty result set")
+        grades = [grade for example in examples for grade in example["equivalence_grades"]]
+        all_grades = [
+            grade for example in [*examples, *results.get("excluded_examples", [])]
+            for grade in example["equivalence_grades"]
+        ]
+        grading_summary = {
+            "num_graded_by_minerva": sum(grade["method"] == EquivalenceMethod.MINERVA.value for grade in grades),
+            "num_judged_by_llm": sum(
+                grade["method"] == EquivalenceMethod.LLM_JUDGE.value and "judge_error" not in grade
+                for grade in grades
+            ),
+            "num_judge_failed": sum("judge_error" in grade for grade in all_grades),
+            "judge_model": self.judge_config.model if self.judge_config is not None else None,
+        }
+        metadata = {**grading_summary, **self._dataset_provenance(total)}
         if results.get("pass_at_k"):
-            correct_by_example, grading_summary = self._grade_model_answers(
-                examples, [example["model_answers"] for example in examples]
-            )
-            num_correct = [sum(int(correct) for correct in answers) for answers in correct_by_example]
-            self.record_pass_at_k_metrics(examples, num_correct)
-            pass_at_k_table = self.aggregate_pass_at_k(num_correct)
-            results.update(
-                {
-                    "num_total": total,
-                    "num_samples": self.num_samples,
-                    "num_correct": num_correct,
-                    **grading_summary,
-                    **self._dataset_provenance(total),
-                    **pass_at_k_table,
-                }
-            )
-            return results
-
-        if self.n_repeat > 1:
-            correct_by_example, grading_summary = self._grade_model_answers(
-                examples, [example["model_answers"] for example in examples]
-            )
-            all_results = []
-            correct_by_repeat = [
-                [answers[repeat_idx] for answers in correct_by_example] for repeat_idx in range(self.n_repeat)
-            ]
-            for repeat_idx in range(self.n_repeat):
-                solved = sum(correct_by_repeat[repeat_idx])
-                all_results.append(
-                    {
-                        "repetition": repeat_idx + 1,
-                        "num_total": total,
-                        "num_solved": solved,
-                        "accuracy": solved / total,
-                    }
-                )
-
-            self.record_repeated_accuracy(examples, correct_by_repeat)
-            accuracies = [result["accuracy"] for result in all_results]
-            results.update(
-                {
-                    "num_total": total,
-                    "solved_avg": np.mean([result["num_solved"] for result in all_results]),
-                    "run_stats": all_results,
-                    "accuracy_avg": np.mean(accuracies),
-                    "accuracy_std_err": np.std(accuracies) / np.sqrt(self.n_repeat),
-                    "num_repeat": self.n_repeat,
-                    **grading_summary,
-                    **self._dataset_provenance(total),
-                }
-            )
-            return results
-
-        correct_by_example, grading_summary = self._grade_model_answers(
-            examples, [[example["model_answer"]] for example in examples]
-        )
-        correct = [answers[0] for answers in correct_by_example]
-        for example, is_correct in zip(examples, correct):
-            record_sample_metrics(example, accuracy=is_correct)
-        solved = sum(correct)
-
-        results.update(
-            {
+            num_correct = [example["num_correct"] for example in examples]
+            return {
+                **results,
                 "num_total": total,
-                "num_solved": solved,
-                "accuracy": solved / total,
-                "accuracy_stderr": np.sqrt((solved / total) * (1 - solved / total) / (total - 1)) if total > 1 else 0.0,
-                **grading_summary,
-                **self._dataset_provenance(total),
+                "num_samples": self.num_samples,
+                "num_correct": num_correct,
+                **metadata,
+                **self.aggregate_pass_at_k(num_correct),
             }
-        )
-
-        return results
+        if self.n_repeat > 1:
+            return {**results, **repeated_accuracy_results(examples), **metadata}
+        solved = sum(example["sample_metrics"]["accuracy"] for example in examples)
+        accuracy = solved / total
+        return {
+            **results,
+            "num_total": total,
+            "num_solved": solved,
+            "accuracy": accuracy,
+            "accuracy_stderr": np.sqrt(accuracy * (1 - accuracy) / (total - 1)) if total > 1 else 0.0,
+            **metadata,
+        }
 
     def _grade_model_answers(
         self,
         examples: List[Dict[str, Any]],
         answers_by_example: List[List[str]],
-    ) -> tuple[List[List[bool]], Dict[str, Any]]:
+    ) -> List[List[bool]]:
         """Grade extracted answers with Minerva followed by the shared LLM judge."""
         requests = []
         positions = []
@@ -433,14 +407,10 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
         correct_by_example = [[False] * len(answers) for answers in answers_by_example]
         grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
-        num_graded_by_minerva = 0
-        num_judged_by_llm = 0
-        num_judge_failed = 0
         for (example_index, answer_index), outcome in zip(positions, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 if not isinstance(outcome, Exception):
                     raise outcome
-                num_judge_failed += 1
                 record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
                 grades_by_example[example_index][answer_index] = {
                     "method": EquivalenceMethod.LLM_JUDGE.value,
@@ -459,7 +429,6 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             assert isinstance(outcome, EquivalenceResult)
             correct_by_example[example_index][answer_index] = outcome.equivalent
             if outcome.method == EquivalenceMethod.MINERVA:
-                num_graded_by_minerva += 1
                 grades_by_example[example_index][answer_index] = {
                     "method": outcome.method.value,
                     "judge_label": None,
@@ -467,7 +436,6 @@ class OlympiadBenchBenchmark(BaseBenchmark):
                 }
                 continue
 
-            num_judged_by_llm += 1
             assert outcome.judgment is not None
             grades_by_example[example_index][answer_index] = {
                 "method": outcome.method.value,
@@ -480,20 +448,16 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             if len(grades) == 1:
                 example.update(grades[0])
 
-        return correct_by_example, {
-            "num_graded_by_minerva": num_graded_by_minerva,
-            "num_judged_by_llm": num_judged_by_llm,
-            "num_judge_failed": num_judge_failed,
-            "judge_model": self.judge_config.model if self.judge_config is not None else None,
-        }
+        return correct_by_example
 
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        samples = super().to_samples(generation_result, scored_result)
-        examples = generation_result["examples"]
+    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        samples = super().to_sample_group(namespace, examples)
         for sample in samples:
             grades = examples[sample["doc_id"]]["equivalence_grades"]
             repeat = sample.get("sample_repeat")
             sample["equivalence_grades"] = grades if repeat is None else [grades[repeat]]
+            if any("judge_error" in grade for grade in sample["equivalence_grades"]):
+                sample["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
         return samples
 
     def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:

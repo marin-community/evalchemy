@@ -24,7 +24,7 @@ from lm_eval.api.model import LM
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .scorer import ExampleScore, extract_answer, length_bucket, mean, score_prediction
+from .scorer import extract_answer, length_bucket, mean, score_prediction
 
 SOURCE_DATASET_NAME = "HaotongYang/NUPA_text"
 SOURCE_DATASET_REVISION = "01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7"
@@ -136,16 +136,11 @@ class NUPALooseBenchmark(BaseBenchmark):
             examples.append(example)
         return {"examples": examples}
 
-    def evaluate_responses(self, results: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        if results is None:
-            return None
-
-        scored_examples = []
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         for example in results["examples"]:
             score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
             example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
             example["correct"] = bool(score.exact_match)
-            example["score"] = score
             record_sample_metrics(
                 example,
                 exact_match=score.exact_match,
@@ -154,8 +149,10 @@ class NUPALooseBenchmark(BaseBenchmark):
                 format_valid_rate=score.format_valid,
                 no_answer_rate=score.no_answer,
             )
-            scored_examples.append(example)
+        return results
 
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        scored_examples = results["examples"]
         metrics: Dict[str, float] = {}
         metrics.update(_aggregate_scores(scored_examples, prefix=""))
         for group_name, items in _group_by(scored_examples, "task_name").items():
@@ -166,9 +163,7 @@ class NUPALooseBenchmark(BaseBenchmark):
             for bucket, bucket_items in _group_by(task_items, "length_bucket").items():
                 metrics.update(_aggregate_scores(bucket_items, prefix=f"task:{task_name}/bucket:{bucket}/"))
 
-        results.update(metrics)
-        results["dataset_num_samples"] = len(scored_examples)
-        return results
+        return {**results, **metrics, "dataset_num_samples": len(scored_examples)}
 
 
 def download_nupa_source(*, dataset_name: str, dataset_revision: str, split: str) -> Path:
@@ -251,13 +246,13 @@ def split_prompt_answer(text: str) -> tuple[str, str]:
 
 
 def _aggregate_scores(examples: List[Dict[str, Any]], prefix: str) -> Dict[str, float]:
-    scores: List[ExampleScore] = [example["score"] for example in examples]
+    scores = [example["sample_metrics"] for example in examples]
     return {
-        f"{prefix}exact_match": mean(score.exact_match for score in scores),
-        f"{prefix}digit_match": mean(score.digit_match for score in scores),
-        f"{prefix}dlength": mean(score.dlength for score in scores),
-        f"{prefix}format_valid_rate": mean(score.format_valid for score in scores),
-        f"{prefix}no_answer_rate": mean(score.no_answer for score in scores),
+        f"{prefix}exact_match": mean(score["exact_match"] for score in scores),
+        f"{prefix}digit_match": mean(score["digit_match"] for score in scores),
+        f"{prefix}dlength": mean(score["dlength"] for score in scores),
+        f"{prefix}format_valid_rate": mean(score["format_valid_rate"] for score in scores),
+        f"{prefix}no_answer_rate": mean(score["no_answer_rate"] for score in scores),
     }
 
 

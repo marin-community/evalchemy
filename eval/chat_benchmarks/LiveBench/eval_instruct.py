@@ -278,16 +278,8 @@ class LiveBenchBenchmark(BaseBenchmark):
 
         return results
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated responses using LiveBench evaluation metrics.
-
-        Args:
-            results: Dictionary containing model outputs and identifier
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         model_name = results[0]["model_id"]
         all_results = []
         question_to_date = {}
@@ -374,8 +366,11 @@ class LiveBenchBenchmark(BaseBenchmark):
         else:
             raise ValueError(f"Bad question source {self.question_source}.")
 
-        print("Finished evaluating, calculating metrics")
-        # After getting all results, calculate metrics
+        return {"judgments": all_results, "question_dates": question_to_date}
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        all_results = results["judgments"]
+        question_to_date = results["question_dates"]
         metrics = {}
         # Group results by task and calculate averages
         task_scores = {}

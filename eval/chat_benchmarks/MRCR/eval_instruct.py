@@ -221,9 +221,7 @@ class MRCRBenchmark(BaseBenchmark):
             example["prefix_hit"] = prefix_hit
         return {"examples": examples}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        if results is None:
-            return None
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         examples = results["examples"]
         if not examples:
             raise ValueError("MRCR cannot aggregate an empty result set")
@@ -231,22 +229,22 @@ class MRCRBenchmark(BaseBenchmark):
         for example in examples:
             record_sample_metrics(example, accuracy=float(example["score"]), prefix_hit=float(example["prefix_hit"]))
 
-        return self.aggregate_results(self.sample_groups(results))
+        return results
 
-    def aggregate_results(self, sample_groups: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Aggregate graded MRCR examples and their context/needle breakdowns."""
-        examples = sample_groups["examples"]
+        examples = results["examples"]
         if not examples:
             raise ValueError("MRCR cannot aggregate an empty result set")
         metrics: Dict[str, Any] = {
             "num_total": len(examples),
-            "mrcr_accuracy": sum(float(example["score"]) for example in examples) / len(examples),
-            "prefix_hit_rate": sum(float(example["prefix_hit"]) for example in examples) / len(examples),
+            "mrcr_accuracy": sum(example["sample_metrics"]["accuracy"] for example in examples) / len(examples),
+            "prefix_hit_rate": sum(example["sample_metrics"]["prefix_hit"] for example in examples) / len(examples),
             "examples": examples,
         }
         cells: Dict[tuple[int, int], List[float]] = defaultdict(list)
         for example in examples:
-            cells[(int(example["mrcr_bin_upper"]), int(example["n_needles"]))].append(float(example["score"]))
+            cells[(int(example["mrcr_bin_upper"]), int(example["n_needles"]))].append(example["sample_metrics"]["accuracy"])
         for (upper, needles), scores in sorted(cells.items()):
             metric = f"mrcr_{upper}_{needles}needle"
             metrics[metric] = sum(scores) / len(scores)

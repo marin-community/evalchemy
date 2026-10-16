@@ -9,8 +9,9 @@ from pathlib import Path
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from human_eval.evaluation import evaluate_functional_correctness
+from human_eval.evaluation import grade_functional_correctness
 from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
+from eval.contracts.aggregation import functional_pass_at_k
 from eval.task import BaseBenchmark
 
 
@@ -196,16 +197,8 @@ Here is my problem:
             self.logger.error(f"Error in generate_responses: {str(e)}")
             raise
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -214,7 +207,7 @@ Here is my problem:
             temp_dir_obj = results["temp_dir_obj"]
             temp_dir = temp_dir_obj.name
 
-            result = evaluate_functional_correctness(
+            result = grade_functional_correctness(
                 input_file=os.path.join(temp_dir, "mbpp.jsonl"),
                 tmp_dir=temp_dir,
                 problem_file=os.path.join(self.data_dir, "mbpp_test.jsonl"),
@@ -222,25 +215,28 @@ Here is my problem:
                 is_mbpp=True,
             )
 
-            pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
             for example in results["examples"]:
-                record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-            result.update(
-                {
-                    "num_examples": results["num_examples"],
-                    "completion_rate": results["num_examples"] / results["total_examples"],
-                }
-            )
+                verdicts = result[example["task_id"]]
+                example["grading_results"] = verdicts
+                record_sample_metrics(example, pass_rate=sum(row["passed"] for row in verdicts) / len(verdicts))
 
             temp_dir_obj.cleanup()
-            return result
+            return results
 
         except Exception as e:
             self.logger.error(f"Error in evaluate_responses: {str(e)}")
             if temp_dir_obj:
                 temp_dir_obj.cleanup()
             raise
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        verdicts = {example["task_id"]: example["grading_results"] for example in examples}
+        return {
+            **functional_pass_at_k(verdicts, [1, 10, 100]),
+            "num_examples": len(examples),
+            "completion_rate": len(examples) / results["total_examples"],
+        }
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

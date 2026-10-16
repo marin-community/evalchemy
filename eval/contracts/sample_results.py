@@ -35,6 +35,12 @@ SAMPLE_METRICS_ANNOTATION = "sample_metrics"
 REPEATED_SAMPLE_METRICS_ANNOTATION = "sample_metrics_by_repeat"
 """Field carrying one metric mapping per independently graded repetition."""
 
+SAMPLE_COORDINATES_ANNOTATION = "_sample_coordinates"
+"""Stable namespace, ordinal, and output position copied with each generated example."""
+
+SAMPLE_FAILURES_ANNOTATION = "sample_failure_categories"
+"""Explicit failure category for each serialized trial, including successful trials as null."""
+
 PER_TASK_PASS_RATE_FIELD = "per_task_pass_rate"
 """Grader-result field mapping a task id to the fraction of its completions that passed.
 
@@ -98,6 +104,9 @@ def emit_scored_samples(callback: Callable[[MutableMapping[str, Any]], None]) ->
 def record_sample_metrics(example: MutableMapping[str, Any], **values: bool | float) -> None:
     """Record one graded example's per-sample metric values.
 
+    With a sample sink attached, this completes the example and emits it immediately.
+    Call once, after adding every annotation that its sample adapter serializes.
+
     Args:
         example: The generated example the grader is scoring, annotated in place.
         **values: Metric name to that sample's value. Booleans become 1.0/0.0.
@@ -138,6 +147,14 @@ def sample_metric_fields(example: Mapping[str, Any]) -> dict[str, Any]:
         raise SampleMetricsError(f"{SAMPLE_METRICS_ANNOTATION} must be a non-empty mapping of metric values")
     values = {name: _metric_value(name, value) for name, value in metrics.items()}
     return {SAMPLE_METRICS_FIELD: list(values), **values}
+
+
+def sample_failure_fields(example: Mapping[str, Any], repeat: int = 0) -> dict[str, Any]:
+    """Return a trial's explicit failure classification from restored grading evidence."""
+    categories = example.get(SAMPLE_FAILURES_ANNOTATION)
+    if categories is None or categories[repeat] is None:
+        return {}
+    return {"failure_category": categories[repeat]}
 
 
 def repeated_sample_metric_fields(example: Mapping[str, Any]) -> list[dict[str, Any]] | None:

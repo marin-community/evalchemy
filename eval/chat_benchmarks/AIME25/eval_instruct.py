@@ -3,12 +3,13 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import numpy as np
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from eval.graders.answer_equivalence import math_answers_equivalent
 from eval.graders.answer_extraction import extract_final_boxed_answer
 
+from eval.contracts.aggregation import repeated_accuracy_results
+from eval.contracts.sample_results import record_repeated_sample_metrics
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -114,54 +115,18 @@ class AIME25Benchmark(BaseBenchmark):
 
         return {"examples": examples}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions."""
-
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        examples = results["examples"]
-        num_questions = len(examples)
-
-        # Calculate accuracy for each repetition
-        all_results = []
-        correct_by_repeat = []
-        for i in range(self.n_repeat):
-            correct = [
-                math_answers_equivalent(example["model_answers"][i], [str(example["answer"])]) for example in examples
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
+        for example in results["examples"]:
+            scores = [
+                math_answers_equivalent(answer, [str(example["answer"])])
+                for answer in example["model_answers"]
             ]
-            correct_by_repeat.append(correct)
-            solved = sum(correct)
-            all_results.append(
-                {
-                    "repetition": i + 1,
-                    "num_total": num_questions,
-                    "num_solved": solved,
-                    "accuracy": solved / num_questions,
-                }
-            )
-
-        self.record_repeated_accuracy(examples, correct_by_repeat)
-
-        # Calculate overall statistics
-        solved_avg = np.mean([result["num_solved"] for result in all_results])
-        accuracy_avg = np.mean([result["accuracy"] for result in all_results])
-        accuracy_std = np.std([result["accuracy"] for result in all_results])
-        accuracy_std_err = np.std([result["accuracy"] for result in all_results]) / np.sqrt(self.n_repeat)
-
-        results.update(
-            {
-                "num_total": num_questions,
-                "solved_avg": solved_avg,
-                "run_stats": all_results,
-                "accuracy_avg": accuracy_avg,
-                "accuracy_std_err": accuracy_std_err,
-                "num_repeat": self.n_repeat,
-            }
-        )
-
+            record_repeated_sample_metrics(example, accuracy=scores)
         return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        return {**results, **repeated_accuracy_results(results["examples"])}
 
     def load_questions(self) -> List[Dict[str, str]]:
         """Load AIME25 questions from the data file."""

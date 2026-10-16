@@ -50,10 +50,13 @@ from eval.contracts.sample_manifest import (
 from eval.contracts.sample_results import (
     REPEATED_SAMPLE_METRICS_ANNOTATION,
     SAMPLE_METRICS_ANNOTATION,
+    SAMPLE_COORDINATES_ANNOTATION,
+    SAMPLE_FAILURES_ANNOTATION,
     record_repeated_sample_metrics,
     record_sample_metrics,
     repeated_sample_metric_fields,
     sample_metric_fields,
+    sample_failure_fields,
 )
 from eval.contracts.task_outcome import TaskRoute
 from eval.passk import estimate_pass_at_k
@@ -769,18 +772,21 @@ class BaseBenchmark(ABC):
         """Generate responses from the model for the benchmark tasks."""
         pass
 
-    @abstractmethod
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the model's responses according to the benchmark's metrics.
+        """Grade responses and reduce the resulting annotations with the task's reducer."""
+        if results is None:
+            return None
+        return self.aggregate_results(self.grade_responses(results))
 
-        Aggregates that exclude infrastructure failures must report their denominator as
-        ``scored_count``. Otherwise, partial results require ``aggregate_results``.
-        """
-        pass
+    @abstractmethod
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Return task data annotated with grading evidence, preserving each example's sample coordinates."""
+        raise NotImplementedError(f"{self.benchmark_name}: grading is not implemented")
 
-    def aggregate_results(self, sample_groups: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """Aggregate graded examples grouped by sample namespace, without generating or grading again."""
-        raise NotImplementedError(f"{self.benchmark_name}: partial results require a benchmark-owned aggregator")
+    @abstractmethod
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce graded task data without generating, grading, or changing its annotations."""
+        raise NotImplementedError(f"{self.benchmark_name}: aggregation is not implemented")
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """Run the complete benchmark evaluation pipeline."""
@@ -794,14 +800,31 @@ class BaseBenchmark(ABC):
         examples = generation_result.get(DEFAULT_SAMPLE_GROUP, [])
         return {DEFAULT_SAMPLE_GROUP: examples} if examples else {}
 
+    def with_sample_groups(
+        self, results: Dict[str, Any], groups: Dict[str, List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
+        """Return task data containing the supplied examples and unchanged task-level metadata."""
+        return {**results, **groups, DEFAULT_SAMPLE_GROUP: [example for examples in groups.values() for example in examples]}
+
     def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Serialize each task namespace through the same per-group sample adapter."""
+        samples = []
+        offset = 0
+        for namespace, examples in self.sample_groups(generation_result).items():
+            samples.extend(
+                {**sample, "doc_id": offset + sample["doc_id"]}
+                for sample in self.to_sample_group(namespace, examples)
+            )
+            offset += len(examples)
+        return samples
+
+    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Reshape generated examples into canonical lm-eval-compatible sample records.
 
-        Default implementation reads the ``{"examples": [...]}`` convention shared
-        by the math chat_benchmarks (MATH500/AIME24/AMC23): each ``example`` is the
+        Each ``example`` follows the math chat_benchmarks' convention: the
         source doc enriched in place with ``model_output``/``model_answer`` (single
         sample) or ``model_outputs``/``model_answers`` (native pass@k), with the gold
-        in ``example["answer"]``. A benchmark whose ``result`` shape differs should
+        in ``example["answer"]``. A benchmark whose example fields differ should
         override this method.
 
         Each record mirrors stock ``lm_eval.evaluator.evaluate``'s per-doc dict:
@@ -816,8 +839,6 @@ class BaseBenchmark(ABC):
         from lm_eval.utils import handle_non_serializable as _hns
         from lm_eval.utils import hash_string
 
-        del scored_result  # Generation owns the per-example data; scoring owns only metrics.
-        examples = (generation_result or {}).get("examples", []) or []
         prepared: List[Dict[str, Any]] = []
         for doc_id, example in enumerate(examples):
             prompt = self._sample_prompt(example)
@@ -862,6 +883,7 @@ class BaseBenchmark(ABC):
                     "target_hash": hash_string(str(target)),
                     "repeat_metrics": repeat_metrics,
                     "aggregate_metrics": sample_metric_fields(example),
+                    SAMPLE_FAILURES_ANNOTATION: example.get(SAMPLE_FAILURES_ANNOTATION),
                 }
             )
 
@@ -887,7 +909,7 @@ class BaseBenchmark(ABC):
                             **{
                                 key: value
                                 for key, value in record.items()
-                                if key not in {"repeat_metrics", "aggregate_metrics"}
+                                if key not in {"repeat_metrics", "aggregate_metrics", SAMPLE_FAILURES_ANNOTATION}
                             },
                             "resps": [[responses[repeat_idx]]],
                             "filtered_resps": [filtered[repeat_idx]],
@@ -898,14 +920,19 @@ class BaseBenchmark(ABC):
                             ),
                             "sample_repeat": repeat_idx,
                             **record["repeat_metrics"][repeat_idx],
+                            **sample_failure_fields(record, repeat_idx),
                         }
                     )
             return samples
 
         return [
             {
-                **{key: value for key, value in record.items() if key not in {"repeat_metrics", "aggregate_metrics"}},
+                **{
+                    key: value for key, value in record.items()
+                    if key not in {"repeat_metrics", "aggregate_metrics", SAMPLE_FAILURES_ANNOTATION}
+                },
                 **record["aggregate_metrics"],
+                **sample_failure_fields(record),
             }
             for record in prepared
         ]
@@ -933,7 +960,14 @@ class BaseBenchmark(ABC):
             "output",
             "correct",
             "score",
+            "grading_results",
+            "num_correct",
+            "valid_repeats",
+            "annotation",
+            "judge_answer",
             SAMPLE_METRICS_ANNOTATION,
+            SAMPLE_COORDINATES_ANNOTATION,
+            SAMPLE_FAILURES_ANNOTATION,
             REPEATED_SAMPLE_METRICS_ANNOTATION,
         }
         return {key: value for key, value in example.items() if key not in generated_fields}

@@ -54,7 +54,10 @@ def test_custom_class_audit_rejects_untyped_resources_and_execution_modes():
         def generate_responses(self, model):
             return {}
 
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
+            return results
+
+        def aggregate_results(self, results):
             return {"score": 1.0}
 
     Benchmark.RESOURCE_REQUIREMENTS = []
@@ -72,7 +75,10 @@ def test_custom_class_audit_rejects_overriding_the_shared_inference_guard():
         def generate_responses(self, model):
             return {}
 
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
+            return results
+
+        def aggregate_results(self, results):
             return {"score": 1.0}
 
         def compute(self, model, inputs):

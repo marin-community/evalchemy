@@ -136,18 +136,14 @@ class AIWBenchmark(BaseBenchmark):
                 except:
                     return None
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions over multiple trials."""
-
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         # Every generated example is graded, including the ones the reported
         # aggregate excludes, so each persisted sample carries its own score.
         for example in results["examples"]:
             record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
+        return results
 
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         # Filter only the target IDs
         examples = [ex for ex in results["examples"] if ex["id"] in self.TARGET_IDS]
         if not examples:
@@ -160,7 +156,7 @@ class AIWBenchmark(BaseBenchmark):
         for _ in range(self.n_trials):
             trial_results = []
             for example in examples:
-                correct = is_equiv(str(example["right_answer"]), example["model_answer"])
+                correct = example["sample_metrics"]["accuracy"]
                 id_results[example["id"]].append(correct)
                 trial_results.append(correct)
 
@@ -182,15 +178,11 @@ class AIWBenchmark(BaseBenchmark):
         for qid, stats in per_id_stats.items():
             self.logger.info(f"ID {qid}: Accuracy = {stats['accuracy']:.4f}, Variance = {stats['variance']:.6f}")
 
-        # Update results dictionary
-        results.update(
-            {
-                "num_trials": self.n_trials,
-                "num_examples": len(examples),
-                "per_id_stats": per_id_stats,
-                "overall_accuracy": overall_mean_accuracy,
-                "overall_variance": overall_variance,
-            }
-        )
-
-        return results
+        return {
+            **results,
+            "num_trials": self.n_trials,
+            "num_examples": len(examples),
+            "per_id_stats": per_id_stats,
+            "overall_accuracy": overall_mean_accuracy,
+            "overall_variance": overall_variance,
+        }

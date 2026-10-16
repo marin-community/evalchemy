@@ -23,20 +23,20 @@ import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
-from eval.contracts.custom_streaming import CustomSampleEmitter
+from eval.contracts.custom_streaming import aggregate_responses, score_responses
 from eval.contracts.finestore_output import FineStoreOutput
 from eval.contracts.grading import GenerationArtifactManifest
+from eval.contracts.resume_values import decode_resume_value, encode_resume_value
 from eval.contracts.sample_results import (
     SAMPLE_METRICS_FIELD,
     SampleMetricsError,
     record_sample_metrics,
-    emit_scored_samples,
     sample_metric_fields,
     validate_sample_metrics,
 )
 from eval.eval import CHAT_BENCHMARK_ROUTE, evaluate
 from eval.graders.answer_equivalence import EquivalenceJudgment, JudgeLabel
-from eval.sample_logging import canonicalize_samples
+from eval.sample_logging import canonicalize_samples, without_embedded_samples
 from eval.task import BaseBenchmark, TaskManager
 
 CUSTOM_BENCHMARK_ROOT = Path("eval/chat_benchmarks")
@@ -121,7 +121,7 @@ def _passing_sandbox(task_id: str, _sample, _language, _timeout, _tmp_dir, compl
 
 def _patch_code_sandbox(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> None:
     """Replace the sandbox launch so the grader's own aggregation still runs."""
-    evaluation = benchmark.evaluate_responses.__globals__["evaluate_functional_correctness"].__globals__
+    evaluation = benchmark.grade_responses.__globals__["grade_functional_correctness"].__globals__
     monkeypatch.setitem(evaluation, "check_correctness", _passing_sandbox)
 
 
@@ -131,7 +131,7 @@ def _patch_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> N
     async def judge_equivalence(requests, *_args, **_kwargs):
         return [EquivalenceJudgment(JudgeLabel.CORRECT, "graded") for _ in requests]
 
-    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_equivalence", judge_equivalence)
+    monkeypatch.setitem(benchmark.grade_responses.__globals__, "judge_equivalence", judge_equivalence)
 
 
 def _patch_simpleqa_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchmark) -> None:
@@ -140,7 +140,7 @@ def _patch_simpleqa_judge(monkeypatch: pytest.MonkeyPatch, benchmark: BaseBenchm
     async def judge_simpleqa(requests, *_args, **_kwargs):
         return [EquivalenceJudgment(JudgeLabel.CORRECT, "A") for _ in requests]
 
-    monkeypatch.setitem(benchmark.evaluate_responses.__globals__, "judge_simpleqa", judge_simpleqa)
+    monkeypatch.setitem(benchmark.grade_responses.__globals__, "judge_simpleqa", judge_simpleqa)
 
 
 def _financebench_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
@@ -494,11 +494,8 @@ def test_graded_benchmark_samples_persist_their_per_sample_metrics(task_name, mo
 
     root = str(tmp_path / "archive")
     with FineStoreOutput(root, "run", [task_name]) as output:
-        emitter = CustomSampleEmitter(task_name, benchmark, generation_result, output)
-        with emit_scored_samples(emitter.emit):
-            scored_result = benchmark.evaluate_responses(generation_result)
-        emitter.finish()
-    records = canonicalize_samples(task_name, benchmark.to_samples(generation_result, scored_result))
+        scored = score_responses(task_name, benchmark, generation_result, output)
+    records = canonicalize_samples(task_name, benchmark.to_samples(scored.graded_result, scored.metrics))
 
     assert records
     for record in records:
@@ -512,6 +509,74 @@ def test_graded_benchmark_samples_persist_their_per_sample_metrics(task_name, mo
     assert sorted(tuple(sorted(sample.metrics.items())) for sample in persisted) == sorted(
         tuple(sorted((name, float(record[name])) for name in record["metrics"])) for record in records
     )
+    checkpoint = {
+        key: value for key, value in scored.graded_result.items()
+        if key not in {"artifacts", "temp_dir_obj"}
+    }
+    restored = decode_resume_value(json.loads(json.dumps(encode_resume_value(checkpoint))))
+    replayed = aggregate_responses(task_name, benchmark, restored)
+    fresh_metrics = json.loads(json.dumps(without_embedded_samples(scored.metrics)), parse_constant=str)
+    replayed_metrics = json.loads(json.dumps(without_embedded_samples(replayed.metrics)), parse_constant=str)
+    assert replayed_metrics == fresh_metrics
+
+
+def test_mixeval_retry_order_keeps_judgments_on_their_original_examples(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "conformance-test")
+    benchmark = _load_benchmark("MixEval", output_dir=str(tmp_path), annotator_model="test-judge")
+
+    def judge(_args, examples):
+        for example in examples:
+            example["judge_score"] = float(example["benchmark_name"] == "passing")
+        return list(reversed(examples))
+
+    monkeypatch.setitem(benchmark.grade_responses.__globals__, "eval_freeform_model", judge)
+    generated = {
+        "close_freeform": [
+            {"prompt": "one", "response": "candidate", "benchmark_name": "failing"},
+            {"prompt": "two", "response": "candidate", "benchmark_name": "passing"},
+        ]
+    }
+
+    scored = score_responses("MixEval", benchmark, generated)
+    restored = json.loads(json.dumps(scored.graded_result))
+    replayed = aggregate_responses("MixEval", benchmark, restored)
+
+    assert [row["sample_metrics"]["accuracy"] for row in restored["close_freeform"]] == [0.0, 1.0]
+    assert replayed.metrics["test-judge"]["metrics"] == {"overall": 0.5, "failing": 0.0, "passing": 1.0}
+
+
+def test_olympiad_reduction_preserves_excluded_judge_failure_diagnostics(monkeypatch):
+    monkeypatch.setenv("JUDGE_API_KEY", "conformance-test")
+    benchmark = _load_benchmark("OlympiadBench", n_repeat=1)
+    graded = {
+        "examples": [{
+            "sample_metrics": {"accuracy": 1.0},
+            "equivalence_grades": [{"method": "minerva", "judge_label": None, "judge_raw": None}],
+        }],
+        "excluded_examples": [{
+            "equivalence_grades": [{"method": "llm_judge", "judge_error": {"message": "unavailable"}}],
+        }],
+    }
+
+    metrics = benchmark.aggregate_results(graded)
+
+    assert metrics["accuracy"] == 1.0
+    assert metrics["num_judge_failed"] == 1
+    assert metrics["num_graded_by_minerva"] == 1
+
+
+def test_grading_evidence_does_not_change_source_hash():
+    benchmark = _load_benchmark("MATH500")
+    source = {"problem": "p", "answer": "4", "model_output": "4", "model_answer": "4"}
+    records = [
+        benchmark.to_samples(
+            {"examples": [{**source, "grading_results": [{"passed": passed}], "num_correct": int(passed)}]}, {}
+        )[0]
+        for passed in (True, False)
+    ]
+
+    assert records[0]["doc_hash"] == records[1]["doc_hash"]
+    assert all("grading_results" not in record["doc"] and "num_correct" not in record["doc"] for record in records)
 
 
 def test_ifbench_sample_contains_per_instruction_results(monkeypatch, tmp_path):

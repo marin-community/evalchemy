@@ -166,48 +166,36 @@ class MATH500Benchmark(BaseBenchmark):
             example["model_answers"] = [self.extract_answer(o) for o in outputs]
         return {"examples": examples, "pass_at_k": True}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the generated solution completions."""
-
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         examples = results["examples"]
-        total = len(examples)
-
-        # ---- native pass@k aggregation (Stage 2b) ----
         if results.get("pass_at_k"):
-            num_correct = [
-                sum(math_answers_equivalent(ans, [str(ex["answer"])]) for ans in ex["model_answers"]) for ex in examples
-            ]
-            self.record_pass_at_k_metrics(examples, num_correct)
-            pass_at_k_table = self.aggregate_pass_at_k(num_correct)
-            results.update(
-                {
-                    "num_total": total,
-                    "num_samples": self.num_samples,
-                    "num_correct": num_correct,
-                    **pass_at_k_table,
-                }
-            )
+            for example in examples:
+                example["num_correct"] = sum(
+                    math_answers_equivalent(answer, [str(example["answer"])])
+                    for answer in example["model_answers"]
+                )
+            self.record_pass_at_k_metrics(examples, [example["num_correct"] for example in examples])
             return results
-
-        solved = 0
         for example in examples:
             correct = math_answers_equivalent(example["model_answer"], [str(example["answer"])])
             record_sample_metrics(example, accuracy=correct)
-            solved += correct
-
-        results.update(
-            {
-                "num_total": total,
-                "num_solved": solved,
-                "accuracy": solved / total,
-            }
-        )
-
         return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        if not examples:
+            raise ValueError("MATH500 cannot aggregate an empty result set")
+        if results.get("pass_at_k"):
+            num_correct = [example["num_correct"] for example in examples]
+            return {
+                **results,
+                "num_total": len(examples),
+                "num_samples": self.num_samples,
+                "num_correct": num_correct,
+                **self.aggregate_pass_at_k(num_correct),
+            }
+        solved = sum(example["sample_metrics"]["accuracy"] for example in examples)
+        return {**results, "num_total": len(examples), "num_solved": solved, "accuracy": solved / len(examples)}
 
     def load_questions(self) -> List[Dict[str, str]]:
         """Load MATH500 questions from the data file."""

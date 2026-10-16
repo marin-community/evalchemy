@@ -207,16 +207,8 @@ class MTBenchBenchmark(BaseBenchmark):
 
         return {"model_id": model.model_identifier}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate model responses using GPT-4 judge.
-
-        Args:
-            results: Dictionary containing model identifier
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -305,8 +297,13 @@ class MTBenchBenchmark(BaseBenchmark):
                     )
                 )
 
-        # Load and process results
-        df_all = pd.read_json(output_file, lines=True)
+        return {
+            "model_id": results["model_id"],
+            "judgments": pd.read_json(output_file, lines=True).to_dict(orient="records"),
+        }
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        df_all = pd.DataFrame(results["judgments"])
         df = df_all[["model", "score", "turn"]]
         df = df[df["score"] != -1]
 

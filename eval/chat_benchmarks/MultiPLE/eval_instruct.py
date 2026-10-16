@@ -8,8 +8,10 @@ import logging
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from multiple.evaluation import evaluate_functional_correctness
+from multiple.evaluation import grade_functional_correctness
 from .utils import extract_generation_code
+from eval.contracts.aggregation import functional_pass_at_k
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 import traceback
 
@@ -217,16 +219,8 @@ class MultipleBenchmark(BaseBenchmark):
         results["temp_dir_obj"] = temp_dir_obj
         return results
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -234,7 +228,6 @@ class MultipleBenchmark(BaseBenchmark):
         temp_dir_obj = results["temp_dir_obj"]
         temp_dir = temp_dir_obj.name
 
-        evaluation_results = {}
 
         for lang in self.languages:
             try:
@@ -245,7 +238,7 @@ class MultipleBenchmark(BaseBenchmark):
                     self.logger.warning(f"Generated file not found: {temp_file_path}")
                     continue
 
-                result = evaluate_functional_correctness(
+                result = grade_functional_correctness(
                     input_file=temp_file_path,
                     tmp_dir=temp_dir,
                     n_workers=self.num_workers,
@@ -254,8 +247,10 @@ class MultipleBenchmark(BaseBenchmark):
                     language=lang,
                 )
 
-                for metric, value in result.items():
-                    evaluation_results[f"{lang}_{metric}"] = value
+                for example in results[lang]:
+                    verdicts = result[example["task_id"]]
+                    example["grading_results"] = verdicts
+                    record_sample_metrics(example, pass_rate=sum(row["passed"] for row in verdicts) / len(verdicts))
 
                 self.logger.info(f"Completed evaluation for {lang}")
 
@@ -265,7 +260,23 @@ class MultipleBenchmark(BaseBenchmark):
                 continue
 
         temp_dir_obj.cleanup()
-        return evaluation_results
+        return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = {}
+        for namespace in self.languages:
+            examples = results.get(namespace, [])
+            if not examples:
+                continue
+            verdicts = {example["task_id"]: example["grading_results"] for example in examples}
+            metrics.update({
+                f"{namespace}_{name}": value
+                for name, value in functional_pass_at_k(verdicts, [1, 10, 100]).items()
+            })
+        return metrics
+
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
+        return {namespace: generation_result[namespace] for namespace in self.languages if namespace in generation_result}
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

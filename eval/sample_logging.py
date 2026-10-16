@@ -210,4 +210,5 @@ def without_embedded_samples(result: Mapping[str, Any]) -> dict[str, Any]:
     """Return aggregate metrics without the custom benchmark's raw examples."""
     aggregate = dict(result)
     aggregate.pop("examples", None)
+    aggregate.pop("excluded_examples", None)
     return aggregate

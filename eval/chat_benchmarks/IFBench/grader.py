@@ -207,40 +207,47 @@ def _summarize(outputs):
     }
 
 
-def evaluate_accuracy(response_filename):
-    """Score a response jsonl and return strict + loose accuracies.
-
-    The file is the same one the generator wrote -- each row carries the original
-    IFBench ``prompt``, ``instruction_id_list``, and ``kwargs`` plus the model's
-    ``response``. Mirrors the entry point of IFEval's ``evaluation.py``.
-    """
+def grade_accuracy(response_filename):
+    """Check each response and retain its strict and loose instruction verdicts."""
     inputs = read_prompt_list(response_filename)
     prompt_to_response = read_prompt_to_response_dict(response_filename)
-
-    strict_outputs = [
-        test_instruction_following_strict(inp, prompt_to_response) for inp in inputs
+    return [
+        {
+            "prompt": inp.prompt,
+            "instruction_id_list": inp.instruction_id_list,
+            "strict_instruction_pass": test_instruction_following_strict(inp, prompt_to_response).follow_instruction_list,
+            "loose_instruction_pass": test_instruction_following_loose(inp, prompt_to_response).follow_instruction_list,
+        }
+        for inp in inputs
     ]
-    loose_outputs = [
-        test_instruction_following_loose(inp, prompt_to_response) for inp in inputs
-    ]
 
-    strict = _summarize(strict_outputs)
-    loose = _summarize(loose_outputs)
 
-    return {
-        "strict_prompt_accuracy": strict["prompt-level"],
-        "strict_instruction_accuracy": strict["instruction-level"],
-        "strict_per_type": strict["per_type"],
-        # The IFBench paper reports prompt-level loose accuracy as the headline number.
-        "loose_prompt_accuracy": loose["prompt-level"],
-        "loose_instruction_accuracy": loose["instruction-level"],
-        "loose_per_type": loose["per_type"],
-        PER_PROMPT_OUTCOMES: [
-            {
-                "prompt": strict_output.prompt,
-                "strict_instruction_pass": strict_output.follow_instruction_list,
-                "loose_instruction_pass": loose_output.follow_instruction_list,
-            }
-            for strict_output, loose_output in zip(strict_outputs, loose_outputs)
-        ],
+def aggregate_accuracy(graded):
+    """Reduce instruction verdicts using prompt, instruction, and constraint-type denominators."""
+    reports = {
+        protocol: _summarize([
+            OutputExample(
+                instruction_id_list=row["instruction_id_list"],
+                prompt=row["prompt"],
+                response="",
+                follow_all_instructions=all(row[f"{protocol}_instruction_pass"]),
+                follow_instruction_list=row[f"{protocol}_instruction_pass"],
+            )
+            for row in graded
+        ])
+        for protocol in ("strict", "loose")
     }
+    return {
+        f"{protocol}_{metric}": reports[protocol][source]
+        for protocol in ("strict", "loose")
+        for metric, source in (
+            ("prompt_accuracy", "prompt-level"),
+            ("instruction_accuracy", "instruction-level"),
+            ("per_type", "per_type"),
+        )
+    }
+
+
+def evaluate_accuracy(response_filename):
+    graded = grade_accuracy(response_filename)
+    return {**aggregate_accuracy(graded), PER_PROMPT_OUTCOMES: graded}

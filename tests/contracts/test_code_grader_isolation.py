@@ -113,7 +113,7 @@ def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, modu
 def test_task_manager_grader_is_importable_in_spawned_worker(tmp_path, benchmark_name, is_mbpp):
     manager = TaskManager(task_list=[benchmark_name])
     benchmark = manager.get_benchmark(benchmark_name)
-    check_correctness = benchmark.evaluate_responses.__globals__["evaluate_functional_correctness"].__globals__[
+    check_correctness = benchmark.grade_responses.__globals__["grade_functional_correctness"].__globals__[
         "check_correctness"
     ]
     result = _run_check_in_spawned_worker(check_correctness, tmp_path, is_mbpp, _PLAIN_TEST_CODE)

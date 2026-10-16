@@ -13,17 +13,9 @@ from .eval_utils import (
 )
 
 
-def eval_model(model, filepath):
+def grade_model(model, data):
     global private_solutions
-    with open(filepath, "r") as f:
-        print(f"Processing {filepath}")
-        data = json.load(f)
 
-    solved_examples = 0
-    num_total_examples = len(data)
-    no_answer = 0
-
-    reason_lens = []
     parsed_results = []
     for item in data:
         # Read and Parse the prediction from model output
@@ -38,7 +30,7 @@ def eval_model(model, filepath):
                 # print(f"Extracted answer from model: {try_extracted_answer}")
                 prediction_json["answer"] = try_extracted_answer
             else:
-                no_answer += 1
+                parsed_results.append({**item, "matched": False, "answered": False})
                 if False and "3.1" in model:  # used for debugging the format of the output
                     print("--------------------------")
                     print(f"No answer for {item['id']}")
@@ -76,30 +68,37 @@ def eval_model(model, filepath):
         # consider both model_answer and correct_answer are empty string
         elif model_answer == "" and correct_answer == "":
             correct = True
-        if correct:
-            solved_examples += 1
-
         # For Debugging:
         if False and "SimPO" in model:
             if not correct:
                 print(item["id"], "incorrect")
-        reason_lens.append(len(reason))
         parsed_item = item.copy()
         parsed_item["reasoning"] = reason
         parsed_item["model_answer"] = model_answer
         parsed_item["correct_answer"] = correct_answer
         parsed_item["matched"] = correct
+        parsed_item["answered"] = True
         parsed_results.append(parsed_item)
+    return parsed_results
 
-    result = {}
-    result["Model"] = model.split("%")[0]
-    result["Mode"] = model.split("%")[1]
-    result["Acc"] = f"{solved_examples/num_total_examples*100:.2f}"
-    result["No answer"] = f"{no_answer/num_total_examples*100:.2f}"
-    result["Total"] = num_total_examples
-    result["Reason Lens"] = f"{sum(reason_lens)/len(reason_lens):.2f}"
-    result["Model"] = model_name_replacement(result["Model"])
-    return result, parsed_results
+
+def aggregate_model(model, graded):
+    answered = [row for row in graded if row["answered"]]
+    return {
+        "Model": model_name_replacement(model.split("%")[0]),
+        "Mode": model.split("%")[1],
+        "Acc": f"{sum(row['matched'] is True for row in graded) / len(graded) * 100:.2f}",
+        "No answer": f"{(len(graded) - len(answered)) / len(graded) * 100:.2f}",
+        "Total": len(graded),
+        "Reason Lens": f"{sum(len(row['reasoning']) for row in answered) / len(answered):.2f}",
+    }
+
+
+def eval_model(model, filepath):
+    with open(filepath) as stream:
+        data = json.load(stream)
+    graded = grade_model(model, data)
+    return aggregate_model(model, graded), graded
 
 
 def gen_results(run_name_folders):

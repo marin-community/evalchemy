@@ -16,6 +16,7 @@ from lm_eval.api.model import LM
 from typing import Any, Dict, Optional
 
 PREDS_PATH = "temp_swebench_preds.json"
+REPORT_OUTCOMES = ("completed", "incomplete", "empty_patch", "submitted", "resolved", "unresolved", "error")
 
 
 class SWEBenchBenchmark(BaseBenchmark):
@@ -101,7 +102,7 @@ class SWEBenchBenchmark(BaseBenchmark):
 
         return {"temp_dir_obj": temp_dir_obj, "predictions_path": output_path}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         temp_dir_obj = results["temp_dir_obj"]
         predictions_path = results["predictions_path"]
 
@@ -126,10 +127,34 @@ class SWEBenchBenchmark(BaseBenchmark):
 
         temp_dir_obj.cleanup()
         if report_path is None:
-            self.logger.error("Error evaluating SWE-bench")
-            return None
+            raise RuntimeError("SWE-bench grading did not produce a report")
 
-        return json.load(open(report_path))
+        with open(report_path) as stream:
+            report = json.load(stream)
+        statuses = {name: set(report[f"{name}_ids"]) for name in REPORT_OUTCOMES}
+        return {
+            "report_outcomes": [
+                {"instance_id": instance_id, **{name: instance_id in ids for name, ids in statuses.items()}}
+                for instance_id in sorted(set().union(*statuses.values()))
+            ],
+            "report_metadata": {
+                key: value for key, value in report.items()
+                if key not in {f"{name}_ids" for name in REPORT_OUTCOMES}
+                and key not in {f"{name}_instances" for name in REPORT_OUTCOMES}
+            },
+        }
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        outcomes = results["report_outcomes"]
+        ids = {
+            name: sorted(row["instance_id"] for row in outcomes if row[name])
+            for name in REPORT_OUTCOMES
+        }
+        return {
+            **results["report_metadata"],
+            **{f"{name}_ids": values for name, values in ids.items()},
+            **{f"{name}_instances": len(values) for name, values in ids.items() if name != "incomplete"},
+        }
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         self.logger.info("Starting SWE-bench evaluation")

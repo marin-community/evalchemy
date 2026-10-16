@@ -133,16 +133,28 @@ class SimpleQABenchmark(BaseBenchmark):
             example["model_output"] = output
         return {"examples": examples, "judge_model": self.judge_model}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        if results is None:
-            return None
-
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         examples = results["examples"]
         judge_model = results.get("judge_model", self.judge_model)
         judgments = self._judge_examples(examples, judge_model)
-        counts = self._record_judgments(examples, judgments)
-        self._record_aggregate_metrics(results, counts, len(examples), judge_model)
+        self._record_judgments(examples, judgments)
         return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        counts = _GradeCounts(
+            correct=sum(example["judge_label"] == JudgeLabel.CORRECT.value for example in examples),
+            incorrect=sum(example["judge_label"] == JudgeLabel.INCORRECT.value for example in examples),
+            not_attempted=sum(example["judge_label"] == JudgeLabel.NOT_ATTEMPTED.value for example in examples),
+            judge_failed=sum(
+                example["judge_label"] is None for example in [*examples, *results.get("excluded_examples", [])]
+            ),
+        )
+        metrics = dict(results)
+        self._record_aggregate_metrics(
+            metrics, counts, len(examples) + len(results.get("excluded_examples", [])), results.get("judge_model", self.judge_model)
+        )
+        return metrics
 
     def _judge_examples(
         self,
@@ -172,27 +184,17 @@ class SimpleQABenchmark(BaseBenchmark):
         self,
         examples: List[Dict[str, Any]],
         judgments: List[EquivalenceJudgment | BaseException],
-    ) -> _GradeCounts:
-        counts = {label: 0 for label in JudgeLabel}
-        num_judge_failed = 0
+    ) -> None:
         for index, (example, judgment) in enumerate(zip(examples, judgments, strict=True)):
             if isinstance(judgment, BaseException):
                 if not isinstance(judgment, Exception):
                     raise judgment
-                num_judge_failed += 1
                 self._record_judge_failure(example, index, judgment)
                 continue
 
             assert isinstance(judgment, EquivalenceJudgment)
             label = judgment.label
-            counts[label] += 1
             self._record_judgment(example, judgment)
-        return _GradeCounts(
-            correct=counts[JudgeLabel.CORRECT],
-            incorrect=counts[JudgeLabel.INCORRECT],
-            not_attempted=counts[JudgeLabel.NOT_ATTEMPTED],
-            judge_failed=num_judge_failed,
-        )
 
     def _record_judge_failure(self, example: Dict[str, Any], index: int, error: Exception) -> None:
         record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
@@ -256,9 +258,9 @@ class SimpleQABenchmark(BaseBenchmark):
             }
         )
 
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        samples = super().to_samples(generation_result, scored_result)
-        for sample, example in zip(samples, generation_result["examples"], strict=True):
+    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        samples = super().to_sample_group(namespace, examples)
+        for sample, example in zip(samples, examples, strict=True):
             sample["judge_label"] = example["judge_label"]
             sample["judge_raw"] = example["judge_raw"]
             if "failure_category" in example:

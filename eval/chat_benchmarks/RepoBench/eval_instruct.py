@@ -5,6 +5,7 @@ import os
 import logging
 from tqdm import tqdm
 from datasets import load_dataset
+from fuzzywuzzy import fuzz
 from itertools import islice
 
 from lm_eval.api.model import LM
@@ -13,6 +14,7 @@ from archive_data.utils import load_data, construct_trainable_data, get_first_li
 from data.utils import construct_prompt
 from evaluation.metrics import exact_match_score, edit_similarity_score, codebleu_score
 from eval.task import BaseBenchmark
+from eval.contracts.sample_results import record_sample_metrics
 
 
 class RepoBenchmark(BaseBenchmark):
@@ -65,6 +67,7 @@ class RepoBenchmark(BaseBenchmark):
         if model.rank == 0:
             temp_dir_obj = tempfile.TemporaryDirectory()
             temp_dir = temp_dir_obj.name
+            results = {"temp_dir_obj": temp_dir_obj}
 
         for lang in self.languages:
             datasets = load_dataset(f"tianyang/repobench_{lang}_v1.1", verification_mode="no_checks")
@@ -124,18 +127,20 @@ class RepoBenchmark(BaseBenchmark):
                     generated_examples.append(
                         {
                             "idx": idx,
+                            "model_output": output,
                             "gpt_completion": get_first_line_not_comment(output, language=lang),
                             "label": example["next_line"],
                         }
                     )
 
+                results[f"{lang}:{subset}"] = generated_examples
                 output_path = f"{temp_dir}/repobench_{subset}_{lang}.jsonl"
                 with open(output_path, "w", encoding="utf-8") as fw:
                     for ex in generated_examples:
                         fw.write(json.dumps(ex) + "\n")
 
         if model.rank == 0:
-            return {"temp_dir_obj": temp_dir_obj}
+            return results
 
     def _generate_responses_legacy(self, model: LM) -> Dict[str, Any]:
         """Legacy (v0) generation implementation."""
@@ -144,6 +149,8 @@ class RepoBenchmark(BaseBenchmark):
 
         temp_dir_obj = tempfile.TemporaryDirectory()
         temp_dir = temp_dir_obj.name
+
+        results = {"temp_dir_obj": temp_dir_obj}
 
         for lang in self.languages:
             for subset in self.subsets:
@@ -184,81 +191,65 @@ class RepoBenchmark(BaseBenchmark):
                     generated_examples.append(
                         {
                             "idx": idx,
+                            "prompt": example["data"],
+                            "model_output": output,
                             "gpt_completion": get_first_line_not_comment(output, language=lang),
                             "label": example["label"],
                         }
                     )
 
+                results[f"legacy:{lang}:{subset}"] = generated_examples
                 output_path = f"{temp_dir}/repobench_{subset}_{lang}.jsonl"
                 with open(output_path, "w", encoding="utf-8") as fw:
                     for ex in generated_examples:
                         fw.write(json.dumps(ex) + "\n")
 
-        return {"temp_dir_obj": temp_dir_obj}
+        return results
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        prefix = "legacy:" if self.legacy_mode else ""
+        return {
+            f"{prefix}{lang}:{subset}": generation_result[f"{prefix}{lang}:{subset}"]
+            for lang in self.languages for subset in self.subsets
+            if f"{prefix}{lang}:{subset}" in generation_result
+        }
 
-        Args:
-            results: Dictionary containing temporary directory with generations
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            for examples in self.sample_groups(results).values():
+                for example in examples:
+                    record_sample_metrics(
+                        example,
+                        exact_match=example["label"].split() == example["gpt_completion"].split(),
+                        edit_similarity=fuzz.ratio(example["label"], example["gpt_completion"]),
+                    )
+            return results
+        finally:
+            results["temp_dir_obj"].cleanup()
 
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        # Handle None result from non-primary ranks
-        if results is None:
-            return None
-
-        temp_dir_obj = results["temp_dir_obj"]
-        temp_dir = temp_dir_obj.name
-
-        evaluation_results = {}
-        aggregated_stats = {"total_samples": 0, "total_em": 0, "total_es": 0}
-
-        for lang in self.languages:
-            for subset in self.subsets:
-                filepath = os.path.join(temp_dir, f"repobench_{subset}_{lang}.jsonl")
-
-                if not os.path.exists(filepath):
-                    print(f"Missing file: {filepath}")
-                    continue
-
-                with open(filepath, "r") as f:
-                    data = [json.loads(line) for line in f]
-
-                if not data:
-                    continue
-
-                ground_truth = [d["label"] for d in data]
-                generated = [d["gpt_completion"] for d in data]
-
-                em_score = round(exact_match_score(ground_truth, generated) * 100, 2)
-                es_score = round(edit_similarity_score(ground_truth, generated), 2)
-
-                # Store individual scores
-                evaluation_results[f"{lang}_{subset}_EM"] = em_score
-                evaluation_results[f"{lang}_{subset}_ES"] = es_score
-
-                # Update aggregated statistics
-                aggregated_stats["total_samples"] += len(data)
-                aggregated_stats["total_em"] += em_score * len(data)
-                aggregated_stats["total_es"] += es_score * len(data)
-
-                print(f"{lang}/{subset}: EM={em_score}, ES={es_score}, n={len(data)}")
-
-        # Calculate weighted averages if we have data
-        if aggregated_stats["total_samples"] > 0:
-            for lang in self.languages:
-                evaluation_results[f"{lang}_weighted_avg_EM"] = round(
-                    aggregated_stats["total_em"] / aggregated_stats["total_samples"], 2
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        groups = self.sample_groups(results)
+        scores = {
+            namespace: {
+                "EM": round(round(sum(row["sample_metrics"]["exact_match"] for row in examples) / len(examples), 5) * 100, 2),
+                "ES": round(round(sum(row["sample_metrics"]["edit_similarity"] for row in examples) / len(examples), 5), 2),
+            }
+            for namespace, examples in groups.items() if examples
+        }
+        metrics = {
+            f"{namespace.removeprefix('legacy:').replace(':', '_')}_{metric}": scores[namespace][metric]
+            for namespace in scores
+            for metric in ("EM", "ES")
+        }
+        total = sum(len(groups[namespace]) for namespace in scores)
+        if total:
+            metrics.update({
+                f"{lang}_weighted_avg_{metric}": round(
+                    sum(scores[namespace][metric] * len(groups[namespace]) for namespace in scores) / total, 2
                 )
-                evaluation_results[f"{lang}_weighted_avg_ES"] = round(
-                    aggregated_stats["total_es"] / aggregated_stats["total_samples"], 2
-                )
-
-        temp_dir_obj.cleanup()
-        return evaluation_results
+                for lang in self.languages for metric in ("EM", "ES")
+            })
+        return metrics
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

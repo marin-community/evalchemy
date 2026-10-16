@@ -168,16 +168,17 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
         # per-sample records (--log_samples, wandb) work without an override.
         return {"examples": examples}
 
-    def evaluate_responses(self, results: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
-        if results is None:  # non-primary ranks
-            return None
-        eval_results: Dict[str, float] = {}
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         for record in results["examples"]:
             answer = extract_flexible_answer(record["output"])
             record["model_answer"] = answer
             record["no_answer"] = answer is None
             record["correct"] = answer is not None and numeric_match(answer, record["answer"])
             record_sample_metrics(record, accuracy=record["correct"], no_answer=record["no_answer"])
+        return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, float]:
+        eval_results: Dict[str, float] = {}
         clean_correct = {r["id"]: r["correct"] for r in results["examples"] if r["task"] == CLEAN_TASK}
         for task in TASK_FILES:
             records = [r for r in results["examples"] if r["task"] == task]

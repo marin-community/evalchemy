@@ -4,6 +4,7 @@
 
 from argparse import Namespace
 from collections import Counter
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,8 @@ from lm_eval.models.openai_completions import LocalChatCompletion
 
 from eval.chat_benchmarks.MRCR.eval_instruct import MRCRBenchmark
 from eval.completion_response import CompletionClassification, CompletionContentPolicy, FailedGeneration
+from eval.contracts.aggregation import repeated_accuracy_results
+from eval.contracts.custom_streaming import aggregate_responses, score_responses
 from eval.contracts.failures import ModelRequestValidationError
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.grading import GenerationArtifactManifest
@@ -60,7 +63,7 @@ class _Benchmark(BaseBenchmark):
             raise self.generation_error
         return self.generation_result
 
-    def evaluate_responses(self, results):
+    def grade_responses(self, results):
         if self.grading_error is not None:
             raise self.grading_error
         if self.scored_result and "accuracy" in self.scored_result:
@@ -68,6 +71,9 @@ class _Benchmark(BaseBenchmark):
             correct_count = round(self.scored_result["accuracy"] * len(examples))
             for index, example in enumerate(examples):
                 record_sample_metrics(example, accuracy=index < correct_count)
+        return results
+
+    def aggregate_results(self, results):
         return self.scored_result
 
 
@@ -192,13 +198,15 @@ def test_partial_mrcr_uses_its_own_aggregator_and_preserves_failed_samples(tmp_p
     root = str(tmp_path / "archive")
     if stream_samples:
         with FineStoreOutput(root, "mrcr", ["MRCR"]) as output:
-            outcome, metrics = _score_custom_task(work, output)
+            scored = _score_custom_task(work, output)
         rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
         assert len(rows) == 3
         assert sum("EVALCHEMY_INFRASTRUCTURE_ERROR" in (row["output"] or "") for row in rows) == 1
     else:
-        outcome, metrics = _score_custom_task(work)
-        assert len(benchmark.to_samples(work.generation_result, metrics)) == 3
+        scored = _score_custom_task(work)
+        assert len(benchmark.to_samples(scored.graded_result, scored.metrics)) == 3
+
+    outcome, metrics = scored.outcome, scored.metrics
 
     assert outcome.status is TaskStatus.SUCCEEDED
     assert outcome.generated_count == 3
@@ -212,7 +220,11 @@ def test_partial_mrcr_uses_its_own_aggregator_and_preserves_failed_samples(tmp_p
 
 
 def test_partial_custom_task_without_an_aggregator_fails_instead_of_guessing():
-    benchmark = _Benchmark(
+    class MissingAggregator(_Benchmark):
+        def aggregate_results(self, results):
+            raise NotImplementedError("this benchmark has no reducer for the graded subset")
+
+    benchmark = MissingAggregator(
         {"examples": [{"prompt": "x", "model_output": FailedGeneration("model_transport")}]},
         scored_result={"accuracy": 0.0},
     )
@@ -222,7 +234,7 @@ def test_partial_custom_task_without_an_aggregator_fails_instead_of_guessing():
     assert result["results"] == {}
     outcome = result["task_outcomes"]["contract_task"]
     assert outcome["status"] is TaskStatus.FAILED
-    assert "benchmark-owned aggregator" in outcome["failure"]["message"]
+    assert outcome["failure"]["exception_type"] == "NotImplementedError"
 
 
 def test_partial_aggregation_uses_filtered_namespaces_and_task_weights():
@@ -230,21 +242,14 @@ def test_partial_aggregation_uses_filtered_namespaces_and_task_weights():
         def sample_groups(self, generation_result):
             return {"weighted": generation_result["examples"]}
 
-        def to_samples(self, generation_result, scored_result):
-            examples = (
-                self.sample_groups(generation_result)["weighted"]
-                if "examples" in generation_result
-                else generation_result["weighted"]
-            )
-            return super().to_samples({"examples": examples}, scored_result)
-
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
             for example in results["examples"]:
                 record_sample_metrics(example, accuracy=example["value"])
-            return self.aggregate_results(self.sample_groups(results))
+            return results
 
-        def aggregate_results(self, sample_groups):
-            examples = sample_groups["weighted"]
+        def aggregate_results(self, results):
+            examples = results["examples"]
+
             return {
                 "weighted_score": sum(row["value"] * row["weight"] for row in examples)
                 / sum(row["weight"] for row in examples)
@@ -269,9 +274,12 @@ def test_partial_aggregation_uses_filtered_namespaces_and_task_weights():
 
 def test_partial_repeated_samples_fail_after_preserving_each_attempt(tmp_path):
     class RepeatedBenchmark(_Benchmark):
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
             record_repeated_sample_metrics(results["examples"][0], accuracy=[1.0, 0.0])
-            return {"accuracy_avg": 0.5}
+            return results
+
+        def aggregate_results(self, results):
+            return repeated_accuracy_results(results["examples"])
 
     generation = {
         "examples": [
@@ -285,13 +293,82 @@ def test_partial_repeated_samples_fail_after_preserving_each_attempt(tmp_path):
     benchmark = RepeatedBenchmark(generation)
     root = str(tmp_path / "archive")
     with FineStoreOutput(root, "repeated", ["repeated"]) as output:
-        outcome, metrics = _score_custom_task(_CustomTaskWork("repeated", benchmark, generation), output)
+        scored = _score_custom_task(_CustomTaskWork("repeated", benchmark, generation), output)
 
-    assert outcome.status is TaskStatus.FAILED
-    assert metrics == {}
+    assert scored.outcome.status is TaskStatus.FAILED
+    assert scored.metrics == {}
     rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
     assert len(rows) == 2
     assert sum("EVALCHEMY_INFRASTRUCTURE_ERROR" in (row["output"] or "") for row in rows) == 1
+
+
+def test_copied_reordered_grades_keep_exported_source_identity():
+    class CopyingBenchmark(_Benchmark):
+        def grade_responses(self, results):
+            examples = [dict(example) for example in reversed(results["examples"])]
+            for example in examples:
+                record_sample_metrics(example, accuracy=True)
+            return {**results, "examples": examples}
+
+    benchmark = CopyingBenchmark(
+        {"examples": [{"model_output": "A"}, {"model_output": "B"}]}, scored_result={"accuracy": 1.0}
+    )
+    benchmark.bind_task_name("contract_task")
+    entries = benchmark.sample_manifest.plan_batch(
+        [SampleRequest(source_id="A", ordinal=0), SampleRequest(source_id="B", ordinal=1)]
+    )
+    benchmark.sample_manifest.mark_generated(entries, ["A", "B"])
+
+    result = _custom_evaluate(benchmark)
+
+    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.SUCCEEDED
+    assert [(row["source_id"], row["resps"]) for row in result["samples"]["contract_task"]] == [
+        ("A", [["A"]]), ("B", [["B"]]),
+    ]
+
+
+def test_omitted_returned_grade_rejects_aggregate_but_keeps_emitted_evidence(tmp_path):
+    class TruncatedBenchmark(_Benchmark):
+        def grade_responses(self, results):
+            for example in results["examples"]:
+                record_sample_metrics(example, accuracy=True)
+            return {**results, "examples": results["examples"][:1]}
+
+    benchmark = TruncatedBenchmark(
+        {"examples": [{"model_output": "A"}, {"model_output": "B"}]}, scored_result={"accuracy": 1.0}
+    )
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "truncated", ["contract_task"]) as output:
+        result = _custom_evaluate(benchmark, output_sink=output)
+
+    assert result["results"] == {}
+    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.FAILED
+    assert ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).num_rows == 2
+
+
+def test_json_replay_preserves_mrcr_failures_and_uses_only_grading_evidence():
+    benchmark = MRCRBenchmark()
+    generated = {
+        "examples": [
+            {"model_output": "ok", "score": 0.75, "prefix_hit": 1.0, "n_needles": 2, "mrcr_bin_upper": 8192},
+            {"model_output": FailedGeneration("model_transport"), "score": 0.0, "prefix_hit": 0.0, "n_needles": 2, "mrcr_bin_upper": 8192},
+        ]
+    }
+    fresh = score_responses("MRCR", benchmark, generated)
+    saved = json.loads(json.dumps(fresh.graded_result))
+    for example in saved["examples"]:
+        example.pop("score")
+        example.pop("prefix_hit")
+    saved["examples"].reverse()
+
+    restored = aggregate_responses("MRCR", benchmark, saved)
+
+    assert restored.excluded_count == fresh.excluded_count == 1
+    samples = benchmark.to_samples(restored.graded_result, restored.metrics)
+    assert [sample["resps"] for sample in samples] == [[["ok"]], [[""]]]
+    assert samples[1]["failure_category"] == "model_transport"
+    for metric in ("mrcr_accuracy", "prefix_hit_rate", "mrcr_8192_2needle", "mrcr_8192_2needle_count"):
+        assert restored.metrics[metric] == fresh.metrics[metric]
 
 
 def test_generation_exception_taxonomy_distinguishes_policy_and_timeout_failures():
@@ -343,7 +420,7 @@ def test_custom_grader_persists_scored_sample_before_interruption_and_retry(tmp_
     root = str(tmp_path / "archive")
 
     class _InterruptedBenchmark(_Benchmark):
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
             record_sample_metrics(results["examples"][0], accuracy=True)
             self.output.finish_task()
             raise RuntimeError("grader interrupted")
@@ -378,9 +455,9 @@ def test_custom_grader_persists_scored_sample_before_interruption_and_retry(tmp_
 
 def test_custom_grader_missing_sample_score_fails_task(tmp_path):
     class _PartialBenchmark(_Benchmark):
-        def evaluate_responses(self, results):
+        def grade_responses(self, results):
             record_sample_metrics(results["examples"][0], accuracy=True)
-            return {"accuracy": 1.0}
+            return results
 
     benchmark = _PartialBenchmark({"examples": [{"prompt": "first"}, {"prompt": "second"}]})
     with FineStoreOutput(str(tmp_path / "archive"), "run", ["contract_task"]) as output:
@@ -431,9 +508,6 @@ def test_endpoint_transport_failure_is_reported_without_terminating_the_task():
         def generate_responses(self, model):
             record_endpoint_failure(FailureCategory.MODEL_TRANSPORT)
             return {"examples": [{"output": ""}]}
-
-        def evaluate_responses(self, results):
-            return super().evaluate_responses(results)
 
     benchmark = _TransportFailureBenchmark({}, scored_result={"accuracy": 0.0})
 
@@ -513,7 +587,7 @@ def test_requested_sample_serialization_failure_is_typed_and_reported():
 
 def test_scored_task_without_sample_records_fails_sample_validation():
     class _AggregateOnlyBenchmark(_Benchmark):
-        def to_samples(self, generation_result, scored_result):
+        def to_sample_group(self, namespace, examples):
             return []
 
     benchmark = _AggregateOnlyBenchmark({"examples": [{"prompt": "x"}]}, scored_result={"accuracy": 1.0})
