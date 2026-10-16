@@ -32,6 +32,7 @@ def alpaca(spec, responses):
     name = spec.grader.reference["config"]
     annotator = annotator_for(name)
     frame = pd.DataFrame([{
+        "index": spec.ordinal,
         "instruction": spec.doc["instruction"], "output_1": spec.target, "output_2": str(responses[-1]),
         "generator_1": spec.grader.reference["baseline"], "generator_2": "candidate",
     }])
