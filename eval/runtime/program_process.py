@@ -1,19 +1,28 @@
 """Own and reap the process groups used by canonical program checkers."""
 
 import os
+import resource
 import signal
 import subprocess
 from multiprocessing.process import BaseProcess
 from typing import Optional
 
 _PROGRAM_SESSION_ID: Optional[int] = None
+PROGRAM_MEMORY_BYTES = 30 * 1024**3
 
 
 def start_program_session() -> None:
-    """Separate a candidate and its descendants from the evaluator's group."""
+    """Own a candidate's descendants and cap each process's address/data space."""
     os.setsid()
     global _PROGRAM_SESSION_ID
     _PROGRAM_SESSION_ID = os.getpid()
+    # Native checker safe_mode flags control unrelated execution behavior. Keep
+    # the memory budget independent, including when those flags are disabled.
+    for kind in (resource.RLIMIT_AS, resource.RLIMIT_DATA):
+        soft, hard = resource.getrlimit(kind)
+        soft = PROGRAM_MEMORY_BYTES if soft == resource.RLIM_INFINITY else min(soft, PROGRAM_MEMORY_BYTES)
+        hard = PROGRAM_MEMORY_BYTES if hard == resource.RLIM_INFINITY else min(hard, PROGRAM_MEMORY_BYTES)
+        resource.setrlimit(kind, (soft, hard))
 
 
 def program_session_active() -> bool:
