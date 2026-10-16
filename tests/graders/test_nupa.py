@@ -82,6 +82,38 @@ def test_extract_answer_does_not_treat_sentence_punctuation_as_terminal_answer_s
     assert scorer.extract_answer("After checking the work, there are 42.", scorer.INTEGER) is None
 
 
+@pytest.mark.parametrize(
+    ("prediction", "gold", "answer_format"),
+    [
+        ("Thus the final answer is 1818", "18", scorer.INTEGER),
+        ("Thus the final answer is 486.612486.612", "486.612", scorer.FLOAT),
+        ("Thus the final answer is 43/2043/20", "43/20", scorer.FRACTION),
+        ("Thus the final answer is 5.09786549e525.09786549e52", "5.09786549e52", scorer.SCIENTIFIC),
+    ],
+)
+def test_score_prediction_accepts_exact_repeated_terminal_reference(prediction, gold, answer_format):
+    score = scorer.score_prediction(prediction, gold, answer_format)
+
+    assert score.extracted_answer == gold
+    assert score.exact_match == 1.0
+    assert score.format_valid == 1.0
+    assert score.no_answer == 0.0
+
+
+def test_score_prediction_rejects_repeated_nonreference_answer():
+    score = scorer.score_prediction("Thus the final answer is 1818", "19", scorer.INTEGER)
+
+    assert score.extracted_answer == "1818"
+    assert score.exact_match == 0.0
+
+
+def test_score_prediction_does_not_accept_a_larger_number_ending_in_repeated_reference():
+    score = scorer.score_prediction("Thus the final answer is 11818", "18", scorer.INTEGER)
+
+    assert score.extracted_answer == "11818"
+    assert score.exact_match == 0.0
+
+
 def test_score_prediction_preserves_numeric_representation():
     exact = scorer.score_prediction("9.9", "9.9", scorer.FLOAT)
     wrong_digits = scorer.score_prediction("9.11", "9.9", scorer.FLOAT)

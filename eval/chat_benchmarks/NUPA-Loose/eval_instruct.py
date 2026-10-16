@@ -24,7 +24,7 @@ from lm_eval.api.model import LM
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .scorer import ExampleScore, extract_answer, length_bucket, mean, score_prediction
+from .scorer import ExampleScore, length_bucket, mean, score_prediction
 
 SOURCE_DATASET_NAME = "HaotongYang/NUPA_text"
 SOURCE_DATASET_REVISION = "01e3831ec00dfd618a77d9f6fe7fc0d327ad16d7"
@@ -132,7 +132,7 @@ class NUPALooseBenchmark(BaseBenchmark):
         examples = []
         for record, output in zip(records, outputs, strict=True):
             example = dict(record)
-            example["output"] = output
+            example["model_output"] = output
             examples.append(example)
         return {"examples": examples}
 
@@ -142,8 +142,8 @@ class NUPALooseBenchmark(BaseBenchmark):
 
         scored_examples = []
         for example in results["examples"]:
-            score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
-            example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
+            score = score_prediction(example.get("model_output"), example["answer"], example["answer_format"])
+            example["model_answer"] = score.extracted_answer
             example["correct"] = bool(score.exact_match)
             example["score"] = score
             record_sample_metrics(
