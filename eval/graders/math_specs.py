@@ -80,8 +80,13 @@ def matharena(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     from eval.chat_benchmarks.HMMT.matharena.parser import check_answers, extract_answer, parse_answer
 
     target, _ = parse_answer(str(spec.target))
-    answer, _ = extract_answer(str(responses[-1]), False, True, "," in str(spec.target))
-    return Grade({"accuracy": float(check_answers(answer, target))}, {"filtered_resps": [str(answer)]})
+    text = str(responses[-1])
+    list_answer = "," in str(spec.target)
+    answer, _ = extract_answer(text, False, True, list_answer)
+    # Expanding a compact expression such as 1 - 1/2025! only for audit can
+    # exceed Python's integer-string limit after native grading succeeds.
+    audit_answer, _ = extract_answer(text, False, False, list_answer)
+    return Grade({"accuracy": float(check_answers(answer, target))}, {"filtered_resps": [str(audit_answer)]})
 
 def answer_number(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     text = str(responses[-1]).lower()

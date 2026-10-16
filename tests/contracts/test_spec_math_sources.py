@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.AIME25.eval_instruct import AIME25Benchmark
 from eval.chat_benchmarks.AIW.eval_instruct import AIWBenchmark
@@ -106,6 +108,43 @@ def test_hle_and_hmmt_preserve_prompt_and_repeat_protocols(monkeypatch):
     hmmt_specs = list(hmmt.iter_specs(_options("HMMT")))
     assert len(hmmt_specs) == 10
     assert hmmt_specs[0].requests[0].prompt[0]["content"].endswith("\\boxed{}.\nAnswer:")
+
+
+@pytest.mark.parametrize("target, expected", [(r"\frac{1311}{2017}", 0.0), (r"1 - \frac{1}{2025!}", 1.0)])
+def test_hmmt_scores_large_rational_without_expanding_it_for_sample_audit(monkeypatch, target, expected):
+    # The saved H100 response parses successfully, but expanding 2025! to text
+    # exceeds Python's integer-string limit after native correctness is known.
+    answer = r"1 - \frac{1}{2025!}"
+    source = HMMTBenchmark()
+    source.n_repeat = 1
+    monkeypatch.setattr(source, "load_questions", lambda: [{"id": "large", "problem": "Find the fraction", "answer": target}])
+
+    metrics, samples = evaluate_source(source, _options("HMMT"), FixedEndpoint(rf"\boxed{{{answer}}}"))
+
+    assert metrics["accuracy_avg"] == expected
+    assert len(samples) == 1
+    assert samples[0]["accuracy"] == expected
+
+
+def test_hmmt_keeps_native_integer_list_and_unboxed_scores(monkeypatch):
+    answers = {
+        "integer": ("2", r"\boxed{2}"),
+        "list": ("1,2", r"\boxed{2,1}"),
+        "unboxed": ("17", "The answer is 17"),
+        "expression": ("8", r"\boxed{2^3}"),
+    }
+    source = HMMTBenchmark()
+    source.n_repeat = 1
+    monkeypatch.setattr(source, "load_questions", lambda: [
+        {"id": name, "problem": name, "answer": target} for name, (target, _) in answers.items()
+    ])
+    endpoint = FixedEndpoint(lambda request: answers[request.metadata["source_id"]][1])
+
+    metrics, samples = evaluate_source(source, _options("HMMT"), endpoint)
+
+    assert metrics["accuracy_avg"] == 1.0
+    assert len(samples) == 4
+    assert all(sample["accuracy"] == 1.0 for sample in samples)
 
 
 def test_jeebench_and_ifeval_specs_keep_source_selection(tmp_path, monkeypatch):
