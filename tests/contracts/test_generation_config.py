@@ -25,10 +25,13 @@ from tokenizers import Tokenizer, models, pre_tokenizers
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.chat_benchmarks.MMLUPro.eval_instruct import MMLUProBenchmark, generate_cot_prompt
+from eval.chat_benchmarks.LiveBench.eval_instruct import LiveBenchBenchmark
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.eval import LM_EVAL_ROUTE, evaluate
 from eval.execution.backend import LMBackend
+from eval.execution.engine import CollectSamples, Evaluator
 from eval.contracts.eval_spec import ModelRequest, RequestKind
+from eval.sources.common import SourceOptions
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
 
@@ -37,7 +40,8 @@ class _Endpoint(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         body = self.rfile.read(int(self.headers["Content-Length"]))
         self.server.requests.append(json.loads(body))
-        completion = {"index": 0, "text": "\\boxed{42}", "message": {"content": "\\boxed{42}"}}
+        output = self.server.outputs.pop(0) if self.server.outputs else "\\boxed{42}"
+        completion = {"index": 0, "text": output, "message": {"content": output}}
         response = json.dumps({"choices": [completion]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -53,6 +57,7 @@ class _Endpoint(BaseHTTPRequestHandler):
 def endpoint():
     server = HTTPServer(("127.0.0.1", 0), _Endpoint)
     server.requests = []
+    server.outputs = []
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -71,6 +76,42 @@ def _model(endpoint, model_class):
         tokenizer_backend=None,
         tokenized_requests=False,
     )
+
+
+@pytest.mark.parametrize("system_instruction", [None, "Follow the evaluation rules."])
+def test_livebench_wire_preserves_fastchat_template_and_cleaned_turn_history(endpoint, tmp_path, system_instruction):
+    source = LiveBenchBenchmark(question_source="jsonl", dataset_name="fixture")
+    source.data_path = str(tmp_path)
+    data = tmp_path / "fixture" / "category"
+    data.mkdir(parents=True)
+    question = {
+        "question_id": "two-turns", "turns": ["Turn one", "Turn two"],
+        "task": "coding_completion", "category": "coding", "livebench_release_date": "2024-08-31",
+        "livebench_removal_date": "",
+    }
+    (data / "question.jsonl").write_text(json.dumps(question) + "\n")
+    options = SourceOptions(task="LiveBench", source=source.SOURCE, limit=1, system_instruction=system_instruction)
+    model = _model(endpoint, LocalChatCompletion)
+    model.model_identifier = "model=owner__Qwen-Qwen3-0.6B,tokenizer_backend=None"
+    endpoint.outputs = ["  First answer<|endoftext|> discarded  ", "  Second answer  "]
+    sink = CollectSamples()
+
+    async def run():
+        async with LMBackend(model) as backend:
+            evaluator = Evaluator(backend, None, sink, workers=1, predict_only=True)
+            return [result async for result in evaluator.run(source.iter_specs(options))]
+
+    [completed] = asyncio.run(run())
+    assert completed.error is None
+    prefix = "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+    first = prefix + "<|im_start|>user\nTurn one<|im_end|>\n<|im_start|>assistant\n"
+    second = first + "First answer<|im_end|>\n<|im_start|>user\nTurn two<|im_end|>\n<|im_start|>assistant\n"
+    outer_system = [{"role": "system", "content": system_instruction}] if system_instruction else []
+    assert [request["messages"] for request in endpoint.requests] == [
+        [*outer_system, {"role": "user", "content": first}],
+        [*outer_system, {"role": "user", "content": second}],
+    ]
+    assert sink.samples["LiveBench"][0]["filtered_resps"] == ["First answer", "Second answer"]
 
 
 class _PlainLM(LM):

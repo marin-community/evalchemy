@@ -35,6 +35,7 @@ class ModelRequest:
     context_length: int | None = None
     chat_template: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    prompt_format: str | None = None
 
 
 @dataclass(frozen=True)

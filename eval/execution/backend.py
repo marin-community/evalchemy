@@ -27,6 +27,7 @@ from eval.contracts.failures import FailureCategory
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 from eval.runtime.pool import RetryPolicy, retry
 from eval.execution.run_spec import RunSpec
+from eval.execution.prompts import clean_fastchat_response, fastchat_prompt
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 
@@ -117,6 +118,11 @@ class LMBackend:
     async def execute(self, request: ModelRequest) -> Any:
         validate_model_request(request)
         prompt = request.prompt
+        conversation = None
+        if request.prompt_format is not None:
+            if request.prompt_format != "fastchat":
+                raise ValueError(f"unknown prompt format: {request.prompt_format}")
+            prompt, conversation = fastchat_prompt(self.model, prompt)
         if isinstance(prompt, list):
             prompt = self.model.apply_chat_template(prompt, **request.chat_template)
         parameters = dict(request.generation)
@@ -125,7 +131,8 @@ class LMBackend:
         if "max_new_tokens" in parameters:
             parameters["max_gen_toks"] = parameters.pop("max_new_tokens")
         if isinstance(self.model, TemplateAPI):
-            return await self._api_request(request, prompt, parameters)
+            output = await self._api_request(request, prompt, parameters)
+            return clean_fastchat_response(self.model, conversation, output)
         args = (prompt, parameters)
         if request.kind is RequestKind.LIKELIHOOD:
             args = (prompt, request.continuation)
@@ -146,7 +153,7 @@ class LMBackend:
         self._pending.append((instance, future, rng))
         if self._batch is None or self._batch.done():
             self._batch = asyncio.create_task(self._local_batches())
-        return await future
+        return clean_fastchat_response(self.model, conversation, await future)
 
     async def _local_batches(self):
         # Coalesce already admitted operations for local engines. The shared

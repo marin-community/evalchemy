@@ -90,10 +90,10 @@ def text_specs(
             )
 
 
-def conversation_specs(records, options, *, turns, **kwargs):
+def conversation_specs(records, options, *, turns, prompt_format=None, **kwargs):
     """Expand fixed conversation turns into dependent model requests."""
     for spec in text_specs(records, options, prompt=lambda row: turns(row)[0], **kwargs):
-        first = spec.requests[0]
+        first = replace(spec.requests[0], prompt_format=prompt_format)
         requests = [first]
         for index, turn in enumerate(turns(spec.doc)[1:], start=1):
             messages = [{"role": "user", "content": turn}] if isinstance(turn, str) else turn

@@ -80,7 +80,8 @@ class LiveBenchBenchmark(BaseBenchmark):
 
     def iter_specs(self, options):
         return conversation_specs(
-            self.load_questions(), options, turns=lambda row: row["turns"], target=lambda row: row.get("ground_truth", ""),
+            self.load_questions(), options, turns=lambda row: row["turns"], prompt_format="fastchat",
+            target=lambda row: row.get("ground_truth", ""),
             grader="livebench", generation={"temperature": self.temperature, "do_sample": self.temperature >= 1e-4,
                                             "max_gen_toks": self.max_tokens}, repeats=self.num_choices,
             tags=lambda row: {"task": row["task"], "category": row["category"],
