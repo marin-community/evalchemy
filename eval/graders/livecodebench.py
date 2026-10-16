@@ -375,7 +375,8 @@ def _infer_call_target_from_completion(completion):
 
     Mirrors the logic the vendored stacks used before this route existed.
     """
-    return completion.split("(")[0].split()[-1]
+    prefix = completion.split("(")[0].split()
+    return prefix[-1] if prefix else None
 
 
 def run_lcb_tests(problem, completion, timeout, is_extracted=False):
@@ -402,6 +403,8 @@ def run_lcb_tests(problem, completion, timeout, is_extracted=False):
     is_stdin = tests[0].get("testtype") != "functional"
     normalized = [{"input": tc.get("input"), "output": tc.get("output")} for tc in tests]
     fn_name = None if is_stdin else _infer_call_target_from_completion(completion)
+    if not is_stdin and fn_name is None:
+        return [(False, "No callable name in completion", "", 0.0) for _ in tests]
     result = run(
         normalized,
         completion,

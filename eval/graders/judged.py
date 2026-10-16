@@ -47,14 +47,16 @@ def wildbench(spec: EvalSpec, responses: Sequence[Any]) -> Grade | JudgePlan:
     if not output.strip():
         return wildbench_score_with_reference(parser.reference, '{"score": "1"}')
     return JudgePlan((ModelRequest(RequestKind.GENERATE, prompt, {"temperature": 0, "max_gen_toks": 1024,
-                                                               "response_format": {"type": "json_object"}}),), parser)
+                                                               "response_format": {"type": "json_object"}}),), parser,
+                     GraderSpec("judge_failed"))
 
 
 def wildbench_score_with_reference(reference: dict[str, Any], raw: str) -> Grade:
     score = float(json.loads(raw)["score"])
     if not 1 <= score <= 10:
         raise ValueError("WildBench judge rating must be between 1 and 10")
-    return Grade({"score": score, "adjusted_score": (score - 5) * 2, "avg_output_length": reference["output_length"]},
+    return Grade({"score": score, "adjusted_score": (score - 5) * 2, "avg_output_length": reference["output_length"],
+                  "judge_failed": 0.0},
                  {"judge_raw": raw}, {"avg_output_length": float(not reference["truncated"] and reference["output_length"] > 0)})
 
 

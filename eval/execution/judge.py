@@ -34,10 +34,10 @@ class JudgeBackend:
             ) as response:
                 response.raise_for_status()
                 document = await response.json()
-                content = document["choices"][0]["message"]["content"]
+                completion = completion_response_from_chat_choice(document, document["choices"][0])
+                content = completion.content
                 if not isinstance(content, str) or not content.strip():
                     raise ValueError("judge returned an empty response")
-                completion = completion_response_from_chat_choice(document, document["choices"][0])
                 return CompletionText(content, completion, CompletionContentPolicy.FINAL_ONLY)
 
         return await retry(call, RetryPolicy(budget=180, attempt_timeout=60, max_attempts=3), retryable_transport, transport_retry_delay)

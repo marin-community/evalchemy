@@ -89,7 +89,7 @@ class SourceMetrics:
             )
             # Math sources retain zero accuracy for failed judges; other sources
             # leave the score unavailable when no judge returned a grade.
-            if not self.means.counts["accuracy"]:
+            if not self.means.counts["accuracy"] and not self.means.counts[self.policy.accuracy]:
                 metrics[self.policy.accuracy] = None
         for (tag, group), accumulator in self.groups.items():
             for metric, value in accumulator.finish().items():
@@ -123,9 +123,15 @@ class SourceMetrics:
                     group, member = name.split(":", 1)
                     metrics.setdefault(group, {})[member] = metrics.pop(name)
         if self.policy.name == "weighted_macro":
-            categories = {value: accumulator.finish()["adjusted_score"] for (tag, value), accumulator in self.groups.items()
-                          if value in self.policy.group_weights}
-            macro = sum(value * self.policy.group_weights[name] for name, value in categories.items()) / sum(self.policy.group_weights.values())
+            categories = {}
+            for (_tag, value), accumulator in self.groups.items():
+                values = accumulator.finish()
+                if value in self.policy.group_weights and "adjusted_score" in values:
+                    categories[value] = values["adjusted_score"]
+            macro = (sum(value * self.policy.group_weights[name] for name, value in categories.items())
+                     / sum(self.policy.group_weights.values())) if categories else None
+            metrics.setdefault("score", None)
+            metrics.setdefault("adjusted_score", None)
             metrics.update(task_macro_score=macro, adjusted_task_macro_score=macro, task_categorized_scores=categories)
         if self.paired is not None:
             metrics = self.paired.finish()

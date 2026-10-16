@@ -69,6 +69,19 @@ def _scored_item(task, source_id, grade, tags):
     return ItemResult(spec, (), grade, {"sample_id": str(source_id)})
 
 
+def test_judge_coverage_preserves_a_renamed_accuracy_metric():
+    metrics = SourceMetrics(repeated=False, policy=ReducerSpec(accuracy="accuracy_avg"))
+    metrics.add(_scored_item("fixture", "judged", Grade({"accuracy": 1.0, "judge_failed": 0.0}), {}))
+    metrics.add(_scored_item("fixture", "unavailable", Grade({"judge_failed": 1.0}), {}))
+
+    reduced = metrics.finish("fixture")["results"]["fixture"]
+
+    assert reduced["accuracy_avg"] == 1.0
+    assert reduced["num_judged"] == 1
+    assert reduced["num_judge_failed"] == 1
+    assert reduced["judge_coverage"] == 0.5
+
+
 def test_mixeval_reducer_preserves_split_rounding_and_public_keys():
     metrics = SourceMetrics(repeated=False, policy=ReducerSpec(name="rounded_split_mean"))
     for source_id, split, score in [("freeform-1", "freeform", 0.3333), ("freeform-2", "freeform", 1.0), ("multi", "multichoice", 0.0)]:

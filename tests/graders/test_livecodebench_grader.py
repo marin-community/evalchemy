@@ -123,6 +123,26 @@ def test_passing_functional_candidate_scores_all_pass():
     assert result["timed_out"] is False
 
 
+@pytest.mark.parametrize(
+    ("completion", "expected_accuracy"),
+    [
+        ("```python\ndef add(a, b):\n    return a + b\n```", 1.0),
+        ("```python\ndef add(a, b):\n    return a + b\n```\n```python\n\n```", 0.0),
+    ],
+)
+def test_live_code_scores_an_empty_final_code_block_as_incorrect(completion, expected_accuracy):
+    from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+    from eval.graders.programs import live_code
+
+    spec = EvalSpec(
+        task="LiveCodeBench", source=SourceRef("fixture"), source_id="functional", ordinal=0,
+        requests=(), grader=GraderSpec("live_code"),
+        doc={"test": [{"input": [1, 2], "output": 3, "testtype": "functional"}]},
+    )
+
+    assert live_code(spec, [completion]).metrics == {"accuracy": expected_accuracy}
+
+
 def test_failing_candidate_scores_failed_and_short_circuits():
     """Stop-on-failure: a wrong answer stops the run without running the later test."""
     result = livecodebench.run(

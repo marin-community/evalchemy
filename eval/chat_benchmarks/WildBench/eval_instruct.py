@@ -82,7 +82,7 @@ class WildBenchBenchmark(BaseBenchmark):
             config.model = annotator_model
         self.config = config or WildBenchConfig(model=annotator_model)
         self.judge_model = self.config.model
-        self.REDUCER = ReducerSpec(trial_metric=None, name="weighted_macro", group_weights=self.config.task_weights)
+        self.REDUCER = ReducerSpec(trial_metric=None, name="weighted_macro", accuracy="adjusted_score", group_weights=self.config.task_weights)
         self.debug = debug
         self.max_new_tokens = max_tokens
 
