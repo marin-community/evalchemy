@@ -70,6 +70,20 @@ def test_zeroeval_arithmetic_does_not_execute_python(monkeypatch, tmp_path):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("answer,target", [
+    ("2**1001/2", "2"),
+    ("2/" + "1" * 4096, "2"),
+    ("2/1" + "+1" * 64, "2"),
+], ids=["exponent", "length", "nodes"])
+def test_zeroeval_rejected_arithmetic_cannot_match_its_first_operand(monkeypatch, answer, target):
+    source, options = _source(monkeypatch, "math-l5", target)
+
+    metrics, samples = evaluate_source(source, options, FixedEndpoint(json.dumps({"answer": answer})))
+
+    assert metrics["accuracy"] == 0.0
+    assert samples[0]["accuracy"] == 0.0
+
+
 @pytest.mark.parametrize("solution,answered", [({}, True), ([], True), ("", True), (None, False), ("missing", False)])
 def test_zeroeval_grid_distinguishes_empty_solution_from_unanswered(monkeypatch, solution, answered):
     truth = {"header": ["House", "Name"], "rows": [["1", "Alice"], ["2", "Bob"]]}

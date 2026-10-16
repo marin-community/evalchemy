@@ -1,6 +1,6 @@
-# Distributed Evaluation for Evalchemy
+# Distributed Inference for Evalchemy
 
-This document explains how to run distributed, data parallel evaluations on HPC clusters (which also sometimes don't have internet access on gpu nodes).
+These scripts generate benchmark responses across HPC nodes and upload the outputs. They finish after generation; run scored evaluations through the main evaluation CLI.
 
 ## Quickstart
 
@@ -13,7 +13,7 @@ The distributed evaluation system allows you to run model evaluations in paralle
    - Distribute the dataset across multiple nodes
    - Run model inference in parallel on each shard
    - Collect and merge the results
-   - Calculate metrics and upload to database
+   - Upload generated responses to HuggingFace Hub
 
 2. **Example command**:
    ```bash
@@ -25,7 +25,7 @@ The distributed evaluation system allows you to run model evaluations in paralle
    - `--model_name`: HuggingFace model ID to evaluate
    - `--num_shards`: Number of shards for distributed evaluation
    - `--max-job-duration`: Maximum job duration in hours
-   - `--watchdog`: Monitor job progress and compute scores when done (recommended)
+   - `--watchdog`: Monitor job progress and upload generated outputs when done
 
 4. **Cluster Auto-Detection**
 
@@ -86,16 +86,13 @@ For detailed setup instructions for specific clusters, see:
 4. **Result Collection**:
    - When using `--watchdog`, the launcher monitors job progress
    - Once all shards complete, results are uploaded to HuggingFace Hub
-   - Metrics are calculated and stored in the database
 
-### Precomputed Answers
+### Generated Responses
 
-The distributed evaluation system creates precomputed answers that can be reused:
+The distributed inference scripts retain generated responses for inspection:
 
 - Results are stored as parquet files in HuggingFace datasets
-- These precomputed answers can be evaluated with different metrics later
 - They can be inspected on the HuggingFace data studio
-- Metrics are added to the repo README for easy viewing
 
 ## Benchmarking Performance
 

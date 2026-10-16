@@ -20,7 +20,7 @@ class MixEvalBenchmark(BaseBenchmark):
     SOURCE = SourceRef("MixEval", "test", "2024-06-01")
     METRICS = ("overall",)
     PRIMARY_METRIC = "overall"
-    REDUCER = ReducerSpec(name="rounded_split_mean")
+    REDUCER = ReducerSpec(name="rounded_split_mean", trial_metric=None)
 
     def __init__(
         self,

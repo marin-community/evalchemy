@@ -1,4 +1,4 @@
-from eval.contracts.eval_spec import SourceRef
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
 from eval.sources.common import text_specs
 from datasets import load_dataset
 from argparse import Namespace
@@ -23,6 +23,8 @@ class ZeroEvalBenchmark(BaseBenchmark):
     """
     ZeroEval benchmark for a number of tasks and benchmarks.
     """
+
+    REDUCER = ReducerSpec(trial_metric=None)
 
     def __init__(
         self,

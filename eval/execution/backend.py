@@ -16,7 +16,7 @@ from lm_eval import utils
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.models.api_models import TemplateAPI
-from lm_eval.models.openai_completions import LocalChatCompletion
+from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
 from transformers import AutoTokenizer
 
 from eval.completion_response import FailedGeneration
@@ -29,23 +29,27 @@ from eval.runtime.pool import RetryPolicy, retry
 from eval.execution.run_spec import RunSpec
 from eval.execution.generation import canonical_generation_kwargs
 from eval.execution.prompts import clean_fastchat_response, fastchat_prompt
+from eval.robust_api import configured_generation_overrides
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+GPT4O_MAX_OUTPUT_TOKENS = 16384
 
 
-def prompt_encoder(model: LM) -> Callable[[str], list[int]]:
+def prompt_encoder(model: LM, *, tokenizer_defaults: bool = False) -> Callable[[str], list[int]]:
     """Resolve token IDs for source prompt budgets without changing transport encoding."""
-    if not isinstance(model, LocalChatCompletion):
+    if not tokenizer_defaults and not isinstance(model, LocalChatCompletion):
         return model.tok_encode
 
     # LocalChatCompletion.tok_encode passes text through even with a tokenizer.
     # Load only when a source needs sizing; zero-shot chat needs no local tokenizer.
-    tokenizer = model.tokenizer
+    tokenizer = None
 
     def encode(text: str) -> list[int]:
         nonlocal tokenizer
         if tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(model.model, trust_remote_code=True)
+            tokenizer = model.tokenizer
+            if tokenizer is None:
+                tokenizer = AutoTokenizer.from_pretrained(model.model, trust_remote_code=True)
         return tokenizer.encode(text)
 
     return encode
@@ -132,10 +136,20 @@ class LMBackend:
         if isinstance(prompt, list):
             prompt = self.model.apply_chat_template(prompt, **request.chat_template)
         parameters = canonical_generation_kwargs(request.generation)
+        do_sample = parameters.pop("do_sample", None)
         if isinstance(self.model, TemplateAPI):
+            if "source_do_sample" in request.metadata:
+                if request.metadata["source_do_sample"] is False:
+                    parameters["temperature"] = 0.0
+                    parameters.pop("seed", None)
+                overrides = configured_generation_overrides(self.model)
+                if overrides.get("do_sample") is True and "temperature" not in overrides:
+                    parameters.pop("temperature", None)
+                parameters.update(overrides)
+                parameters.pop("do_sample", None)
             output = await self._api_request(request, prompt, parameters)
             return clean_fastchat_response(self.model, conversation, output)
-        if parameters.pop("do_sample", None) is False:
+        if do_sample is False:
             parameters["temperature"] = 0.0
         args = (prompt, parameters)
         if request.kind is RequestKind.LIKELIHOOD:
@@ -188,6 +202,9 @@ class LMBackend:
     async def _api_request(self, request: ModelRequest, prompt: Any, parameters: dict[str, Any]) -> Any:
         model = self.model
         if request.kind is RequestKind.GENERATE:
+            if "source_do_sample" in request.metadata and isinstance(model, LocalCompletionsAPI) and "4o" in model.model:
+                # Local endpoints still apply explicit caller limits when building the payload.
+                parameters["max_gen_toks"] = min(parameters.get("max_gen_toks", model._max_gen_toks), GPT4O_MAX_OUTPUT_TOKENS)
             if model.tokenized_requests:
                 # Match TemplateAPI.generate_until before calling its transport.
                 prompt = model.tok_encode(prompt, add_special_tokens=model.add_bos_token)

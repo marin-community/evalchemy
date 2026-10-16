@@ -119,7 +119,7 @@ class MTBenchBenchmark(BaseBenchmark):
     REQUIRES_JUDGE = True
     METRICS = ("Turn 1", "Turn 2", "Average")
     PRIMARY_METRIC = "Average"
-    REDUCER = ReducerSpec(trial_metric=None)
+    REDUCER = ReducerSpec(trial_metric=None, accuracy="Average")
     SOURCE = SourceRef("lmsys/mt-bench", "test")
 
     def iter_specs(self, options):

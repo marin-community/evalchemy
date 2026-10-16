@@ -203,7 +203,7 @@ class Evaluator:
         rendered_prompts: list[Any] = []
         arguments: list[tuple] = []
         for index, original in enumerate(spec.requests):
-            request = replace(original, metadata={"task": spec.task, "source_id": spec.source_id,
+            request = replace(original, metadata={**original.metadata, "task": spec.task, "source_id": spec.source_id,
                                                   "ordinal": spec.ordinal, "trial": spec.trial})
             if original.previous_turn is not None:
                 # A conversation is a fixed sequence of user turns. Only the

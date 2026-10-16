@@ -41,7 +41,9 @@ class SourceMetrics:
         self.means.add(result.grade.metrics, result.grade.weights)
         self.examples.add(result.record["sample_id"])
         self.trials[result.spec.trial or 0].add(result.grade.metrics, result.grade.weights)
-        self.squared_accuracy += float(result.grade.metrics.get("accuracy", 0)) ** 2
+        accuracy = result.grade.metrics.get("accuracy")
+        if accuracy is not None:
+            self.squared_accuracy += float(accuracy) ** 2
         for tag, values in result.spec.tags.items():
             for value in (values,) if isinstance(values, str) else values:
                 self.groups[tag, value].add(result.grade.metrics, result.grade.weights)
@@ -56,24 +58,31 @@ class SourceMetrics:
             return {"results": {task: self._rounded_split_metrics()}}
         if self.policy.name == "last_trial" and self.pass_at_k is None:
             return {"results": {task: self._last_trial_metrics()}}
-        if self.pass_at_k is not None:
-            metrics = self.pass_at_k.finish()
+        pass_metrics = self.pass_at_k.finish() if self.pass_at_k is not None else {}
+        unavailable_trials = any(value is None for value in pass_metrics.values())
+        if self.pass_at_k is not None and not unavailable_trials:
+            metrics = pass_metrics
         elif "accuracy" in metrics:
             accuracy = metrics.pop("accuracy")
-            accuracy_name = "accuracy_avg" if self.repeated and self.policy.accuracy == "accuracy" else self.policy.accuracy
-            stderr_name = "accuracy_std_err" if self.repeated and self.policy.stderr == "accuracy_stderr" else self.policy.stderr
+            rename_repeated = self.repeated and self.policy.trial_metric is not None and self.pass_at_k is None
+            accuracy_name = "accuracy_avg" if rename_repeated and self.policy.accuracy == "accuracy" else self.policy.accuracy
+            stderr_name = "accuracy_std_err" if rename_repeated and self.policy.stderr == "accuracy_stderr" else self.policy.stderr
             metrics[accuracy_name] = accuracy
             if self.repeated:
-                accuracies = [self.trials[trial].finish()["accuracy"] for trial in sorted(self.trials)]
+                trial_scores = [(trial, self.trials[trial].finish().get("accuracy")) for trial in sorted(self.trials)]
+                accuracies = [value for _, value in trial_scores]
                 metrics.update(
-                    num_total=count, num_repeat=len(accuracies), solved_avg=accuracy * count,
+                    num_total=count, num_repeat=len(accuracies), solved_avg=self.means.sums["accuracy"] / len(accuracies),
                     run_stats=[
-                        {"repetition": trial + 1, "num_total": count, "num_solved": value * count, "accuracy": value}
-                        for trial, value in enumerate(accuracies)
+                        {"repetition": trial + 1, "num_total": count, "num_solved": self.trials[trial].sums["accuracy"] if value is not None else None, "accuracy": value}
+                        for trial, value in trial_scores
                     ],
                 )
                 denominator = len(accuracies) * (len(accuracies) - self.policy.repeat_ddof)
-                metrics[stderr_name] = math.sqrt(sum((value - accuracy) ** 2 for value in accuracies) / denominator) if denominator > 0 else 0.0
+                if any(value is None for value in accuracies):
+                    metrics[stderr_name] = None
+                else:
+                    metrics[stderr_name] = math.sqrt(sum((value - accuracy) ** 2 for value in accuracies if value is not None) / denominator) if denominator > 0 else 0.0
             else:
                 observed = self.means.counts["accuracy"]
                 variance = max(0, self.squared_accuracy - observed * accuracy ** 2) / (observed - 1) if observed > 1 else 0
@@ -91,7 +100,7 @@ class SourceMetrics:
             )
             # Math sources retain zero accuracy for failed judges; other sources
             # leave the score unavailable when no judge returned a grade.
-            if not self.means.counts["accuracy"] and not self.means.counts[self.policy.accuracy]:
+            if self.annotations is None and not self.means.counts["accuracy"] and not self.means.counts[self.policy.accuracy]:
                 metrics[self.policy.accuracy] = None
         for (tag, group), accumulator in self.groups.items():
             for metric, value in accumulator.finish().items():
@@ -137,10 +146,16 @@ class SourceMetrics:
             metrics.update(task_macro_score=macro, adjusted_task_macro_score=macro, task_categorized_scores=categories)
         if self.paired is not None:
             metrics = self.paired.finish()
+        metrics.update(pass_metrics)
         if self.annotations is not None:
             from alpaca_eval.metrics import get_length_controlled_winrate
 
-            metrics = get_length_controlled_winrate(self.annotations, save_weights_dir=None)
+            coverage = {name: metrics[name] for name in ("num_total", "num_judged", "num_judge_failed", "judge_coverage") if name in metrics}
+            if any(row["preference"] is not None for row in self.annotations):
+                metrics = get_length_controlled_winrate(self.annotations, save_weights_dir=None)
+            else:
+                metrics = {"win_rate": None, "length_controlled_winrate": None, "n_total": 0}
+            metrics.update(coverage)
         return {"results": {task: metrics}}
 
     def _last_trial_metrics(self) -> dict:

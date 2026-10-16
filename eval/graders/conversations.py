@@ -4,6 +4,7 @@ import re
 from tempfile import TemporaryDirectory
 
 from eval.contracts.eval_spec import Grade, GraderSpec, JudgePlan, ModelRequest, RequestKind
+from eval.runtime.resources import prepare_nltk_tokenizers
 
 
 def mtbench(spec, responses):
@@ -32,9 +33,9 @@ def turn_ratings(spec, responses):
         score = float(match.group(1))
         scores.append(score)
         metrics[f"Turn {index + 1}"] = score
-    if not scores:
-        return Grade({}, {"judge_raw": [str(response) for response in responses]})
-    metrics["Average"] = sum(scores) / len(scores)
+    metrics["judge_failed"] = float(not scores)
+    if scores:
+        metrics["Average"] = sum(scores) / len(scores)
     return Grade(metrics, {"judge_raw": [str(response) for response in responses]}, {"Average": len(scores)})
 
 
@@ -42,6 +43,7 @@ def livebench(spec, responses):
     question = dict(spec.doc)
     answer = {"choices": [{"turns": [str(response).strip() for response in responses]}]}
     if question["category"] == "instruction_following":
+        prepare_nltk_tokenizers(("punkt", "punkt_tab"))
         from eval.chat_benchmarks.LiveBench.livebench.if_runner.instruction_following_eval.evaluation_main import evaluator
         from eval.chat_benchmarks.LiveBench.livebench.process_results.instruction_following.utils import score_results
 

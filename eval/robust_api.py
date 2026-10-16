@@ -10,6 +10,7 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Mapping
+from typing import Any
 
 
 from eval.completion_response import (
@@ -52,11 +53,16 @@ def openai_model_requires_fixed_generation(model: object) -> bool:
 
 
 def configure_generation_overrides(model: object, overrides: dict) -> None:
-    """Give local endpoints the caller's settings, including an empty set."""
-    from lm_eval.models.openai_completions import LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI
+    """Retain caller settings separately from source defaults for API adapters."""
+    from lm_eval.models.openai_completions import LocalCompletionsAPI
 
-    if isinstance(model, LocalCompletionsAPI) and not isinstance(model, (OpenAICompletionsAPI, OpenAIChatCompletion)):
+    if isinstance(model, LocalCompletionsAPI):
         model._evalchemy_generation_overrides = dict(overrides)
+
+
+def configured_generation_overrides(model: object) -> Mapping[str, Any]:
+    """Return explicit caller settings, or an empty mapping before configuration."""
+    return getattr(model, "_evalchemy_generation_overrides", {})
 
 
 def parse_generation_overrides(value: str | dict | None) -> dict:
@@ -120,7 +126,7 @@ def apply_completion_normalization() -> bool:
 def apply_openai_payload_controls() -> bool:
     """Bound API stops and restrict OpenAI-specific controls to OpenAI models."""
     try:
-        from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion
+        from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI
         from lm_eval.models.utils import handle_stop_sequences
     except Exception as exc:  # noqa: BLE001 - never let the patch import break eval startup
         logger.warning("OpenAI payload controls: could not import lm-eval adapter (%r); patch skipped.", exc)
@@ -173,6 +179,8 @@ def apply_openai_payload_controls() -> bool:
         return payload
 
     def _caller_generation_payload(self, payload):
+        if isinstance(self, (OpenAICompletionsAPI, OpenAIChatCompletion)):
+            return payload
         overrides = getattr(self, "_evalchemy_generation_overrides", None)
         if overrides is None:
             return payload

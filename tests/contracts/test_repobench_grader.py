@@ -15,6 +15,26 @@ from eval.execution.driver import source_plans
 from eval.execution.run_spec import RunSpec
 
 
+@pytest.mark.parametrize("add_bos", [False, True])
+def test_repobench_context_budget_uses_tokenizer_default_special_tokens(monkeypatch, add_bos):
+    row = {"repo_name": "example", "file_path": "main.py",
+           "context": [{"path": "other.py", "snippet": "MAGIC = 42"}],
+           "import_statement": "from other import MAGIC", "cropped_code": "answer =", "next_line": "answer = 42"}
+    tokenizer = SimpleNamespace(encode=lambda text: ([-1] if add_bos else []) + list(text.encode()))
+    model = SimpleNamespace(tokenizer=tokenizer, tok_encode=lambda text: list(text.encode()))
+    budget = len(repobench.construct_prompt(row).encode())
+    monkeypatch.setattr(repobench, "load_dataset", lambda *_args, **_kwargs: {"in_file": [row]})
+    source = repobench.RepoBenchmark(languages=["python"], subsets=["in_file"], max_tokens=budget)
+    run = RunSpec.from_args(Namespace(model_args="pretrained=fixture"))
+
+    [plan] = source_plans(["RepoBench"], {"RepoBench": TaskRoute.CUSTOM}, SimpleNamespace(get_benchmark=lambda _task: source), None, run, model)
+    [spec] = plan.sources[0]
+    expected = repobench.construct_prompt(row, tokenizer=tokenizer, max_token_nums=budget)
+
+    assert ("MAGIC = 42" in expected) is not add_bos
+    assert spec.requests[0].prompt == expected
+
+
 @pytest.mark.parametrize("model_name,wrap_legacy", [("bigcode/starcoder", True), ("Qwen/Qwen3-8B", False)])
 @pytest.mark.parametrize("legacy", [True, False])
 def test_repobench_legacy_fim_prompt_uses_resolved_model_context(monkeypatch, model_name, wrap_legacy, legacy):
@@ -24,7 +44,10 @@ def test_repobench_legacy_fim_prompt_uses_resolved_model_context(monkeypatch, mo
     monkeypatch.setattr(repobench, "load_dataset", lambda *_args, **_kwargs: {"in_file": [modern]})
     source = repobench.RepoBenchmark(languages=["python"], subsets=["in_file"], legacy_mode=legacy)
     run = RunSpec.from_args(Namespace(model_args=f"pretrained={model_name}"))
-    model = SimpleNamespace(tok_encode=lambda text: list(text.encode()))
+    def encode(text):
+        return list(text.encode())
+
+    model = SimpleNamespace(tok_encode=encode, tokenizer=SimpleNamespace(encode=encode))
 
     [plan] = source_plans(["RepoBench"], {"RepoBench": TaskRoute.CUSTOM}, SimpleNamespace(get_benchmark=lambda _task: source), None, run, model)
     [spec] = plan.sources[0]

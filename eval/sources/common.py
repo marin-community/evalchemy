@@ -26,6 +26,7 @@ class SourceOptions:
     system_instruction: str | None = None
     encode: Callable[[str], list[int]] | None = None
     model_name: str | None = None
+    tokenizer_encode: Callable[[str], list[int]] | None = None
 
 
 def text_specs(
@@ -76,15 +77,17 @@ def text_specs(
             parameters = dict(generation_kwargs(record) if callable(generation_kwargs) else generation_kwargs)
             if options.num_samples > 1:
                 parameters.update(do_sample=True, temperature=0.7, top_p=1.0)
+            source_do_sample = parameters.get("do_sample")
             parameters = generation_parameters(parameters, options.generation)
-            if (seed_repeats or options.num_samples > 1) and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
+            if (seed_repeats or options.num_samples > 1) and (source_do_sample or parameters.get("do_sample")) and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(
                 task=options.task, source=options.source, source_id=identity, ordinal=ordinal,
                 trial=trial if count > 1 else None, namespace=namespace,
-                requests=(ModelRequest(RequestKind.GENERATE, model_input, parameters, context_length=options.context_length),),
+                requests=(ModelRequest(RequestKind.GENERATE, model_input, parameters, context_length=options.context_length,
+                                       metadata={"source_do_sample": source_do_sample}),),
                 grader=GraderSpec(grader, reference(record)),
                 doc=dict(record), target=target(record), tags=tags(record),
             )

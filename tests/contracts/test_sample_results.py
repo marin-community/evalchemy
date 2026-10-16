@@ -150,7 +150,7 @@ def test_mtbench_runtime_keeps_turn_identity_and_judge_scores(monkeypatch):
     )
     assert metrics["Average"] == 7.0
     assert records[0]["source_id"] == 9
-    assert records[0]["metrics"] == ["Turn 1", "Turn 2", "Average"]
+    assert set(records[0]["metrics"]) == {"Turn 1", "Turn 2", "Average", "judge_failed"}
     assert len(records[0]["resps"]) == 2
 
 

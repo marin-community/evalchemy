@@ -191,6 +191,22 @@ def test_collect_all_runs_remaining_tests_after_a_failure():
     assert [t["outcome"] for t in result["outcomes"]] == ["failed", "passed"]
 
 
+@pytest.mark.parametrize("count,completion,expected_passed", [
+    (4096, "def identity(value):\n    return value\n", True),
+    (16, "def identity(value):\n    raise ValueError('x' * 8192)\n", False),
+])
+def test_all_test_verdicts_survive_pipe_backpressure(count, completion, expected_passed):
+    result = livecodebench.run(
+        [{"input": [index], "output": index} for index in range(count)],
+        completion, fn_name="identity", collect_all=True, deadline=3,
+    )
+
+    assert result["passed"] is expected_passed
+    assert result["timed_out"] is False
+    assert len(result["outcomes"]) == count
+    assert result["num_passed"] == (count if expected_passed else 0)
+
+
 def test_stdin_mode_feeds_input_and_compares_stdout():
     result = livecodebench.run(
         [{"input": "1 2\n", "output": "3\n"}],

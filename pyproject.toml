@@ -53,7 +53,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
 
-    # Imported at module load on the core eval path (curator_lm / precomputed_hf_lm /
+    # Imported at module load on the core eval path (curator_lm and
     # upload_to_hf_lm register their models at import; database/utils is imported by
     # eval_tracker; task.py imports numpy).
     "datasets",

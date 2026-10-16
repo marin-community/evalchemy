@@ -8,7 +8,11 @@ import pytest
 from eval.completion_response import FailedGeneration
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
+from eval.chat_benchmarks.GSM8KPerturbed.eval_instruct import GSM8KPerturbedBenchmark
 from eval.contracts.eval_spec import SourceRef
+from eval.execution.engine import ItemResult
+from eval.execution.metrics import SourceMetrics
+from eval.graders.structured import gsm8k_flexible
 from eval.sources.common import SourceOptions
 from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints, evaluate_source
 
@@ -122,3 +126,28 @@ def test_explicit_trials_share_binary_pass_at_k_reduction():
     assert metrics.finish("trials")["results"]["trials"] == {"pass@1": 0.5, "pass@2": pytest.approx(5 / 6)}
     assert len(sink.samples["trials"]) == 4
     assert {record["source_id"] for record in sink.samples["trials"]} == {"a"}
+
+
+@pytest.mark.parametrize("reverse_clean", [False, True])
+def test_gsm_perturbation_pairs_matching_trials_and_keeps_pass_at_k(reverse_clean):
+    source = GSM8KPerturbedBenchmark()
+    items = list(source.iter_specs(SourceOptions("GSM8KPerturbed", source.SOURCE, limit=1, num_samples=2)))
+    completed = []
+    for item in items:
+        correct = (item.namespace == "gsm8k-clean") == (item.trial == 0)
+        grade = gsm8k_flexible(item, [str(item.target) if correct else "no answer"])
+        completed.append(ItemResult(item, (), grade, {"sample_id": item.namespace + str(item.source_id)}))
+    if reverse_clean:
+        completed[:2] = reversed(completed[:2])
+    metrics = SourceMetrics(repeated=True, pass_at_k=(1, 2), policy=source.REDUCER)
+    for item in completed:
+        metrics.add(item)
+
+    reduced = metrics.finish("GSM8KPerturbed")["results"]["GSM8KPerturbed"]
+
+    assert reduced["gsm8k-clean"] == reduced["gsm8k-perturbed"] == 50.0
+    assert reduced["gsm8k-perturbed:typos_clean_subset"] == 50.0
+    assert reduced["gsm8k-perturbed:typos_paired_delta"] == 0.0
+    assert reduced["gsm8k-perturbed:typos_harmed"] == reduced["gsm8k-perturbed:typos_helped"] == 1
+    assert reduced["pass@1"] == 0.5
+    assert reduced["pass@2"] == 1.0

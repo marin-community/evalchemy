@@ -58,19 +58,26 @@ class TrialMetrics:
     def __init__(self, k: Sequence[int], metric: str):
         self.k = tuple(k)
         self.metric = metric
-        self.items: dict[str, list[float]] = defaultdict(list)
+        self.items: dict[str, list[float | None]] = defaultdict(list)
 
     def add(self, result: ItemResult) -> None:
-        value = float(result.grade.metrics[self.metric])
-        if value not in (0.0, 1.0):
+        value = result.grade.metrics.get(self.metric)
+        if value is not None and value not in (0.0, 1.0):
             raise ValueError(f"pass@k requires binary grades; {self.metric} returned {value}")
         self.items[result.record["sample_id"]].append(value)
 
-    def finish(self) -> dict[str, float]:
+    def finish(self) -> dict[str, float | None]:
+        if any(value is None for scores in self.items.values() for value in scores):
+            # A missing judgment is neither a failed trial nor a smaller sampled
+            # cohort. Its pass@k estimate is unavailable for the planned run.
+            return {
+                f"pass@{k}": None for k in self.k
+                if self.items and k <= min(len(scores) for scores in self.items.values())
+            }
         metrics = MeanMetrics()
         for scores in self.items.values():
             metrics.add({
-                f"pass@{k}": float(estimate_pass_at_k(len(scores), [int(sum(scores))], k)[0])
+                f"pass@{k}": float(estimate_pass_at_k(len(scores), [int(sum(value for value in scores if value is not None))], k)[0])
                 for k in self.k if k <= len(scores)
             })
         return metrics.finish()

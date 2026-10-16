@@ -189,7 +189,7 @@ def main():
     if not cluster["internet"]:
         output_dataset = os.path.join(os.environ["EVALCHEMY_RESULTS_DIR"], output_dataset.split("/")[-1])
         print(
-            f"Downloading model and dataset due to offline mode, will only save shards to {output_dataset} and won't upload or score"
+            f"Downloading model and dataset due to offline mode; shards will be saved to {output_dataset}"
         )
         HF_HUB_CACHE = os.environ["HF_HUB_CACHE"]
         dataset_path = snapshot_download(repo_id=input_dataset, cache_dir=HF_HUB_CACHE, repo_type="dataset")
@@ -206,7 +206,6 @@ def main():
     args_dict["output_dataset"] = output_dataset
     args_dict["logs_dir"] = logs_dir
     args_dict["output_dataset_name"] = output_dataset_name
-    args_dict["tasks_str"] = args.tasks
     with open(eval_sbatch_path, "r") as f:
         sbatch_content = f.read()
     curly_brace_pattern = r"(?<!\$)\{([^{}]*)\}"

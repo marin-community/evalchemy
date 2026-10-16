@@ -75,7 +75,7 @@ class JEEBenchBenchmark(BaseBenchmark):
     JEEBench, comprising "515 challenging preengineering mathematics, physics and chemistry problems from the highly competitive IIT JEE-Advanced exam."
     Link: https://huggingface.co/datasets/daman1209arora/jeebench
     """
-    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err", trial_metric=None)
 
     def __init__(
         self,

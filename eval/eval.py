@@ -48,7 +48,6 @@ from eval import robust_api  # noqa: F401
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 
 from eval.chat_benchmarks.curator_lm import CuratorAPIModel  # noqa: F401  # register curator model
-from eval.chat_benchmarks.precomputed_hf_lm import PrecomputedHFLM  # noqa: F401  # register precomputed_hf model
 from eval.chat_benchmarks.upload_to_hf_lm import UploadInstancesToHF  # noqa: F401  # register upload_to_hf model
 from eval.constants import AUTO_ANNOTATOR_MODEL
 from eval.contracts.benchmark_metadata import (

@@ -1,6 +1,7 @@
 """Task outcomes from the single execution lifecycle."""
 
 import asyncio
+import json
 from argparse import Namespace
 from dataclasses import replace
 
@@ -8,6 +9,11 @@ import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE
 from finestore.reader import ReadView
 
+from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
+from eval.chat_benchmarks.JEEBench.eval_instruct import JEEBenchBenchmark
+from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
+from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
+from eval.chat_benchmarks.zeroeval.eval_instruct import ZeroEvalBenchmark
 from eval.completion_response import CompletionContentPolicy, CompletionText, FailedGeneration, completion_response_from_chat_choice
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.failures import FailureCategory
@@ -19,8 +25,10 @@ from eval.execution.driver import SourcePlan, run_evaluations, source_plans
 from eval.execution.grading import Grader
 from eval.execution.metrics import SourceMetrics
 from eval.execution.run_spec import RunSpec
+from eval.graders.answer_equivalence import JudgeConfig
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
+from tests.contracts.source_harness import FixedEndpoint
 
 
 class Model:
@@ -32,6 +40,9 @@ class Model:
 
     def tok_encode(self, text):
         return list(text.encode())
+
+    def apply_chat_template(self, messages, **_kwargs):
+        return str(messages)
 
     def generate_until(self, requests):
         output = next(self.outputs)
@@ -130,6 +141,96 @@ def test_grader_failure_is_classified_at_the_grading_boundary():
     result = run(["yes"], [task])
     assert result["results"] == {}
     assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
+
+
+@pytest.mark.parametrize("stage", ["add", "finish"])
+def test_reducer_failure_is_a_task_error_and_other_tasks_finish(stage):
+    class BrokenMetrics(SourceMetrics):
+        def add(self, result):
+            if stage == "add":
+                raise ValueError("invalid trial grade")
+            super().add(result)
+
+        def finish(self, task):
+            raise ValueError("invalid trial aggregate")
+
+    broken = plan("broken")
+    broken.reducer = BrokenMetrics(repeated=False)
+
+    result = run(["yes", "yes"], [broken, plan("healthy")])
+
+    assert "broken" not in result["results"]
+    failure = result["task_outcomes"]["broken"]["failure"]
+    assert failure["category"] is FailureCategory.GRADER_INFRASTRUCTURE
+    assert failure["exception_type"] == "ItemFailure"
+    assert "invalid trial" in failure["message"]
+    assert result["task_outcomes"]["healthy"]["status"] is TaskStatus.SUCCEEDED
+    assert result["results"]["healthy"]["accuracy"] == 1.0
+
+
+@pytest.mark.parametrize("task,expected", [("JEEBench", 0.25), ("zeroeval", 100.0), ("MixEval", 0.625)])
+def test_nonbinary_sources_keep_native_headlines_with_multiple_samples(monkeypatch, task, expected):
+    if task == "JEEBench":
+        source = JEEBenchBenchmark()
+        monkeypatch.setattr(source, "load_questions", lambda: [{
+            "description": "paper", "subject": "math", "index": 1, "type": "MCQ(multiple)",
+            "question": "Choose", "gold": "ABC", "options": ["one", "two", "three", "four"],
+        }])
+        output = r"\boxed{A}"
+    elif task == "zeroeval":
+        source = ZeroEvalBenchmark(tasks=["math-l5"])
+        monkeypatch.setattr(source, "load_dataset", lambda _task: (
+            ["one"], [], [[{"role": "user", "content": "Compute"}]], {"answer": ["42"]},
+        ))
+        output = json.dumps({"answer": "42"})
+    else:
+        source = MixEvalBenchmark(debug=True)
+        output = "candidate"
+        monkeypatch.setattr("eval.execution.driver.JudgeConfig.resolve", lambda **_kwargs: JudgeConfig(
+            "fixture", "http://offline.invalid/v1", "placeholder",
+        ))
+        monkeypatch.setattr("eval.execution.driver.JudgeBackend", lambda *_args: FixedEndpoint(
+            lambda request: "[[0.25]]" if "correctness" in request.prompt[-1]["content"].lower() else "[[C]]",
+        ))
+    model = Model([output] * 4)
+    plans = source_plans(
+        [task], {task: TaskRoute.CUSTOM}, Namespace(get_benchmark=lambda _name: source), None,
+        RunSpec(limit=1, num_samples=2, pass_at_k=(1,)), model,
+    )
+
+    result = asyncio.run(run_evaluations(model, plans, workers=1, supports_request_seed=True))
+
+    assert result["task_outcomes"][task]["status"] is TaskStatus.SUCCEEDED
+    assert result["results"][task][source.PRIMARY_METRIC] == expected
+    assert not any(name.startswith("pass@") for name in result["results"][task])
+    source.num_samples = 2
+    assert source.benchmark_primary_metric() == source.PRIMARY_METRIC
+
+
+@pytest.mark.parametrize("task", ["FinanceBench", "SimpleQA"])
+@pytest.mark.parametrize("available", [0, 1])
+def test_unavailable_judge_trials_preserve_headlines_and_make_pass_at_k_unavailable(monkeypatch, task, available):
+    source = FinanceBenchBenchmark(debug=True) if task == "FinanceBench" else SimpleQABenchmark(debug=True)
+    replies = iter(["correct" if task == "FinanceBench" else "A"] * available + [FailedGeneration("model_transport")] * (2 - available))
+    monkeypatch.setattr("eval.execution.driver.JudgeConfig.resolve", lambda **_kwargs: JudgeConfig(
+        "fixture", "http://offline.invalid/v1", "placeholder",
+    ))
+    monkeypatch.setattr("eval.execution.driver.JudgeBackend", lambda *_args: FixedEndpoint(lambda _request: next(replies)))
+    model = Model(["candidate"] * 2)
+    plans = source_plans(
+        [task], {task: TaskRoute.CUSTOM}, Namespace(get_benchmark=lambda _name: source), None,
+        RunSpec(limit=1, num_samples=2, pass_at_k=(1, 2)), model,
+    )
+
+    result = asyncio.run(run_evaluations(model, plans, workers=1, supports_request_seed=True))
+
+    metrics = result["results"][task]
+    assert result["task_outcomes"][task]["status"] is TaskStatus.SUCCEEDED
+    assert metrics["accuracy"] == (1.0 if available else None)
+    assert metrics["pass@1"] is metrics["pass@2"] is None
+    assert metrics["num_judged"] == available
+    assert metrics["num_judge_failed"] == 2 - available
+    assert metrics["judge_coverage"] == available / 2
 
 
 def test_missing_per_sample_metrics_cannot_become_an_aggregate_success():

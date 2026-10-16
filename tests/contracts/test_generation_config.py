@@ -16,7 +16,9 @@ import transformers
 import yaml
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from lm_eval.models.openai_completions import LocalChatCompletion, LocalCompletionsAPI
+from lm_eval.models.openai_completions import (
+    LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI,
+)
 from lm_eval.tasks import TaskManager
 from lm_eval.utils import simple_parse_args_string
 from finestore.eval import ARCHIVE_SAMPLES_TABLE
@@ -24,6 +26,7 @@ from finestore.reader import ReadView
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
+from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.MMLUPro.eval_instruct import MMLUProBenchmark, generate_cot_prompt
 from eval.chat_benchmarks.LiveBench.eval_instruct import LiveBenchBenchmark
 from eval.chat_benchmarks.RepoBench import eval_instruct as repobench
@@ -74,14 +77,129 @@ def endpoint():
         server.server_close()
 
 
-def _model(endpoint, model_class):
-    path = "chat/completions" if model_class is LocalChatCompletion else "completions"
+def _model(endpoint, model_class, model_name="served", **kwargs):
+    path = "chat/completions" if issubclass(model_class, LocalChatCompletion) else "completions"
     return model_class(
-        model="served",
+        model=model_name,
         base_url=f"http://127.0.0.1:{endpoint.server_port}/v1/{path}",
         tokenizer_backend=None,
         tokenized_requests=False,
+        **kwargs,
     )
+
+
+@pytest.mark.parametrize("model_class", [
+    LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI,
+])
+@pytest.mark.parametrize("overrides, official_temperature, local_temperature", [
+    ({}, 0.0, None),
+    ({"temperature": 0.0, "seed": 1234}, 0.0, 0.0),
+    ({"temperature": 0.85, "seed": 27}, 0.85, 0.85),
+    ({"do_sample": False, "temperature": 0.85, "seed": 27}, 0.85, 0.85),
+    ({"do_sample": True}, 0.0, None),
+])
+def test_math_source_preserves_api_sampling_policy(
+    endpoint, tmp_path, model_class, overrides, official_temperature, local_temperature
+):
+    data = tmp_path / "math.jsonl"
+    data.write_text(json.dumps({"id": "one", "problem": "Six times seven?", "answer": "42"}) + "\n")
+    benchmark = MATH500Benchmark(data_file=data)
+    model = _model(endpoint, model_class, header={"Authorization": "Bearer offline-test"})
+    args = Namespace(model="api", model_args="", gen_kwargs=overrides, limit=1, max_tokens=8)
+
+    result = evaluate(
+        model, SimpleNamespace(get_benchmark=lambda _task: benchmark), None,
+        ["MATH500"], {"MATH500": "Evalchemy chat benchmark"}, [1], args=args,
+    )
+
+    assert result["results"]["MATH500"]["accuracy"] == 1.0
+    [payload] = endpoint.requests
+    official = model_class in (OpenAIChatCompletion, OpenAICompletionsAPI)
+    expected_temperature = official_temperature if official else local_temperature
+    if expected_temperature is None:
+        assert "temperature" not in payload
+    else:
+        assert payload["temperature"] == expected_temperature
+    if "seed" in overrides or official:
+        assert payload["seed"] == overrides.get("seed", 1234)
+    else:
+        assert "seed" not in payload
+
+
+@pytest.mark.parametrize("model_class", [
+    LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI,
+])
+@pytest.mark.parametrize("model_name, max_tokens, overrides, local_cap, official_cap", [
+    ("gpt-4o-mini", None, {}, 16384, 16384),
+    ("gpt-4o-mini", 8192, {}, 8192, 8192),
+    ("gpt-4o-mini", 32768, {}, 32768, 16384),
+    ("gpt-4o-mini", None, {"max_gen_toks": 32768}, 32768, 16384),
+    ("served", None, {}, 32768, 32768),
+])
+def test_math_source_preserves_4o_output_cap_and_caller_precedence(
+    endpoint, tmp_path, model_class, model_name, max_tokens, overrides, local_cap, official_cap
+):
+    data = tmp_path / "math.jsonl"
+    data.write_text(json.dumps({"id": "one", "problem": "Six times seven?", "answer": "42"}) + "\n")
+    benchmark = MATH500Benchmark(data_file=data)
+    model = _model(endpoint, model_class, model_name, header={"Authorization": "Bearer offline-test"})
+    args = Namespace(model="api", model_args="", gen_kwargs=overrides, limit=1, max_tokens=max_tokens)
+
+    result = evaluate(
+        model, SimpleNamespace(get_benchmark=lambda _task: benchmark), None,
+        ["MATH500"], {"MATH500": "Evalchemy chat benchmark"}, [1], args=args,
+    )
+
+    assert result["results"]["MATH500"]["accuracy"] == 1.0
+    [payload] = endpoint.requests
+    expected_cap = official_cap if model_class in (OpenAIChatCompletion, OpenAICompletionsAPI) else local_cap
+    token_key = "max_completion_tokens" if model_class is OpenAIChatCompletion else "max_tokens"
+    assert payload[token_key] == expected_cap
+
+
+@pytest.mark.parametrize("model_class", [
+    LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI,
+])
+def test_sampling_source_preserves_trial_seeds_before_api_caller_override(endpoint, tmp_path, model_class):
+    data = tmp_path / "aime.jsonl"
+    data.write_text(json.dumps({"id": "one", "problem": "Six times seven?", "expected_answer": "42"}) + "\n")
+    benchmark = AIME24Benchmark(data_file=data)
+    model = _model(endpoint, model_class, header={"Authorization": "Bearer offline-test"})
+    args = Namespace(model="api", model_args="", gen_kwargs={"do_sample": False}, limit=1, max_tokens=8)
+
+    result = evaluate(
+        model, SimpleNamespace(get_benchmark=lambda _task: benchmark), None,
+        ["AIME24"], {"AIME24": "Evalchemy chat benchmark"}, [1], args=args,
+    )
+
+    assert result["results"]["AIME24"]["accuracy_avg"] == 1.0
+    assert len(endpoint.requests) == 10
+    for trial, payload in enumerate(endpoint.requests):
+        if model_class in (OpenAIChatCompletion, OpenAICompletionsAPI):
+            assert payload["temperature"] == 0.7
+            assert payload["seed"] == trial
+        else:
+            assert payload["temperature"] == 0.0
+            assert "seed" not in payload
+
+
+@pytest.mark.parametrize("model_class", [
+    LocalChatCompletion, LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI,
+])
+def test_native_request_keeps_4o_output_budget(endpoint, model_class):
+    model = _model(endpoint, model_class, "gpt-4o-mini", header={"Authorization": "Bearer offline-test"})
+    request = ModelRequest(
+        RequestKind.GENERATE, [{"role": "user", "content": "Six times seven?"}],
+        {"max_gen_toks": 32768, "do_sample": False, "temperature": 0.7, "seed": 27},
+    )
+
+    assert generate(model, request) == "\\boxed{42}"
+
+    [payload] = endpoint.requests
+    token_key = "max_completion_tokens" if model_class is OpenAIChatCompletion else "max_tokens"
+    assert payload[token_key] == 32768
+    assert payload["temperature"] == 0.7
+    assert payload["seed"] == 27
 
 
 @pytest.mark.parametrize(("model_context", "request_context"), [(32768, 32768), (2061, 2061), (32768, 2061), (32768, 2049)])
@@ -753,6 +871,7 @@ def test_unified_driver_persists_mixed_sources_through_one_endpoint(endpoint, tm
 @pytest.mark.parametrize("overrides", [
     {}, {"temperature": 0.0, "seed": 1234}, {"temperature": 0.85, "seed": 27, "top_p": 0.91},
     {"max_gen_toks": 16000}, {"do_sample": False}, {"do_sample": True},
+    {"do_sample": False, "temperature": 0.85, "seed": 27},
 ])
 def test_native_source_preserves_defaults_and_applies_caller_settings(endpoint, tmp_path, model_class, overrides):
     dataset = tmp_path / "questions.jsonl"

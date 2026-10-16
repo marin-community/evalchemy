@@ -28,6 +28,7 @@ def swebench_boundary(monkeypatch, tmp_path):
     constants.KEY_PREDICTION = "model_patch"
     constants.APPLY_PATCH_FAIL = ">>>>> Patch Apply Failed"
     constants.LOG_INSTANCE = "run_instance.log"
+    constants.LOG_TEST_OUTPUT = "test_output.txt"
     constants.RUN_EVALUATION_LOG_DIR = tmp_path
     test_spec = ModuleType("swebench.harness.test_spec.test_spec")
     test_spec.make_test_spec = lambda instance, **_kwargs: instance
@@ -115,3 +116,22 @@ def test_swebench_empty_model_patch_is_scored_zero(swebench_spec):
     grade = swe_patch(swebench_spec, [""])
 
     assert grade.metrics == {"accuracy": 0.0}
+
+
+def test_swebench_candidate_test_timeout_is_scored_zero(swebench_boundary, swebench_spec):
+    client, harness = swebench_boundary
+
+    def run_instance(_instance, prediction, **kwargs):
+        log_dir = harness.log_root / kwargs["run_id"] / prediction["model_name_or_path"] / prediction["instance_id"]
+        log_dir.mkdir(parents=True)
+        (log_dir / "run_instance.log").write_text("EvaluationError: Test timed out after 1800 seconds.")
+        (log_dir / "test_output.txt").write_text("Tests started\n\nTimeout error: 1800 seconds exceeded.")
+        return {"completed": False, "resolved": False}
+
+    harness.run_instance = run_instance
+
+    grade = swe_patch(swebench_spec, ["diff --git a/file.py b/file.py"])
+
+    assert grade.metrics == {"accuracy": 0.0}
+    assert grade.audit["test_timed_out"]
+    assert client.closed

@@ -90,7 +90,8 @@ def json_answer(spec, responses):
                         raise ValueError("arithmetic answer is too complex")
                     value = str(float(_arithmetic_value(expression.body)))
                 except (ArithmeticError, SyntaxError, TypeError, ValueError):
-                    pass
+                    values.append(None)
+                    continue
             match = re.search(r"-?\d+(\.\d+)?", value)
             values.append(float(match.group()) if match else None)
         correct = values[0] is not None and values[0] == values[1]

@@ -48,7 +48,8 @@ class RepoBenchmark(BaseBenchmark):
 
 
     def iter_specs(self, options):
-        tokenizer = SimpleNamespace(encode=options.encode) if options.encode is not None else None
+        encode = options.tokenizer_encode or options.encode
+        tokenizer = SimpleNamespace(encode=encode) if encode is not None else None
         for language in self.languages:
             for subset in self.subsets:
                 if self.legacy_mode:

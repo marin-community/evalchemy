@@ -8,9 +8,22 @@ import os
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from enum import StrEnum
+from functools import cache
 from typing import Any, TypeVar
 
 Result = TypeVar("Result")
+
+
+@cache
+def prepare_nltk_tokenizers(tokenizers: tuple[str, ...]) -> None:
+    """Prepare optional tokenizer data once in each grader process."""
+    import nltk
+
+    for tokenizer in tokenizers:
+        try:
+            nltk.data.find(f"tokenizers/{tokenizer}")
+        except LookupError:
+            nltk.download(tokenizer, quiet=True, raise_on_error=True)
 
 
 class ExecutionMode(StrEnum):

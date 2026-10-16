@@ -91,9 +91,10 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
                 run.max_tokens if run.max_tokens is not None else benchmark._evaluation_max_tokens,
                 run.generation, run.seeds[0], run.num_samples, run.system_instruction,
                 prompt_encoder(model), model_name=run.model_name,
+                tokenizer_encode=prompt_encoder(model, tokenizer_defaults=True),
             )
             reducer = SourceMetrics(
-                repeated=False, pass_at_k=run.pass_at_k if run.num_samples > 1 else (),
+                repeated=False, pass_at_k=run.pass_at_k if run.num_samples > 1 and description.reducers[0].trial_metric is not None else (),
                 policy=description.reducers[0],
             )
             plans.append(SourcePlan(
@@ -154,7 +155,10 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
                     if not predict_only:
                         scored[result.spec.task].add(result.record["sample_id"])
                         for plan in task_plans:
-                            plan.reducer.add(result)
+                            try:
+                                plan.reducer.add(result)
+                            except Exception as error:
+                                plan.errors.append(ItemFailure(FailurePhase.GRADING, error))
     finally:
         grading.close()
     result = {"results": {}, "task_outcomes": {}}
@@ -182,6 +186,12 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
             response_summary.update(engine.response_summary[task])
         if completion_response_text_unavailable(response_summary):
             plan.errors.append(ItemFailure(FailurePhase.GENERATION, ValueError("at least half of chat completions contain no scorer text"), FailureCategory.MALFORMED_MODEL_RESPONSE))
+        document = None
+        if not plan.errors and not predict_only:
+            try:
+                document = plan.reducer.finish(plan.name)
+            except Exception as error:
+                plan.errors.append(ItemFailure(FailurePhase.GRADING, error))
         if plan.errors:
             error = plan.errors[0]
             category = error.category if isinstance(error, ItemFailure) else FailureCategory.INCOMPLETE_EVALUATION if isinstance(error, SampleCoverageError) else classify_task_exception(FailurePhase.EVALUATION, error)
@@ -192,7 +202,7 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
             outcome = TaskOutcome(plan.name, plan.route, TaskStatus.EXPORTED, {}, expected, generated, None,
                                   failure_counts=failures, completion_response_summary=response_summary)
         else:
-            document = plan.reducer.finish(plan.name)
+            assert document is not None
             for key, value in document.items():
                 result.setdefault(key, {}).update(value)
             metrics = document["results"].get(plan.name, document.get("groups", {}).get(plan.name, {}))

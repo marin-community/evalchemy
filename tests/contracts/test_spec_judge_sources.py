@@ -3,6 +3,7 @@
 import pytest
 
 from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
+from eval.chat_benchmarks.MTBench.eval_instruct import MTBenchBenchmark
 from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source
@@ -114,13 +115,29 @@ def test_mtbench_excludes_invalid_turns_and_weights_partial_averages():
 
 def test_mtbench_parser_preserves_fastchat_rating_selection():
     grade = turn_ratings(None, ["[[-1]] then [[2]]", "[11]"])
-    assert grade.metrics == {"Turn 1": 2.0, "Turn 2": 11.0, "Average": 6.5}
+    assert grade.metrics == {"Turn 1": 2.0, "Turn 2": 11.0, "Average": 6.5, "judge_failed": 0.0}
 
 
-def test_mtbench_all_invalid_judgments_do_not_create_aggregate_scores():
-    metrics = SourceMetrics(repeated=False, policy=ReducerSpec(trial_metric=None))
-    metrics.add(_scored_item("MTBench", "invalid", turn_ratings(None, ["[[-1]]", "invalid"]), {}))
-    assert metrics.finish("MTBench")["results"]["MTBench"] == {}
+@pytest.mark.parametrize(
+    "ratings, expected, failures",
+    [(["[[-1]]", "invalid", "[[2]]", "[[2]]"], 2.0, 1), (["invalid"] * 4, None, 2)],
+)
+def test_mtbench_runtime_preserves_unavailable_ratings(ratings, expected, failures):
+    source = MTBenchBenchmark(debug=True)
+    saved_ratings = iter(ratings)
+
+    metrics, samples = evaluate_source(
+        source, SourceOptions("MTBench", source.SOURCE), FixedEndpoint("candidate"),
+        judges={"MTBench": FixedEndpoint(lambda request: next(saved_ratings))}, workers=1,
+    )
+
+    assert metrics["Average"] == expected
+    assert "accuracy" not in metrics
+    assert metrics["num_judge_failed"] == failures
+    assert metrics["num_judged"] == 2 - failures
+    assert len(samples) == 2
+    assert samples[0]["judge_failed"] == 1.0
+    assert "Average" not in samples[0]["metrics"]
 
 
 @pytest.mark.parametrize(

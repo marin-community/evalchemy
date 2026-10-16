@@ -71,14 +71,14 @@ class BaseBenchmark(ABC):
 
     def benchmark_metrics(self) -> tuple[str, ...]:
         """Return source metrics for this benchmark's resolved run configuration."""
-        if self.num_samples > 1:
+        if self.num_samples > 1 and self.REDUCER.trial_metric is not None:
             return tuple(f"pass@{k}" for k in self.pass_at_k if k <= self.num_samples)
         return self.METRICS
 
 
     def benchmark_primary_metric(self) -> str | None:
         """Return the source spelling of the preferred headline metric."""
-        if self.num_samples > 1:
+        if self.num_samples > 1 and self.REDUCER.trial_metric is not None:
             metrics = self.benchmark_metrics()
             return "pass@1" if "pass@1" in metrics else (metrics[0] if metrics else None)
         return self.PRIMARY_METRIC

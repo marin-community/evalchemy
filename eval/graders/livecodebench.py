@@ -64,8 +64,7 @@ DEFAULT_DEADLINE = 30.0
 # SIGKILL'd process reaps immediately, so this only matters for the (rare) failed kill.
 _JOIN_GRACE = 1.0
 
-# A per-test detail string is candidate-controlled and the pipe holds ~64 KiB before send()
-# would block; cap it so a verbose failure cannot wedge the child.
+# Bound candidate-controlled diagnostics while the parent drains test events.
 _MAX_DETAIL_CHARS = 8192
 
 PASSED = "passed"
@@ -327,30 +326,35 @@ def run(
     watchdog.daemon = True
     watchdog.start()
 
-    process.join(timeout=deadline + _JOIN_GRACE)
-    watchdog.cancel()
-    if process.is_alive():
-        terminate(pid)
-        process.join(timeout=_JOIN_GRACE)
-
     outcomes: list[dict] = []
     done = False
-    deadline_end = time.monotonic() + _JOIN_GRACE
-    while time.monotonic() < deadline_end:
-        if receiver.poll(0.02):
-            try:
-                message = receiver.recv()
-            except (EOFError, OSError, ConnectionResetError):
-                break  # child died mid-write: partial frame; bounded, no hang
-            if message[0] == "test":
-                _, index, status, detail = message
-                outcomes.append({"index": index, "outcome": status, "detail": detail})
-            elif message[0] == "done":
-                done = True
+    deadline_end = time.monotonic() + deadline + _JOIN_GRACE
+    try:
+        # A child may produce more events than fit in the pipe. Drain while it
+        # runs so reporting successful tests cannot itself trigger the watchdog.
+        while time.monotonic() < deadline_end:
+            if receiver.poll(0.02):
+                try:
+                    message = receiver.recv()
+                except (EOFError, OSError, ConnectionResetError):
+                    break  # child died mid-write: partial frame; bounded, no hang
+                if message[0] == "test":
+                    _, index, status, detail = message
+                    outcomes.append({"index": index, "outcome": status, "detail": detail})
+                elif message[0] == "done":
+                    done = True
+                    break
+            elif not process.is_alive():
                 break
-        elif not process.is_alive():
-            break
-    receiver.close()
+    finally:
+        watchdog.cancel()
+        if not done and process.is_alive():
+            terminate(pid)
+        process.join(timeout=_JOIN_GRACE)
+        if process.is_alive():
+            terminate(pid)
+            process.join(timeout=_JOIN_GRACE)
+        receiver.close()
 
     timed_out = (not done) or any(o["outcome"] == TIMED_OUT for o in outcomes)
     num_passed = sum(1 for o in outcomes if o["outcome"] == PASSED)
