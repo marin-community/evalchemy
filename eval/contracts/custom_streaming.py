@@ -6,7 +6,13 @@ from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from eval.contracts.finestore_output import FineStoreOutput
-from eval.contracts.sample_manifest import DEFAULT_SAMPLE_GROUP, DEFAULT_SAMPLE_NAMESPACE, SampleCoverageError, SampleEntry
+from eval.contracts.lm_eval_normalization import is_infrastructure_failure
+from eval.contracts.sample_manifest import (
+    DEFAULT_SAMPLE_GROUP,
+    DEFAULT_SAMPLE_NAMESPACE,
+    SampleCoverageError,
+    SampleEntry,
+)
 from eval.contracts.sample_results import validate_sample_metrics
 from eval.sample_logging import canonicalize_sample
 from eval.task import BaseBenchmark
@@ -24,13 +30,14 @@ class CustomSampleEmitter:
         task_name: str,
         benchmark: BaseBenchmark,
         generation_result: Mapping[str, Any],
-        output_sink: FineStoreOutput,
+        output_sink: FineStoreOutput | None,
     ) -> None:
         self.task_name = task_name
         self.benchmark = benchmark
         self.output_sink = output_sink
         self._examples: dict[int, tuple[str, int, int]] = {}
         self._seen: set[int] = set()
+        self._infrastructure_examples: set[int] = set()
         self._entries: dict[tuple[str, int, int | None], SampleEntry] = {}
         self._sample_entries: dict[tuple[str, int], SampleEntry] = {}
         self._unit_repeats: dict[tuple[str, int], set[int | None]] = {}
@@ -73,7 +80,10 @@ class CustomSampleEmitter:
                 entry = self._sample_entry(namespace, ordinal, position, sample.get("sample_repeat"))
                 record = canonicalize_sample(self.task_name, sample, position, entry)
                 validate_sample_metrics(self.task_name, [record])
-                self.output_sink.write_sample(self.task_name, record)
+                if is_infrastructure_failure(record):
+                    self._infrastructure_examples.add(id(example))
+                if self.output_sink is not None:
+                    self.output_sink.write_sample(self.task_name, record)
             self._seen.add(id(example))
         except Exception as exc:
             raise SampleEmissionError(f"{self.task_name}: failed to emit scored sample: {exc}") from exc
@@ -105,6 +115,27 @@ class CustomSampleEmitter:
                 f"{self.task_name}: emitted {len(self._seen)} of {len(self._examples)} scored examples"
             )
         try:
-            self.output_sink.finish_task()
+            if self.output_sink is not None:
+                self.output_sink.finish_task()
         except Exception as exc:
             raise SampleEmissionError(f"{self.task_name}: failed to flush scored samples: {exc}") from exc
+
+    @property
+    def excluded_count(self) -> int:
+        """Number of examples excluded because of infrastructure failures."""
+        return len(self._infrastructure_examples)
+
+    def aggregate(self, generation_result: Mapping[str, Any], scored_result: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Reaggregate valid graded examples with the benchmark's reducer when needed."""
+        if not self._infrastructure_examples:
+            return scored_result
+        if self._repeat_shape != (None,):
+            raise SampleCoverageError(f"{self.task_name}: partial repeated samples are not supported")
+        if scored_result.get("scored_count") == len(self._examples) - self.excluded_count:
+            return scored_result
+        groups = self.benchmark.sample_groups(generation_result)
+        valid = {
+            name: [example for example in examples if id(example) not in self._infrastructure_examples]
+            for name, examples in groups.items()
+        }
+        return self.benchmark.aggregate_results(valid)

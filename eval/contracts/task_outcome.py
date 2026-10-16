@@ -123,21 +123,29 @@ def custom_task_outcome(
     generation_result: Any,
     scored_result: Any,
     sample_manifest: SampleManifest | None = None,
+    *,
+    excluded_count: int = 0,
 ) -> TaskOutcome:
     """Adapt a legacy custom benchmark result to the shared outcome contract."""
     generated_count = _record_count(generation_result)
     expected_count = _integer_field(generation_result, "total_examples")
-    scored_count = _scored_count(scored_result, generated_count)
+    reported_count = _reported_scored_count(scored_result)
+    scored_count = (
+        reported_count
+        if reported_count is not None
+        else (generated_count - excluded_count if generated_count is not None else None)
+    )
     manifest_result = _complete_manifest_coverage(
         task_name,
         route,
         sample_manifest,
-        {"scored": _reported_scored_count(scored_result)},
+        {"scored": reported_count + excluded_count if reported_count is not None else None},
     )
     if isinstance(manifest_result, TaskOutcome):
         return manifest_result
     if manifest_result is not None:
-        expected_count, generated_count, scored_count = manifest_result
+        expected_count, generated_count, graded_count = manifest_result
+        scored_count = graded_count - excluded_count
     return _adapt_completed_outcome(
         task_name,
         route,

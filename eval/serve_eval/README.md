@@ -17,6 +17,14 @@ response within a scored task remains an empty sample with `failure_category` in
 its sample record. Evalchemy completes the other tasks and leaves the acceptance
 decision to the caller or regression gate.
 
+Custom benchmarks own partial-result aggregation. A grader that already excludes
+infrastructure-failed examples reports its denominator as `scored_count`.
+Otherwise, it implements `aggregate_results(sample_groups)` to reduce the remaining
+graded examples without generating or judging them again. MRCR uses this reducer
+for its score and context/needle breakdowns. Unsupported partial aggregation,
+including partial repeated samples, fails the task; failed sample records remain
+available for inspection.
+
 ## Install
 
 ```bash

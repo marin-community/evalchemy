@@ -240,6 +240,7 @@ class SimpleQABenchmark(BaseBenchmark):
             {
                 "num_total": total,
                 "num_judged": counts.judged,
+                "scored_count": counts.judged,
                 "num_judge_failed": counts.judge_failed,
                 "num_correct": counts.correct,
                 "num_incorrect": counts.incorrect,

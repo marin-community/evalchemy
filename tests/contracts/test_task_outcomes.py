@@ -11,12 +11,13 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE
 from finestore.reader import ReadView
 from lm_eval.models.openai_completions import LocalChatCompletion
 
-from eval.completion_response import CompletionClassification, CompletionContentPolicy
+from eval.chat_benchmarks.MRCR.eval_instruct import MRCRBenchmark
+from eval.completion_response import CompletionClassification, CompletionContentPolicy, FailedGeneration
 from eval.contracts.failures import ModelRequestValidationError
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.grading import GenerationArtifactManifest
 from eval.contracts.sample_manifest import SampleManifest, SampleRequest
-from eval.contracts.sample_results import record_sample_metrics
+from eval.contracts.sample_results import record_repeated_sample_metrics, record_sample_metrics
 from eval.contracts.task_outcome import (
     EvaluationRunError,
     FailureCategory,
@@ -27,7 +28,14 @@ from eval.contracts.task_outcome import (
     lm_eval_task_outcome,
     validate_result_document,
 )
-from eval.eval import CHAT_BENCHMARK_ROUTE, LM_EVAL_ROUTE, evaluate, handle_evaluation_output
+from eval.eval import (
+    CHAT_BENCHMARK_ROUTE,
+    LM_EVAL_ROUTE,
+    _CustomTaskWork,
+    _score_custom_task,
+    evaluate,
+    handle_evaluation_output,
+)
 from eval.eval_tracker import DCEvaluationTracker
 from eval.robust_api import record_completion_responses, record_endpoint_failure
 from eval.serve_eval.results import EvalResults
@@ -145,6 +153,145 @@ def test_custom_task_empty_metrics_are_reported_without_a_score():
     assert result["results"] == {}
     assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
     validate_result_document(result)
+
+
+@pytest.mark.parametrize("stream_samples", [False, True])
+def test_partial_mrcr_uses_its_own_aggregator_and_preserves_failed_samples(tmp_path, stream_samples):
+    examples = [
+        {
+            "answer": "nonce answer",
+            "model_output": "nonce answer",
+            "score": 0.25,
+            "prefix_hit": 1.0,
+            "n_needles": 2,
+            "mrcr_bin_upper": 8192,
+        },
+        {
+            "answer": "nonce answer",
+            "model_output": "nonce answer",
+            "score": 0.75,
+            "prefix_hit": 1.0,
+            "n_needles": 4,
+            "mrcr_bin_upper": 16384,
+        },
+        {
+            "answer": "nonce answer",
+            "model_output": FailedGeneration("model_transport"),
+            "score": 0.0,
+            "prefix_hit": 0.0,
+            "n_needles": 2,
+            "mrcr_bin_upper": 8192,
+        },
+    ]
+    benchmark = MRCRBenchmark()
+    entries = benchmark.sample_manifest.plan_batch(
+        [SampleRequest(source_id=str(index), ordinal=index) for index in range(len(examples))]
+    )
+    benchmark.sample_manifest.mark_generated(entries, [example["model_output"] for example in examples])
+    work = _CustomTaskWork("MRCR", benchmark, {"examples": examples})
+    root = str(tmp_path / "archive")
+    if stream_samples:
+        with FineStoreOutput(root, "mrcr", ["MRCR"]) as output:
+            outcome, metrics = _score_custom_task(work, output)
+        rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+        assert len(rows) == 3
+        assert sum("EVALCHEMY_INFRASTRUCTURE_ERROR" in (row["output"] or "") for row in rows) == 1
+    else:
+        outcome, metrics = _score_custom_task(work)
+        assert len(benchmark.to_samples(work.generation_result, metrics)) == 3
+
+    assert outcome.status is TaskStatus.SUCCEEDED
+    assert outcome.generated_count == 3
+    assert outcome.scored_count == 2
+    assert metrics["mrcr_accuracy"] == 0.5
+    assert metrics["prefix_hit_rate"] == 1.0
+    assert metrics["mrcr_8192_2needle"] == 0.25
+    assert metrics["mrcr_8192_2needle_count"] == 1
+    assert metrics["mrcr_16384_4needle"] == 0.75
+    assert metrics["mrcr_16384_4needle_count"] == 1
+
+
+def test_partial_custom_task_without_an_aggregator_fails_instead_of_guessing():
+    benchmark = _Benchmark(
+        {"examples": [{"prompt": "x", "model_output": FailedGeneration("model_transport")}]},
+        scored_result={"accuracy": 0.0},
+    )
+
+    result = _custom_evaluate(benchmark)
+
+    assert result["results"] == {}
+    outcome = result["task_outcomes"]["contract_task"]
+    assert outcome["status"] is TaskStatus.FAILED
+    assert "benchmark-owned aggregator" in outcome["failure"]["message"]
+
+
+def test_partial_aggregation_uses_filtered_namespaces_and_task_weights():
+    class WeightedBenchmark(_Benchmark):
+        def sample_groups(self, generation_result):
+            return {"weighted": generation_result["examples"]}
+
+        def to_samples(self, generation_result, scored_result):
+            examples = (
+                self.sample_groups(generation_result)["weighted"]
+                if "examples" in generation_result
+                else generation_result["weighted"]
+            )
+            return super().to_samples({"examples": examples}, scored_result)
+
+        def evaluate_responses(self, results):
+            for example in results["examples"]:
+                record_sample_metrics(example, accuracy=example["value"])
+            return self.aggregate_results(self.sample_groups(results))
+
+        def aggregate_results(self, sample_groups):
+            examples = sample_groups["weighted"]
+            return {
+                "weighted_score": sum(row["value"] * row["weight"] for row in examples)
+                / sum(row["weight"] for row in examples)
+            }
+
+    benchmark = WeightedBenchmark(
+        {
+            "examples": [
+                {"model_output": "a", "value": 0.4, "weight": 1},
+                {"model_output": "b", "value": 0.8, "weight": 3},
+                {"model_output": FailedGeneration("model_transport"), "value": 0.0, "weight": 9},
+            ]
+        }
+    )
+
+    result = _custom_evaluate(benchmark)
+
+    assert result["results"]["contract_task"]["weighted_score"] == pytest.approx(0.7)
+    assert result["task_outcomes"]["contract_task"]["scored_count"] == 2
+    assert len(result["samples"]["contract_task"]) == 3
+
+
+def test_partial_repeated_samples_fail_after_preserving_each_attempt(tmp_path):
+    class RepeatedBenchmark(_Benchmark):
+        def evaluate_responses(self, results):
+            record_repeated_sample_metrics(results["examples"][0], accuracy=[1.0, 0.0])
+            return {"accuracy_avg": 0.5}
+
+    generation = {
+        "examples": [
+            {
+                "answer": "4",
+                "model_outputs": ["4", FailedGeneration("model_transport")],
+                "model_answers": ["4", ""],
+            }
+        ]
+    }
+    benchmark = RepeatedBenchmark(generation)
+    root = str(tmp_path / "archive")
+    with FineStoreOutput(root, "repeated", ["repeated"]) as output:
+        outcome, metrics = _score_custom_task(_CustomTaskWork("repeated", benchmark, generation), output)
+
+    assert outcome.status is TaskStatus.FAILED
+    assert metrics == {}
+    rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+    assert len(rows) == 2
+    assert sum("EVALCHEMY_INFRASTRUCTURE_ERROR" in (row["output"] or "") for row in rows) == 1
 
 
 def test_generation_exception_taxonomy_distinguishes_policy_and_timeout_failures():
@@ -364,7 +511,7 @@ def test_requested_sample_serialization_failure_is_typed_and_reported():
     assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.SERIALIZATION
 
 
-def test_scored_task_without_sample_records_keeps_its_aggregate():
+def test_scored_task_without_sample_records_fails_sample_validation():
     class _AggregateOnlyBenchmark(_Benchmark):
         def to_samples(self, generation_result, scored_result):
             return []
@@ -373,9 +520,9 @@ def test_scored_task_without_sample_records_keeps_its_aggregate():
 
     result = _custom_evaluate(benchmark)
 
-    assert result["results"]["contract_task"]["accuracy"] == 1.0
-    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.SUCCEEDED
-    assert "contract_task" not in result.get("samples", {})
+    assert result["results"] == {}
+    assert result["task_outcomes"]["contract_task"]["status"] is TaskStatus.FAILED
+    assert result["task_outcomes"]["contract_task"]["failure"]["category"] is FailureCategory.SERIALIZATION
 
 
 def test_custom_task_rejects_scoring_coverage_drift():

@@ -118,14 +118,12 @@ def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | Non
         if artifacts is not None:
             artifacts.validate_required()
         with capture_endpoint_failures() as grader_failures:
-            if output_sink is None:
+            emitter = CustomSampleEmitter(work.task_name, work.benchmark, work.generation_result, output_sink)
+            with emit_scored_samples(emitter.emit):
                 scored_result = work.benchmark.evaluate_responses(work.generation_result)
-            else:
-                emitter = CustomSampleEmitter(work.task_name, work.benchmark, work.generation_result, output_sink)
-                with emit_scored_samples(emitter.emit):
-                    scored_result = work.benchmark.evaluate_responses(work.generation_result)
-                if is_scored_result(scored_result):
-                    emitter.finish()
+            if is_scored_result(scored_result):
+                emitter.finish()
+                scored_result = emitter.aggregate(work.generation_result, scored_result)
     except Exception as exc:
         category = (
             FailureCategory.INCOMPLETE_EVALUATION
@@ -152,6 +150,7 @@ def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | Non
         work.generation_result,
         metrics,
         work.benchmark.sample_manifest,
+        excluded_count=emitter.excluded_count,
     )
     return replace(outcome, failure_counts=dict(grader_failures.counts)), scored_result
 

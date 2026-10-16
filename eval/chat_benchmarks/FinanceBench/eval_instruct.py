@@ -236,6 +236,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
             {
                 "num_total": total,
                 "num_judged": num_judged,
+                "scored_count": num_judged,
                 "num_judge_failed": num_judge_failed,
                 "num_correct": num_correct,
                 "num_incorrect": num_incorrect,

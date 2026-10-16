@@ -231,6 +231,13 @@ class MRCRBenchmark(BaseBenchmark):
         for example in examples:
             record_sample_metrics(example, accuracy=float(example["score"]), prefix_hit=float(example["prefix_hit"]))
 
+        return self.aggregate_results(self.sample_groups(results))
+
+    def aggregate_results(self, sample_groups: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Aggregate graded MRCR examples and their context/needle breakdowns."""
+        examples = sample_groups["examples"]
+        if not examples:
+            raise ValueError("MRCR cannot aggregate an empty result set")
         metrics: Dict[str, Any] = {
             "num_total": len(examples),
             "mrcr_accuracy": sum(float(example["score"]) for example in examples) / len(examples),

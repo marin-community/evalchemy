@@ -771,8 +771,16 @@ class BaseBenchmark(ABC):
 
     @abstractmethod
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """Evaluate the model's responses according to the benchmark's metrics."""
+        """Evaluate the model's responses according to the benchmark's metrics.
+
+        Aggregates that exclude infrastructure failures must report their denominator as
+        ``scored_count``. Otherwise, partial results require ``aggregate_results``.
+        """
         pass
+
+    def aggregate_results(self, sample_groups: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Aggregate graded examples grouped by sample namespace, without generating or grading again."""
+        raise NotImplementedError(f"{self.benchmark_name}: partial results require a benchmark-owned aggregator")
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """Run the complete benchmark evaluation pipeline."""
