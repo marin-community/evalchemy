@@ -36,6 +36,7 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
         tests, code, stdin_mode=reference["stdin"], fn_name=reference.get("entry_point"),
         test_timeout=timeout, deadline=(timeout + 1) * len(tests) + deadline_grace,
         comparison=reference["comparison"],
+        maximum_memory_bytes=None,
     )
     return Grade({"accuracy": float(bool(tests) and result["passed"])}, {"filtered_resps": [blocks]})
 

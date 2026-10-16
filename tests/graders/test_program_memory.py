@@ -59,6 +59,43 @@ result = check_correctness('memory/control', {'test_code': code}, 'python',
                            timeout=3, tmp_dir=sys.argv[1], safe_mode=False)
 print(json.dumps({'passed': result['passed'], 'result': result['result']}))
 """
+COMPETITION = """
+import json
+import resource
+import sys
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+from eval.graders.livecodebench import DEFAULT_MAX_MEMORY_BYTES, run
+from eval.graders.programs import program
+
+budget = int(sys.argv[1])
+for kind in (resource.RLIMIT_AS, resource.RLIMIT_DATA):
+    resource.setrlimit(kind, (budget, budget))
+kinds = (resource.RLIMIT_AS, resource.RLIMIT_DATA, resource.RLIMIT_STACK)
+expected = [[value & (2**64 - 1) for value in resource.getrlimit(kind)] for kind in kinds]
+# The native guard blocks importing resource; observe the kernel limits through
+# libc instead, without allocating memory or replacing any grader internals.
+code = '''import ctypes
+libc = ctypes.CDLL(None)
+values = []
+for kind in KINDS:
+    limit = (ctypes.c_ulong * 2)()
+    assert libc.getrlimit(kind, ctypes.byref(limit)) == 0
+    values.append(list(limit))
+print(values)
+'''.replace('KINDS', repr(kinds))
+results = {}
+for comparison in ('exact', 'stdout_normalized'):
+    spec = EvalSpec(task='competition', source=SourceRef('fixture'), source_id='limits', ordinal=0,
+                    requests=(), grader=GraderSpec('program', reference={
+                        'tests': [{'input': '', 'output': str(expected)}],
+                        'stdin': True, 'timeout': 3, 'comparison': comparison}))
+    results[comparison] = program(spec, ['```python\\n' + code + '\\n```']).metrics
+    results[comparison + '_wrong'] = program(spec, ['```python\\nprint("wrong")\\n```']).metrics
+default = [[DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_MEMORY_BYTES]] * 3
+results['lcb_default'] = run([{'input': '', 'output': str(default)}], code,
+                             stdin_mode=True, comparison='exact')['passed']
+print(json.dumps(results))
+"""
 
 
 @pytest.mark.parametrize("existing", ["default", "lower"])
@@ -77,3 +114,15 @@ def test_native_bigcode_limits_memory_with_safe_mode_disabled(tmp_path):
     child = subprocess.run([sys.executable, "-c", BIGCODE, str(tmp_path)], cwd=REPO,
                            capture_output=True, text=True, check=True, timeout=10)
     assert json.loads(child.stdout) == {"passed": True, "result": "passed"}
+
+
+@pytest.mark.parametrize("budget", [30 * 1024**3, 2 * 1024**3])
+def test_competition_programs_preserve_inherited_limits_without_changing_lcb_default(budget):
+    child = subprocess.run([sys.executable, "-c", COMPETITION, str(budget)], cwd=REPO,
+                           capture_output=True, text=True, check=True, timeout=15)
+
+    assert json.loads(child.stdout) == {
+        "exact": {"accuracy": 1.0}, "stdout_normalized": {"accuracy": 1.0},
+        "exact_wrong": {"accuracy": 0.0}, "stdout_normalized_wrong": {"accuracy": 0.0},
+        "lcb_default": True,
+    }
