@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sized
 from dataclasses import dataclass, field, replace
 from itertools import islice
-from typing import Any
+from typing import Any, Literal
 
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.execution.generation import generation_parameters
@@ -35,6 +35,7 @@ def text_specs(
     target: Callable[[Mapping[str, Any]], Any],
     grader: str,
     generation_kwargs: Mapping[str, Any] | Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    prompt_format: Literal["chat", "completion"] = "chat",
     repeats: int = 1,
     seed_repeats: bool = True,
     namespace: str = "default",
@@ -61,10 +62,11 @@ def text_specs(
             # Equal rows at different dataset positions are separate examples.
             source_id = ordinal
         model_input = prompt(record)
-        if isinstance(model_input, str):
-            model_input = [{"role": "user", "content": model_input}]
-        if options.system_instruction:
-            model_input = [{"role": "system", "content": options.system_instruction}, *model_input]
+        if prompt_format == "chat":
+            if isinstance(model_input, str):
+                model_input = [{"role": "user", "content": model_input}]
+            if options.system_instruction:
+                model_input = [{"role": "system", "content": options.system_instruction}, *model_input]
         for trial in range(count):
             parameters = dict(generation_kwargs(record) if callable(generation_kwargs) else generation_kwargs)
             if options.num_samples > 1:

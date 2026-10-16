@@ -21,7 +21,7 @@ from transformers import AutoTokenizer
 
 from eval.completion_response import FailedGeneration
 from eval.contracts.eval_spec import ModelRequest, RequestKind
-from eval.limits import preflight_endpoint_generation
+from eval.limits import ensure_context_window, preflight_endpoint_generation
 from eval.contracts.preflight import validate_model_request
 from eval.contracts.failures import FailureCategory
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
@@ -181,6 +181,16 @@ class LMBackend:
     async def _api_request(self, request: ModelRequest, prompt: Any, parameters: dict[str, Any]) -> Any:
         model = self.model
         if request.kind is RequestKind.GENERATE:
+            if model.tokenized_requests:
+                # Match TemplateAPI.generate_until before calling its transport.
+                prompt = model.tok_encode(prompt, add_special_tokens=model.add_bos_token)
+                context_length = model.max_length + 1
+                if request.context_length is not None:
+                    context_length = min(context_length, request.context_length)
+                output_tokens = parameters.get("max_gen_toks", model._max_gen_toks)
+                ensure_context_window(context_length=context_length, prompt_tokens=1, output_tokens=output_tokens, safety_tokens=1)
+                prompt = prompt[-(context_length - output_tokens - 1):]
+                return await self._call([prompt], parameters, generate=True)
             bounded, _, cap = preflight_endpoint_generation(
                 tokenizer=model.tokenizer,
                 payloads=[prompt],

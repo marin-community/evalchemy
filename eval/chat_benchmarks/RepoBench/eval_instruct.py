@@ -62,7 +62,7 @@ class RepoBenchmark(BaseBenchmark):
                 if self.debug:
                     rows = list(rows)[:2]
                 yield from text_specs(
-                    rows, options, namespace=f"{language}:{subset}", prompt=prompt, target=target,
+                    rows, options, namespace=f"{language}:{subset}", prompt=prompt, target=target, prompt_format="completion",
                     grader="code_line", reference=lambda row: {"language": language},
                     generation_kwargs={"temperature": 0.2, "top_p": 0.95, "do_sample": True, "max_gen_toks": self.max_tokens},
                     tags=lambda row: {"subset": f"{language}_{subset}"},

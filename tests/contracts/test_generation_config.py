@@ -26,15 +26,17 @@ from tokenizers import Tokenizer, models, pre_tokenizers
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.chat_benchmarks.MMLUPro.eval_instruct import MMLUProBenchmark, generate_cot_prompt
 from eval.chat_benchmarks.LiveBench.eval_instruct import LiveBenchBenchmark
+from eval.chat_benchmarks.RepoBench import eval_instruct as repobench
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.eval import LM_EVAL_ROUTE, evaluate
 from eval.execution.backend import LMBackend
 from eval.execution.engine import CollectSamples, Evaluator
 from eval.contracts.eval_spec import ModelRequest, RequestKind
-from eval.sources.common import SourceOptions
+from eval.sources.common import SourceOptions, text_specs
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
 from eval.execution.grading import Graders
 from eval.graders.specs import GRADERS
+from eval.limits import ContextWindowExceededError
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
 from tests.contracts.source_harness import MemoryCheckpoints
@@ -80,6 +82,73 @@ def _model(endpoint, model_class):
         tokenizer_backend=None,
         tokenized_requests=False,
     )
+
+
+@pytest.mark.parametrize(("model_context", "request_context"), [(32768, 32768), (2061, 2061), (32768, 2061), (32768, 2049)])
+def test_repobench_wire_preserves_raw_completion_and_native_truncation(endpoint, tmp_path, monkeypatch, model_context, request_context):
+    tokenizer = Tokenizer(models.WordLevel({
+        "[UNK]": 0, "[EOS]": 1, "user": 2, "assistant": 3, "discard": 4,
+        "keep": 5, "=": 6, "1": 7,
+    }, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.save(str(tmp_path / "tokenizer.json"))
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps({
+        "tokenizer_class": "TokenizersBackend", "unk_token": "[UNK]", "eos_token": "[EOS]",
+        "chat_template": "{% for message in messages %}{{ message['role'] + ' ' + message['content'] }}{% endfor %} assistant",
+    }))
+    model = LocalCompletionsAPI(
+        model="served", tokenizer=str(tmp_path), tokenizer_backend="huggingface", tokenized_requests=True,
+        base_url=f"http://127.0.0.1:{endpoint.server_port}/v1/completions",
+        max_length=model_context, num_concurrent=256,
+    )
+    row = {
+        "repo_name": "example", "file_path": "src/example.py", "context": [
+            {"path": "dependencies.py", "snippet": "discard " * 2050},
+        ],
+        "import_statement": "", "cropped_code": "keep = 1   ", "next_line": "print(keep)",
+    }
+    monkeypatch.setattr(repobench, "load_dataset", lambda *_args, **_kwargs: {"cross_file_first": [row]})
+    source = repobench.RepoBenchmark(languages=["python"], subsets=["cross_file_first"], max_tokens=2048)
+    options = SourceOptions(
+        "RepoBench", source.SOURCE, max_tokens=2048, context_length=request_context,
+        generation={"temperature": 0.0, "seed": 1234}, encode=model.tokenizer.encode,
+    )
+    [completion] = source.iter_specs(options)
+    native_prompt = "# Repo Name: example\n# Path: dependencies.py\n\n# Path: src/example.py\n\nkeep = 1\n"
+    [chat] = text_specs(
+        [row], options, prompt=lambda _row: native_prompt, target=lambda record: record["next_line"],
+        grader="code_line", generation_kwargs={"max_gen_toks": 2048},
+    )
+
+    async def run():
+        async with LMBackend(model) as backend:
+            return [await backend.execute(spec.requests[0]) for spec in (completion, chat)]
+
+    if request_context == 2049:
+        with pytest.raises(ContextWindowExceededError):
+            asyncio.run(run())
+        assert endpoint.requests == []
+        return
+    assert asyncio.run(run()) == ["\\boxed{42}", "\\boxed{42}"]
+    raw_request, chat_request = endpoint.requests
+    original_model = LocalCompletionsAPI(
+        model="served", tokenizer=str(tmp_path), tokenizer_backend="huggingface", tokenized_requests=True,
+        base_url=f"http://127.0.0.1:{endpoint.server_port}/v1/completions", max_length=min(model_context, request_context),
+        num_concurrent=256,
+    )
+    original = Instance("generate_until", row, (native_prompt, dict(completion.requests[0].generation)), 0)
+    assert original_model.generate_until([original]) == ["\\boxed{42}"]
+    original_request = endpoint.requests[-1]
+    assert completion.requests[0].prompt == native_prompt
+    assert completion.target == row["next_line"]
+    assert raw_request == original_request
+    input_budget = min(model_context, request_context) - 2048 - 1
+    assert raw_request["prompt"] == [model.tok_encode(native_prompt)[-input_budget:]]
+    assert chat_request["prompt"] == [model.tok_encode("user " + native_prompt + " assistant")[-input_budget:]]
+    assert raw_request["prompt"] != chat_request["prompt"]
+    assert raw_request["max_tokens"] == 2048
+    assert raw_request["temperature"] == 0.0
+    assert raw_request["seed"] == 1234
 
 
 @pytest.mark.parametrize("system_instruction", [None, "Follow the evaluation rules."])
