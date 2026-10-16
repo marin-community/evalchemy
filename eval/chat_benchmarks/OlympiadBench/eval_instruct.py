@@ -220,7 +220,7 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             target=lambda row: row["answer"], grader="math_equivalence",
             reference=lambda row: {"question": row["problem"], "answers": _flatten_reference_answers(row["answer"]),
                                    "judge": self.REQUIRES_JUDGE},
-            generation={"do_sample": self.n_repeat > 1, "temperature": 0.7, "top_p": 1.0,
+            generation_kwargs={"do_sample": self.n_repeat > 1, "temperature": 0.7, "top_p": 1.0,
                         "max_gen_toks": self.max_new_tokens, "until": list(END_OF_TURN_SEQUENCES)},
             repeats=self.n_repeat,
         )

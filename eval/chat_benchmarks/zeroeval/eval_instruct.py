@@ -98,7 +98,7 @@ class ZeroEvalBenchmark(BaseBenchmark):
                 rows, options, namespace=task, prompt=lambda row: row["prompt"],
                 target=lambda row: solutions[row["id"]] if task == "zebra-grid" else row["answer"],
                 grader="json_answer", reference=lambda row: {"kind": "grid" if task == "zebra-grid" else "literal" if task == "crux" else "numeric"},
-                generation={"temperature": 0, "do_sample": False, "max_gen_toks": self.max_new_tokens},
+                generation_kwargs={"temperature": 0, "do_sample": False, "max_gen_toks": self.max_new_tokens},
                 tags=lambda row: {"task": task},
             )
     SOURCE = SourceRef("zeroeval")

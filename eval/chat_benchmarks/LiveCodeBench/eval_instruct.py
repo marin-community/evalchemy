@@ -67,7 +67,7 @@ class LiveCodeBenchBenchmark(BaseBenchmark):
             examples = list(examples)[:10]
         return text_specs(
             examples, options, prompt=prompt, target=lambda example: example["test"],
-            grader="live_code", generation={"do_sample": False, "max_gen_toks": self.max_new_tokens},
+            grader="live_code", generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens},
             repeats=self.n_repeat, tags=lambda example: {"difficulty": example["difficulty"]},
         )
 

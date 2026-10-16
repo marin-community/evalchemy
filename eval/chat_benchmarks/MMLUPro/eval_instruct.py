@@ -146,6 +146,6 @@ class MMLUProBenchmark(BaseBenchmark):
         examples = test_examples[:2] if self.debug else test_examples
         return text_specs(
             examples, options, prompt=prompt, target=lambda example: example["answer"],
-            grader="mmlu_choice", generation={"do_sample": False, "max_gen_toks": self.max_new_tokens},
+            grader="mmlu_choice", generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens},
             tags=lambda example: {"category": example["category"]},
         )

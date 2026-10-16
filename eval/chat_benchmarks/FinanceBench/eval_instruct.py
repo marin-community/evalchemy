@@ -113,5 +113,5 @@ class FinanceBenchBenchmark(BaseBenchmark):
             prompt=lambda row: PROMPT.format(question=row["question"], evidence_text=row["evidence_text"]),
             target=lambda row: row["answer"], grader="equivalence_judge",
             reference=lambda row: {"question": row["question"], "answers": [str(row["answer"])]},
-            generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
         )

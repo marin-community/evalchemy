@@ -17,7 +17,7 @@ from lm_eval.utils import handle_non_serializable, hash_string
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.execution.grading import Grader
 from eval.execution.engine import ItemResult
-from eval.execution.generation import generation_parameters
+from eval.execution.generation import canonical_generation_kwargs, generation_parameters
 
 
 @dataclass(frozen=True)
@@ -113,8 +113,10 @@ class LMEvalSource:
             fewshot = self.num_fewshot
         task.set_config(key="num_fewshot", value=fewshot or 0)
         task.set_fewshot_seed(self.fewshot_seed)
-        if task.OUTPUT_TYPE == "generate_until" and self.generation:
-            task.set_config(key="generation_kwargs", value=dict(self.generation), update=True)
+        overrides = canonical_generation_kwargs(self.generation)
+        if task.OUTPUT_TYPE == "generate_until":
+            defaults = canonical_generation_kwargs(task.get_config("generation_kwargs") or {})
+            task.set_config(key="generation_kwargs", value=generation_parameters(defaults, overrides))
         limit = get_sample_size(task, self.limit)
         for ordinal, (doc_id, doc) in enumerate(task.doc_iterator(limit=limit)):
             context = task.fewshot_context(
@@ -137,7 +139,7 @@ class LMEvalSource:
                 prompt = instance.args[0]
                 request = ModelRequest(
                     kind, prompt.messages if isinstance(prompt, ChatInput) else prompt,
-                    generation=generation_parameters(instance.args[1], self.generation) if kind is RequestKind.GENERATE else {},
+                    generation=generation_parameters(canonical_generation_kwargs(instance.args[1]), overrides) if kind is RequestKind.GENERATE else {},
                     continuation=instance.args[1] if kind is RequestKind.LIKELIHOOD else None,
                     chat_template=prompt.settings if isinstance(prompt, ChatInput) else {},
                 )

@@ -72,6 +72,6 @@ class CodeForcesBenchmark(BaseBenchmark):
             reference=lambda row: {"tests": exact_tests(row["official_tests"]), "stdin": True,
                                    "timeout": row["time_limit"], "comparison": "stdout_normalized",
                                    "deadline_grace": 60},
-            generation={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
             tags=lambda row: {"difficulty": row["difficulty"]},
         )

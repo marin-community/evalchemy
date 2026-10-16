@@ -63,12 +63,22 @@ def test_aime24_keeps_legacy_per_trial_sampling_seeds(tmp_path):
     data = tmp_path / "aime24.jsonl"
     data.write_text(json.dumps({"id": "aime", "problem": "Find 1", "expected_answer": "1"}) + "\n")
 
-    specs = list(AIME24Benchmark(data_file=data).iter_specs(_options("AIME24")))
+    source = AIME24Benchmark(data_file=data)
+    specs = list(source.iter_specs(_options("AIME24")))
 
     assert len(specs) == 10
     assert [spec.requests[0].generation["seed"] for spec in specs] == list(range(7, 17))
     assert specs[0].requests[0].generation["until"]
     assert specs[0].grader.reference == {"comparator": "math_answers_equivalent"}
+
+    source.n_repeat = 2
+    endpoint = FixedEndpoint(lambda request: "\\boxed{" + str(1 - request.metadata["trial"]) + "}")
+    metrics, samples = evaluate_source(source, _options("AIME24"), endpoint)
+
+    assert len(endpoint.requests) == len(samples) == 2
+    assert sorted(sample["sample_repeat"] for sample in samples) == [0, 1]
+    assert sorted(request.generation["seed"] for request in endpoint.requests) == [7, 8]
+    assert metrics["accuracy_avg"] == 0.5
 
 
 def test_math_source_comparator_protocols_are_serialized(tmp_path):

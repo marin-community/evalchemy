@@ -57,8 +57,8 @@ class AMC23Benchmark(BaseBenchmark):
             self.load_questions(), options,
             prompt=lambda example: PROMPT.format(problem=example['question']),
             target=lambda example: example['answer'], grader="boxed_math",
-            generation={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
-            repeats=getattr(self, "n_repeat", 1),
+            generation_kwargs={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
+            repeats=self.n_repeat,
             reference=lambda _row: {"extractor": "hendrycks_math", "comparator": "hendrycks_math"},
         )
 

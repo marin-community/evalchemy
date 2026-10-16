@@ -128,5 +128,5 @@ Here is my problem:
             grader="program_suite",
             reference=lambda row: {"suite": SUITE, "language": "python", "problem": problems[row["task_id"]],
                                    "timeout": self.timeout, "mbpp": False},
-            generation={"do_sample": False, "max_gen_toks": self.max_tokens},
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_tokens},
         )

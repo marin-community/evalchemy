@@ -114,7 +114,7 @@ class GSM8KPerturbedBenchmark(BaseBenchmark):
             yield from text_specs(
                 rows, options, prompt=prompt, target=lambda row: row["answer"], grader="gsm8k_flexible", namespace=task,
                 reference=lambda row: {"pair_id": row["id"].split("::")[0]},
-                generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens,
+                generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens,
                             "until": list(GSM8K_STOP_SEQUENCES)},
                 tags=lambda row: {"task": task, "condition": row.get("condition", "baseline"),
                                   "changed": str(bool(row.get("changed"))), "number_words": str(bool(row.get("number_words_affected")))},

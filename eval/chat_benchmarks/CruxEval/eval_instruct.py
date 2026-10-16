@@ -142,6 +142,6 @@ class CruxEvalBenchmark(BaseBenchmark):
             yield from text_specs(
                 rows, options, namespace=direction, prompt=lambda row: self._prompt_for_task(row, direction),
                 target=lambda row: row[direction], grader="crux", reference=lambda row: {"direction": direction},
-                generation={"do_sample": self.DO_SAMPLE, "temperature": self.TEMPERATURE, "max_gen_toks": self.max_tokens},
+                generation_kwargs={"do_sample": self.DO_SAMPLE, "temperature": self.TEMPERATURE, "max_gen_toks": self.max_tokens},
                 tags=lambda row: {"direction": direction},
             )

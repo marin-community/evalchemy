@@ -187,6 +187,6 @@ class MRCRBenchmark(BaseBenchmark):
         return text_specs(
             rows, options, prompt=lambda row: parse_prompt(str(row["prompt"])), target=lambda row: row["answer"],
             grader="nonce_similarity", reference=lambda row: {"nonce": row["random_string_to_prepend"]},
-            generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
             tags=lambda row: {"cell": f"{row['mrcr_bin_upper']}_{row['n_needles']}needle"},
         )

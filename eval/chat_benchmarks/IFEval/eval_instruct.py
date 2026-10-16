@@ -83,5 +83,5 @@ class IFEvalBenchmark(BaseBenchmark):
         return text_specs(
             self.read_test_examples(os.path.join(self.data_dir, "input_data.jsonl")), options, prompt=lambda row: row["prompt"], target=lambda row: row["instruction_id_list"],
             grader="instructions", reference=lambda row: {"protocol": 'ifeval'},
-            generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_tokens},
         )

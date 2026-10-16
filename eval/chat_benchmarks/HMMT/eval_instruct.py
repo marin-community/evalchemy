@@ -56,7 +56,7 @@ class HMMTBenchmark(BaseBenchmark):
             self.load_questions(), options,
             prompt=lambda example: PROMPT.format(problem=example["problem"]),
             target=lambda example: example["answer"], grader="matharena",
-            generation={"do_sample": False, "max_gen_toks": self.max_new_tokens},
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens},
             repeats=self.n_repeat,
         )
 

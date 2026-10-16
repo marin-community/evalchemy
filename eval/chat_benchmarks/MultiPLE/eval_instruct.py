@@ -138,6 +138,6 @@ class MultipleBenchmark(BaseBenchmark):
                                     {"role": "user", "content": self.task_prompt.format(prompt=row["prompt"], lang=LANGUAGE_MAP[language])}],
                 target=lambda row: row["test"], grader="program_suite",
                 reference=lambda row: {"suite": "MultiPLE", "language": language, "problem": row, "timeout": self.timeout},
-                generation={"temperature": 0, "max_gen_toks": self.max_tokens},
+                generation_kwargs={"temperature": 0, "max_gen_toks": self.max_tokens},
                 tags=lambda row: {"language": language},
             )

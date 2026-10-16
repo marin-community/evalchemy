@@ -64,6 +64,6 @@ class CodeEloBenchmark(BaseBenchmark):
         return text_specs(
             self.load_questions(), options, prompt=prompt, target=lambda example: example["examples"],
             grader="program", reference=test_reference,
-            generation={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
             tags=lambda example: {"difficulty": example["difficulty"]},
         )

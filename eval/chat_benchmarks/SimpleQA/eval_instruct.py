@@ -90,6 +90,6 @@ class SimpleQABenchmark(BaseBenchmark):
     def iter_specs(self, options):
         return text_specs(
             self.load_questions(), options, prompt=lambda row: row["question"], target=lambda row: row["answer"],
-            grader="simpleqa", generation={"do_sample": False, "temperature": 0,
+            grader="simpleqa", generation_kwargs={"do_sample": False, "temperature": 0,
                                            "max_gen_toks": self.max_new_tokens},
         )

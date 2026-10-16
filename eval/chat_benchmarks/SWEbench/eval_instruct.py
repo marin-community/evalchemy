@@ -51,5 +51,5 @@ class SWEBenchBenchmark(BaseBenchmark):
             rows = list(rows)[:2]
         return text_specs(
             rows, options, prompt=lambda row: row["text"], target=lambda row: row["patch"], grader="swe_patch",
-            generation={"do_sample": False, "temperature": 0.2, "top_p": 0.95, "max_gen_toks": self.max_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0.2, "top_p": 0.95, "max_gen_toks": self.max_tokens},
         )

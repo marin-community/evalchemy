@@ -95,7 +95,7 @@ def source_items(*, seed_repeats=True, **options):
         ({"id": str(index), "question": "question", "answer": "answer"} for index in range(5)),
         SourceOptions("fixture", SourceRef("fixture"), **options),
         prompt=lambda row: row["question"], target=lambda row: row["answer"], grader="exact_match",
-        generation={"max_new_tokens": 17, "max_tokens": 19, "max_gen_toks": 23},
+        generation_kwargs={"max_gen_toks": 23},
         seed_repeats=seed_repeats,
     )
 
@@ -111,7 +111,9 @@ def test_sample_limit_is_applied_before_expanding_trials():
     specs = list(source_items(limit=2, num_samples=3, seed_repeats=False))
     assert [spec.source_id for spec in specs] == ["0", "0", "0", "1", "1", "1"]
     assert [spec.trial for spec in specs] == [0, 1, 2, 0, 1, 2]
-    assert all("seed" not in spec.requests[0].generation for spec in specs)
+    # Explicit sample counts use independent trial seeds even when the source's
+    # legacy repeat protocol omits them.
+    assert [spec.requests[0].generation["seed"] for spec in specs] == [0, 1, 2, 0, 1, 2]
 
 
 def test_sampling_seeds_default_and_sources_can_opt_out():
@@ -121,12 +123,12 @@ def test_sampling_seeds_default_and_sources_can_opt_out():
     specs = list(text_specs(
         [{"id": "row"}], SourceOptions("fixture", SourceRef("fixture"), seed=7),
         prompt=lambda row: row["id"], target=lambda row: row["id"], grader="exact_match",
-        generation={"do_sample": True}, repeats=2,
+        generation_kwargs={"do_sample": True}, repeats=2,
     ))
     unseeded = list(text_specs(
         [{"id": "row"}], SourceOptions("fixture", SourceRef("fixture"), seed=7),
         prompt=lambda row: row["id"], target=lambda row: row["id"], grader="exact_match",
-        generation={"do_sample": True}, repeats=2, seed_repeats=False,
+        generation_kwargs={"do_sample": True}, repeats=2, seed_repeats=False,
     ))
 
     assert [spec.requests[0].generation["seed"] for spec in specs] == [7, 8]

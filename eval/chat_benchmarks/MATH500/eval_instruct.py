@@ -64,15 +64,16 @@ class MATH500Benchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
+        self.n_repeat = 1
 
     def iter_specs(self, options):
         return text_specs(
             self.load_questions(), options,
             prompt=lambda example: PROMPT.format(problem=example['problem']),
             target=lambda example: example['answer'], grader="boxed_math",
-            generation={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens,
+            generation_kwargs={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens,
                         "until": list(END_OF_TURN_SEQUENCES)},
-            repeats=getattr(self, "n_repeat", 1),
+            repeats=self.n_repeat,
         )
 
 

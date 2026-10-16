@@ -110,7 +110,7 @@ class NUPALooseBenchmark(BaseBenchmark):
         return text_specs(
             self._load_records(), options, prompt=lambda row: row["prompt"], target=lambda row: row["answer"],
             grader="nupa", reference=lambda row: {"format": row["answer_format"]},
-            generation={"do_sample": False, "temperature": 0.0, "max_gen_toks": self.max_new_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0.0, "max_gen_toks": self.max_new_tokens},
             tags=lambda row: {"task": row["task_name"], "bucket": row["length_bucket"],
                               "task_bucket": row["task_name"] + "/bucket:" + row["length_bucket"]},
         )

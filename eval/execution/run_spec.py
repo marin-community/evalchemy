@@ -8,6 +8,7 @@ from typing import Any
 
 from eval.passk import parse_pass_at_k
 from eval.robust_api import parse_generation_overrides
+from eval.execution.generation import canonical_generation_kwargs
 
 
 @dataclass(frozen=True)
@@ -33,7 +34,7 @@ class RunSpec:
             item.name: getattr(args, item.name, item.default)
             for item in fields(cls) if item.name not in {"generation", "seeds", "pass_at_k"}
         }
-        generation = parse_generation_overrides(getattr(args, "gen_kwargs", None))
+        generation = canonical_generation_kwargs(parse_generation_overrides(getattr(args, "gen_kwargs", None)))
         if values["limit"] is not None and values["limit"] >= 1:
             values["limit"] = int(values["limit"])
         annotator = getattr(args, "annotator_model", None)

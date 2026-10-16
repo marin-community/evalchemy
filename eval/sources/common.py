@@ -7,13 +7,8 @@ from dataclasses import dataclass, field, replace
 from itertools import islice
 from typing import Any
 
-from evalchemy_config.limits import MAX_OUTPUT_ALIASES
-
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.execution.generation import generation_parameters
-
-# Also scrub the provider-only spelling when applying an explicit source cap.
-OUTPUT_CAP_ALIASES = (*MAX_OUTPUT_ALIASES, "max_completion_tokens")
 
 
 @dataclass(frozen=True)
@@ -39,7 +34,7 @@ def text_specs(
     prompt: Callable[[Mapping[str, Any]], Any],
     target: Callable[[Mapping[str, Any]], Any],
     grader: str,
-    generation: Mapping[str, Any] | Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    generation_kwargs: Mapping[str, Any] | Callable[[Mapping[str, Any]], Mapping[str, Any]],
     repeats: int = 1,
     seed_repeats: bool = True,
     namespace: str = "default",
@@ -48,7 +43,7 @@ def text_specs(
 ) -> Iterator[EvalSpec]:
     """Apply an example cap before expanding trials.
 
-    Sources whose legacy protocol omitted request seeds opt out explicitly.
+    Sources may omit legacy repeat seeds; explicit sample counts use trial seeds.
     """
     limit = options.limit
     if limit is not None:
@@ -71,15 +66,13 @@ def text_specs(
         if options.system_instruction:
             model_input = [{"role": "system", "content": options.system_instruction}, *model_input]
         for trial in range(count):
-            parameters = dict(generation(record) if callable(generation) else generation)
+            parameters = dict(generation_kwargs(record) if callable(generation_kwargs) else generation_kwargs)
             if options.num_samples > 1:
                 parameters.update(do_sample=True, temperature=0.7, top_p=1.0)
             parameters = generation_parameters(parameters, options.generation)
             if (seed_repeats or options.num_samples > 1) and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
-                for alias in OUTPUT_CAP_ALIASES:
-                    parameters.pop(alias, None)
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(
                 task=options.task, source=options.source, source_id=source_id, ordinal=ordinal,

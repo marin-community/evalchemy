@@ -89,6 +89,6 @@ class BigCodeBenchBenchmark(BaseBenchmark):
                 target=lambda row: row["test"], grader="program_suite",
                 reference=lambda row: {"suite": "BigCodeBench", "language": self.language, "problem": row,
                                        "timeout": self.timeout, "safe_mode": self.safe_mode},
-                generation={"temperature": 0, "max_gen_toks": self.max_tokens},
+                generation_kwargs={"temperature": 0, "max_gen_toks": self.max_tokens},
                 tags=lambda row: {"prompt_type": prompt_type},
             )

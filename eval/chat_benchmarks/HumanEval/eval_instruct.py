@@ -78,6 +78,6 @@ Please continue to complete the function. You are not allowed to modify the give
                 prompt=lambda row: self.build_deepseekcoder_instruction(language_settings[language]["full_name"], row["prompt"]),
                 target=lambda row: row["test"], grader="program_suite", namespace=language,
                 reference=lambda row: {"suite": SUITE, "language": language, "problem": row, "timeout": self.timeout},
-                generation={"do_sample": False, "max_gen_toks": self.max_tokens},
+                generation_kwargs={"do_sample": False, "max_gen_toks": self.max_tokens},
                 tags=lambda row: {"language": language},
             )

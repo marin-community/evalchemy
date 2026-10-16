@@ -21,6 +21,7 @@ class AIME24Benchmark(BaseBenchmark):
     def __init__(self, data_file: str | Path = DATA_FILE, debug: bool = False, max_tokens: int = 32768, **kwargs):
         super().__init__(**kwargs)
         self.data_file, self.debug, self.max_tokens = Path(data_file), debug, max_tokens
+        self.n_repeat = 10
 
     def load_questions(self):
         rows = [json.loads(line) for line in self.data_file.read_text().splitlines()]
@@ -32,7 +33,7 @@ class AIME24Benchmark(BaseBenchmark):
     def iter_specs(self, options):
         return text_specs(self.load_questions(), options, prompt=lambda row: PROMPT.format(**row),
                           target=lambda row: row["expected_answer"], grader="boxed_math",
-                          generation={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_tokens,
+                          generation_kwargs={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_tokens,
                                       "until": list(END_OF_TURN_SEQUENCES)},
-                          repeats=10, seed_repeats=True,
+                          repeats=self.n_repeat, seed_repeats=True,
                           reference=lambda _row: {"comparator": "math_answers_equivalent"})

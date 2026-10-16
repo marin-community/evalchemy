@@ -93,7 +93,7 @@ def test_explicit_trials_share_binary_pass_at_k_reduction():
             return text_specs(
                 [{"id": "a"}, {"id": "b"}], options,
                 prompt=lambda row: row["id"], target=lambda row: "yes", grader="exact_match",
-                generation={"do_sample": True},
+                generation_kwargs={"do_sample": True},
             )
 
     class Backend:

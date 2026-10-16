@@ -118,7 +118,7 @@ class WildBenchBenchmark(BaseBenchmark):
             rows, options, prompt=lambda row: row["conversation_input"], target=lambda row: row["checklist"],
             grader="wildbench", reference=lambda row: {"template": self.config.eval_template,
                                                       "max_words": self.config.max_words_to_eval},
-            generation={"temperature": self.config.temperature, "top_p": self.config.top_p,
+            generation_kwargs={"temperature": self.config.temperature, "top_p": self.config.top_p,
                         "max_gen_toks": self.max_new_tokens},
             tags=lambda row: {"category": tuple(sorted(
                 {self.task_group_mapping[tag] for tag in [row["primary_tag"], *row["secondary_tags"]]}))},

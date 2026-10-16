@@ -142,7 +142,7 @@ def test_repeated_eval_specs_keep_one_record_per_trial():
                 prompt=lambda row: row["prompt"],
                 target=lambda row: row["answer"],
                 grader="exact_match",
-                generation={"do_sample": True},
+                generation_kwargs={"do_sample": True},
                 repeats=self.n_repeat,
                 seed_repeats=True,
             )

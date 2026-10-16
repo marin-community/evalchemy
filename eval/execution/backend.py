@@ -27,6 +27,7 @@ from eval.contracts.failures import FailureCategory
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
 from eval.runtime.pool import RetryPolicy, retry
 from eval.execution.run_spec import RunSpec
+from eval.execution.generation import canonical_generation_kwargs
 from eval.execution.prompts import clean_fastchat_response, fastchat_prompt
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -125,11 +126,9 @@ class LMBackend:
             prompt, conversation = fastchat_prompt(self.model, prompt)
         if isinstance(prompt, list):
             prompt = self.model.apply_chat_template(prompt, **request.chat_template)
-        parameters = dict(request.generation)
+        parameters = canonical_generation_kwargs(request.generation)
         if parameters.pop("do_sample", None) is False:
             parameters["temperature"] = 0.0
-        if "max_new_tokens" in parameters:
-            parameters["max_gen_toks"] = parameters.pop("max_new_tokens")
         if isinstance(self.model, TemplateAPI):
             output = await self._api_request(request, prompt, parameters)
             return clean_fastchat_response(self.model, conversation, output)

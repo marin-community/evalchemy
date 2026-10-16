@@ -65,7 +65,7 @@ class MixEvalBenchmark(BaseBenchmark):
             yield from text_specs(
                 rows, options, namespace=split, prompt=formatter, target=lambda row: row["target"],
                 grader="mixeval", reference=lambda row: {"kind": split},
-                generation={"temperature": 1.0, "do_sample": True},
+                generation_kwargs={"temperature": 1.0, "do_sample": True},
                 seed_repeats=False,
                 tags=lambda row: {
                     "split": split,

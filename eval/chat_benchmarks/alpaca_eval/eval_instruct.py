@@ -95,5 +95,5 @@ class AlpacaBenchmark(BaseBenchmark):
             target=lambda row: references[row["instruction"]]["output"], grader="alpaca",
             reference=lambda row: {"config": self.annotator_conf,
                                    "baseline": references[row["instruction"]]["generator"]},
-            generation={"temperature": self.temperature, "do_sample": self.do_sample, "max_gen_toks": self.max_tokens},
+            generation_kwargs={"temperature": self.temperature, "do_sample": self.do_sample, "max_gen_toks": self.max_tokens},
         )

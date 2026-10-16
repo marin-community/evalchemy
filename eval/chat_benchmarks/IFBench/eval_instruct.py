@@ -93,5 +93,5 @@ class IFBenchBenchmark(BaseBenchmark):
         return text_specs(
             self.load_questions(), options, prompt=lambda row: row["prompt"], target=lambda row: row["instruction_id_list"],
             grader="instructions", reference=lambda row: {"protocol": 'ifbench'},
-            generation={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_tokens},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_tokens},
         )

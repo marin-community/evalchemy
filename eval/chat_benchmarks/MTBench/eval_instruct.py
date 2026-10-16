@@ -138,7 +138,7 @@ class MTBenchBenchmark(BaseBenchmark):
         return conversation_specs(
             questions, options, turns=lambda row: row["turns"], target=lambda row: row["turns"],
             grader="mtbench", reference=reference,
-            generation=lambda row: {"max_gen_toks": self.config.max_new_token,
+            generation_kwargs=lambda row: {"max_gen_toks": self.config.max_new_token,
                                     "do_sample": temperature_config.get(row["category"], 0.7) >= 1e-4,
                                     "temperature": temperature_config.get(row["category"], 0.7)},
             seed_repeats=False,

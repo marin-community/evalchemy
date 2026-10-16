@@ -67,7 +67,7 @@ class GPQADiamondBenchmark(BaseBenchmark):
             records(), options,
             prompt=lambda example: PROMPT.format(problem=example["Question"], options=example["multiple_choice_string"]),
             target=lambda example: example["answer"], grader="letter_choice",
-            generation={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
+            generation_kwargs={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
             repeats=self.n_repeat,
         )
 

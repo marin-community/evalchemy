@@ -29,7 +29,7 @@ class ExactMatchSource:
             prompt=lambda row: row["prompt"],
             target=lambda row: row["answer"],
             grader="exact_match",
-            generation={},
+            generation_kwargs={},
         )
 
 

@@ -120,7 +120,7 @@ class JEEBenchBenchmark(BaseBenchmark):
         for spec in text_specs(
             rows, options, prompt=lambda row: format_message(row, self.prompt_library),
             target=lambda row: row["gold"], grader="jee", reference=lambda row: {"type": row["type"]},
-            generation={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
             tags=lambda row: {"subject": row["subject"], "type": row["type"]},
         ):
             # Different exam papers reuse local question indices.
