@@ -48,7 +48,7 @@ def wildbench(spec: EvalSpec, responses: Sequence[Any]) -> Grade | JudgePlan:
     )
     if not output.strip():
         return wildbench_score_with_reference(parser.reference, '{"score": "1"}')
-    return JudgePlan((ModelRequest(RequestKind.GENERATE, prompt, {"temperature": 0, "max_gen_toks": 1024,
+    return JudgePlan((ModelRequest(RequestKind.GENERATE, prompt, {"temperature": 0, "max_gen_toks": 4096,
                                                                "response_format": {"type": "json_object"}}),), parser,
                      GraderSpec("judge_failed"))
 

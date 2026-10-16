@@ -55,7 +55,11 @@ def gsm8k(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     return Grade({"accuracy": float(answer == str(spec.target))}, {"filtered_resps": [answer]})
 
 def letter_choice(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
-    answer = get_multiple_choice_answer(str(responses[-1]))
+    extractor = get_multiple_choice_answer
+    if _reference_option(spec, "extractor", "gpqa") == "hle":
+        from eval.chat_benchmarks.HLE.testing_utils import get_multiple_choice_answer as extractor
+
+    answer = extractor(str(responses[-1]))
     return Grade({"accuracy": float(answer == spec.target)}, {"filtered_resps": [answer]})
 
 def mmlu_choice(spec: EvalSpec, responses: Sequence[Any]) -> Grade:

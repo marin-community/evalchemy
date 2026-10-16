@@ -58,6 +58,7 @@ class ReducerSpec:
     group_suffix: str = ""
     group_weights: Mapping[str, float] = field(default_factory=dict)
     trial_metric: str | None = "accuracy"
+    selected_trial: int | None = None
 
 
 @dataclass(frozen=True)

@@ -103,5 +103,6 @@ class HLESubsetBenchmark(BaseBenchmark):
             rows = list(rows)[:2]
         return text_specs(
             rows, options, prompt=format_message, target=lambda row: row["answer"], grader="letter_choice",
+            reference=lambda row: {"extractor": "hle"},
             generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
         )

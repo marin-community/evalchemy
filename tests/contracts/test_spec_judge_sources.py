@@ -58,6 +58,7 @@ def test_wildbench_preserves_published_truncation_and_weighted_tags(monkeypatch)
     assert metrics["avg_output_length"] == 0.0
     assert metrics["task_categorized_scores"] == {"Math & Data Analysis": 4.0}
     assert "one... (truncated)" in judge.requests[0].prompt
+    assert judge.requests[0].generation["max_gen_toks"] == 4096
     assert samples[0]["adjusted_score"] == 4.0
 
 

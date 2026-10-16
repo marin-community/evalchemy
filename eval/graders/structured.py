@@ -5,8 +5,9 @@ from typing import Any
 from difflib import SequenceMatcher
 from eval.contracts.eval_spec import EvalSpec
 
+import ast
+import operator
 import re
-from fractions import Fraction
 
 from eval.contracts.eval_spec import Grade
 from eval.graders.gsm8k import FALLBACK, extract_flexible
@@ -18,6 +19,28 @@ def gsm8k_flexible(spec, responses):
     target = re.search(r"-?\d+(\.\d+)?", str(spec.target).replace("$", "").replace(",", ""))
     correct = predicted is not None and target is not None and float(predicted.group()) == float(target.group())
     return Grade({"accuracy": float(correct), "no_answer": float(answer == FALLBACK)}, {"filtered_resps": [answer]})
+
+
+_ARITHMETIC_OPERATORS = {
+    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod, ast.Pow: operator.pow,
+}
+
+
+def _arithmetic_value(node: ast.expr) -> int | float:
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _arithmetic_value(node.operand)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp) and type(node.op) in _ARITHMETIC_OPERATORS:
+        left, right = _arithmetic_value(node.left), _arithmetic_value(node.right)
+        if isinstance(node.op, ast.Pow):
+            if abs(right) > 1000 or isinstance(left, int) and left.bit_length() * max(right, 0) > 65536:
+                raise ValueError("arithmetic exponent is too large")
+        return _ARITHMETIC_OPERATORS[type(node.op)](left, right)
+    raise ValueError("answer is not a numeric arithmetic expression")
 
 
 def json_answer(spec, responses):
@@ -56,8 +79,15 @@ def json_answer(spec, responses):
             value = value.replace("$", "").replace(",", "").strip()
             if "/" in value:
                 try:
-                    value = str(float(Fraction(value)))
-                except (ValueError, ZeroDivisionError):
+                    # Preserve the original sanitizer's whole-expression arithmetic
+                    # without executing names, calls, or other Python code.
+                    if len(value) > 4096:
+                        raise ValueError("arithmetic answer is too long")
+                    expression = ast.parse(value, mode="eval")
+                    if sum(1 for _ in ast.walk(expression)) > 128:
+                        raise ValueError("arithmetic answer is too complex")
+                    value = str(float(_arithmetic_value(expression.body)))
+                except (ArithmeticError, SyntaxError, TypeError, ValueError):
                     pass
             match = re.search(r"-?\d+(\.\d+)?", value)
             values.append(float(match.group()) if match else None)

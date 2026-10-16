@@ -11,6 +11,7 @@ from eval.chat_benchmarks.AIW.eval_instruct import AIWBenchmark
 from eval.chat_benchmarks.AMC23.eval_instruct import AMC23Benchmark
 from eval.chat_benchmarks.HLE.eval_instruct import HLESubsetBenchmark
 from eval.chat_benchmarks.HMMT.eval_instruct import HMMTBenchmark
+from eval.chat_benchmarks.HLE.testing_utils import get_multiple_choice_answer as extract_hle_answer
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.JEEBench.eval_instruct import JEEBenchBenchmark
 from eval.contracts.eval_spec import SourceRef
@@ -108,6 +109,26 @@ def test_hle_and_hmmt_preserve_prompt_and_repeat_protocols(monkeypatch):
     hmmt_specs = list(hmmt.iter_specs(_options("HMMT")))
     assert len(hmmt_specs) == 10
     assert hmmt_specs[0].requests[0].prompt[0]["content"].endswith("\\boxed{}.\nAnswer:")
+
+
+@pytest.mark.parametrize("response,target,expected", [
+    ("Answer: E", "E", 1.0),
+    ("Answer: B. Choice A is wrong", "B", 1.0),
+    (r"Answer: \boxed{F}", "F", 1.0),
+    ("Answer: A", "B", 0.0),
+])
+def test_hle_grades_its_native_answer_extraction(monkeypatch, response, target, expected):
+    source = HLESubsetBenchmark()
+    source.n_repeat = 1
+    monkeypatch.setattr(source, "load_questions", lambda: [{
+        "id": "hle", "answer": target, "answer_type": "multipleChoice", "image": "", "question": "Choose a letter",
+    }])
+
+    metrics, samples = evaluate_source(source, _options("HLE"), FixedEndpoint(response))
+
+    assert float(extract_hle_answer(response) == target) == expected
+    assert metrics["accuracy_avg"] == expected
+    assert samples[0]["accuracy"] == expected
 
 
 @pytest.mark.parametrize("target, expected", [(r"\frac{1311}{2017}", 0.0), (r"1 - \frac{1}{2025!}", 1.0)])

@@ -154,6 +154,20 @@ def test_mtbench_runtime_keeps_turn_identity_and_judge_scores(monkeypatch):
     assert len(records[0]["resps"]) == 2
 
 
+@pytest.mark.parametrize("judge_model", ["gpt-4o-mini-2024-07-18", "gpt-4-turbo"])
+def test_mtbench_uses_canonical_reference_answers_independent_of_judge(monkeypatch, judge_model):
+    source = mtbench_source.MTBenchBenchmark(annotator_model=judge_model)
+    questions = mtbench_source.load_questions(source.question_file, None, None)
+    question = next(row for row in questions if row["category"] == "math")
+    references = mtbench_source.load_model_answers(source.ref_answer_dir)
+    expected = references["gpt-4"][question["question_id"]]["choices"][0]["turns"]
+    monkeypatch.setattr(mtbench_source, "load_questions", lambda *_args: [question])
+
+    [spec] = source.iter_specs(SourceOptions("MTBench", SourceRef("fixture")))
+
+    assert spec.grader.reference["answers"] == expected
+
+
 def test_repeated_eval_specs_keep_one_record_per_trial():
     class RepeatedSource:
         REDUCER = ReducerSpec()

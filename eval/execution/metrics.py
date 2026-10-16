@@ -31,6 +31,8 @@ class SourceMetrics:
         self.annotations = [] if policy.name == "alpaca" else None
 
     def add(self, result: ItemResult) -> None:
+        if self.policy.selected_trial is not None and (result.spec.trial or 0) != self.policy.selected_trial:
+            return
         self.repeated |= result.spec.trial is not None
         if self.paired is not None:
             self.paired.add(result)

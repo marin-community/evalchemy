@@ -61,6 +61,7 @@ class LiveBenchBenchmark(BaseBenchmark):
     PRIMARY_METRIC = "global_average"
     REDUCER = ReducerSpec(
         trial_metric=None,
+        selected_trial=0,
         accuracy="global_average",
         groups={"task": "{group}", "category": "{group}", "date": "{group}"},
     )

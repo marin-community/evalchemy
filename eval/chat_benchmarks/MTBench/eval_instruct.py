@@ -133,7 +133,7 @@ class MTBenchBenchmark(BaseBenchmark):
         def reference(row):
             reference_based = row["category"] in NEED_REF_CATS
             key = "single-math-v1" if reference_based else "single-v1"
-            answers = references[self.config.judge_model][row["question_id"]]["choices"][0]["turns"] if reference_based else []
+            answers = references["gpt-4"][row["question_id"]]["choices"][0]["turns"] if reference_based else []
             return {"templates": [templates[key], templates[key + "-multi-turn"]], "answers": answers}
         return conversation_specs(
             questions, options, turns=lambda row: row["turns"], target=lambda row: row["turns"],
