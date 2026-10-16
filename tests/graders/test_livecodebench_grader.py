@@ -143,6 +143,30 @@ def test_live_code_scores_an_empty_final_code_block_as_incorrect(completion, exp
     assert live_code(spec, [completion]).metrics == {"accuracy": expected_accuracy}
 
 
+@pytest.mark.parametrize("comparison", ["exact", "stdout_normalized"])
+@pytest.mark.parametrize(
+    ("completion", "expected_accuracy"),
+    [
+        ('if __name__ == "__main__":\n    print(input())', 1.0),
+        ('if __name__ == "__main__":\n    print(float(input()))', 0.0),
+        ("if __name__ == '__main__':\n    print(input())", 0.0),
+    ],
+)
+def test_competition_programs_preserve_original_main_guard(comparison, completion, expected_accuracy):
+    from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+    from eval.graders.programs import program
+
+    spec = EvalSpec(
+        task="competition", source=SourceRef("fixture"), source_id="echo", ordinal=0,
+        requests=(), grader=GraderSpec("program", reference={
+            "tests": [{"input": "2", "output": "2"}], "stdin": True,
+            "timeout": 1, "comparison": comparison,
+        }),
+    )
+
+    assert program(spec, [f"```python\n{completion}\n```"]).metrics == {"accuracy": expected_accuracy}
+
+
 def test_failing_candidate_scores_failed_and_short_circuits():
     """Stop-on-failure: a wrong answer stops the run without running the later test."""
     result = livecodebench.run(

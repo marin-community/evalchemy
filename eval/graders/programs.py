@@ -30,6 +30,8 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     timeout = float(reference["timeout"])
     deadline_grace = float(reference.get("deadline_grace", 5))
     code = blocks[-1].split("</code>")[0].replace("<code>", "")
+    if '__name__ == "__main__"' in code:
+        code = '__name__ = "__main__"\n' + code
     result = run(
         tests, code, stdin_mode=reference["stdin"], fn_name=reference.get("entry_point"),
         test_timeout=timeout, deadline=(timeout + 1) * len(tests) + deadline_grace,
