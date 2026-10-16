@@ -5,6 +5,8 @@
 import json
 import multiprocessing
 import os
+import subprocess
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -100,3 +102,21 @@ def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, modu
     result = _run_check_in_spawned_worker(module.check_correctness, tmp_path, is_mbpp, test_code)
 
     assert result["passed"], result["result"]
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Native address-space limits are enforced on Linux")
+def test_shared_grader_pool_preserves_native_memory_budget_after_cli_and_source_imports(tmp_path):
+    output = tmp_path / "native-grades.json"
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.contracts.code_grader_pool_control", str(output)],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=90,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text()) == [
+        ["lcb_initial_True", 1.0], ["lcb_initial_False", 0.0],
+        ["humaneval_42", 1.0], ["humaneval_41", 0.0],
+        ["livebench_amps_42", 100.0], ["livebench_amps_41", 0.0],
+        ["lcb_after_imports_stdin_True", 1.0], ["lcb_after_imports_stdin_False", 0.0],
+        ["lcb_after_imports_functional_True", 1.0], ["lcb_after_imports_functional_False", 0.0],
+        ["livebench_coding_True", 100.0], ["livebench_coding_False", 0.0],
+    ]

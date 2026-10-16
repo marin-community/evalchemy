@@ -41,6 +41,7 @@ import threading
 import time
 import types
 
+from eval.runtime.bounded_process import bounded_process
 from eval.runtime.resources import ExecutionMode
 
 try:
@@ -293,7 +294,7 @@ def run(
         deadline = DEFAULT_DEADLINE
 
     receiver, sender = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(
+    process = bounded_process(
         target=_run_tests,
         args=(
             tests,

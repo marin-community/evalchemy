@@ -15,6 +15,7 @@ import numpy as np
 from tqdm import tqdm
 
 from eval.graders import livecodebench as _lcb_grader
+from eval.runtime.bounded_process import bounded_process
 from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.evaluation.testing_util import run_test
 from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.evaluation.pass_k_utils import compute_metrics_from_results
 
@@ -43,7 +44,7 @@ def check_correctness(sample, generation, timeout, debug=True, deadline=DEFAULT_
     watchdogs the child to a fixed deadline (not ``(timeout + 1) * N + 5``).
     """
     receiver, sender = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(
+    process = bounded_process(
         target=_worker_run,
         args=(sample, generation, debug, sender, timeout),
     )
