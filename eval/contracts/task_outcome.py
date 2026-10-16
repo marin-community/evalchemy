@@ -501,11 +501,6 @@ def _record_count(result: Any) -> int | None:
     return sum(nested_counts) if nested_counts else None
 
 
-def _scored_count(scored_result: Any, generated_count: int | None) -> int | None:
-    reported = _reported_scored_count(scored_result)
-    return reported if reported is not None else generated_count
-
-
 def _reported_scored_count(scored_result: Any) -> int | None:
     if isinstance(scored_result, Mapping):
         for key in (
