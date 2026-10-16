@@ -2,6 +2,7 @@ import contextlib
 import faulthandler
 import io
 import multiprocessing
+from eval.runtime.program_process import run_program_process, start_program_session
 import os
 import platform
 import signal
@@ -29,6 +30,7 @@ def check_code_correctness(
     """
 
     def unsafe_execute(tmp_dir):
+        start_program_session()
         # with create_tempdir():
 
         # These system calls are needed when cleaning up tempdir.
@@ -73,10 +75,7 @@ def check_code_correctness(
     result = manager.list()
 
     p = multiprocessing.Process(target=unsafe_execute, args=(tmp_dir,))
-    p.start()
-    p.join(timeout=timeout + 1)
-    if p.is_alive():
-        p.kill()
+    run_program_process(p, timeout=timeout + 1)
 
     if not result:
         result.append("timed out")
