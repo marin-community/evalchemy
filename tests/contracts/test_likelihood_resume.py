@@ -76,7 +76,10 @@ def _resume_request_batch(root, model, evaluate):
 )
 def test_likelihood_resume_keeps_completed_requests_after_endpoint_failure(tmp_path, method, arguments, values, evaluate):
     scores = dict(zip(arguments, values))
-    requests = [Instance(method, {}, args, index, metadata=("task", 0 if index < 2 else index, 1)) for index, args in enumerate(arguments)]
+    requests = [
+        Instance(method, {}, args, index, metadata=("task", 0 if index < 2 else index, 1))
+        for index, args in enumerate(arguments)
+    ]
     interrupted = _LikelihoodEndpoint(method, scores, fail_after=2)
 
     def run(model):
@@ -108,6 +111,7 @@ def test_generation_resume_preserves_sampled_draws(tmp_path):
             return ["first draw", "second draw"]
 
     first = SampledEndpoint("generate_until", {})
+
     def run(model):
         return model.generate_until(requests)
 

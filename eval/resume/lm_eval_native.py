@@ -117,11 +117,11 @@ def _plan_request_batch(
 class _LikelihoodCacheHook(CacheHook):
     """Forward cache writes and checkpoint completed likelihood requests."""
 
-    def __init__(self, original: CacheHook, record: Callable[[str, Any, Any], None]):
+    def __init__(self, original: CacheHook, record: Callable[[str, Any, Any], None]) -> None:
         self.original = original
         self.record = record
 
-    def add_partial(self, attr, req, res):
+    def add_partial(self, attr: str, req: Any, res: Any) -> None:
         self.original.add_partial(attr, req, res)
         self.record(attr, req, res)
 
@@ -219,14 +219,14 @@ def _impl_likelihood(
     if self._manager is not None and self.world_size > 1:
         raise ValueError("Likelihood resume requires world_size=1; skipping requests across ranks can deadlock collectives")
 
-    def run_pending(pending, record):
+    def run_pending(pending: List[Any], record: Callable[[int, Any], None]) -> List[Any]:
         if self._manager is None:
             return model_call(pending, *args, **kwargs)
         positions: Dict[str, List[int]] = {}
         for pos, request in enumerate(pending):
             positions.setdefault(hash_args(method, request.args), []).append(pos)
 
-        def record_partial(attr, request_args, output):
+        def record_partial(attr: str, request_args: Any, output: Any) -> None:
             if attr != method:
                 return
             for pos in positions.get(hash_args(attr, request_args), []):
@@ -298,7 +298,7 @@ def _impl_request(
             len(remaining_reqs),
         )
 
-    def record(pos, output):
+    def record(pos: int, output: Any) -> None:
         entry = request_entries[pos]
         if entry is not None:
             manager.record(keys[pos], {"output": output, "sample": entry.to_dict()})
