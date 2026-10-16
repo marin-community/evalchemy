@@ -91,6 +91,15 @@ def test_gsm8k_task_accepts_fractional_form_for_percentage_question(prediction):
     assert process_results(doc, [prediction]) == {"exact_match": 1.0}
 
 
+def test_gsm8k_task_accepts_fractional_form_for_pass_rate_question():
+    doc = {
+        "question": "What is the school's overall pass rate?",
+        "answer": "The pass rate is 70 percent.\n#### 70",
+    }
+
+    assert process_results(doc, ["700/1000"]) == {"exact_match": 1.0}
+
+
 @pytest.mark.parametrize("prediction", ["\\$600", "Friday", "Not enough information", "70"])
 def test_gsm8k_task_rejects_wrong_box_even_if_reasoning_contains_reference(prediction):
     doc = {

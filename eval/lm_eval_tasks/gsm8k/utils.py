@@ -91,7 +91,8 @@ def process_results(doc: dict, results: list[str]) -> dict[str, float]:
         for candidate in _gsm8k_equivalence_candidates(prediction, doc.get("question", ""))
     ]
     equivalent = any(is_equiv(candidate, reference) for candidate in candidates)
-    if not equivalent and "percent" in doc.get("question", "").lower():
+    question = doc.get("question", "").lower()
+    if not equivalent and ("percent" in question or "pass rate" in question):
         percent_reference = rf"\frac{{{reference}}}{{100}}"
         equivalent = any(is_equiv(candidate, percent_reference) for candidate in candidates)
     return {"exact_match": float(equivalent)}
