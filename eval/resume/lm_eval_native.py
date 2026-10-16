@@ -155,10 +155,10 @@ def _make_resume_caching_lm_cls():
             return self.lm.world_size
 
         def loglikelihood(self, requests, *a, **k):
-            return _impl_request(self, self.lm.loglikelihood, "loglikelihood", requests, *a, **k)
+            return _impl_likelihood(self, self.lm.loglikelihood, "loglikelihood", tuple, requests, *a, **k)
 
         def loglikelihood_rolling(self, requests, *a, **k):
-            return _impl_request(self, self.lm.loglikelihood_rolling, "loglikelihood_rolling", requests, *a, **k)
+            return _impl_likelihood(self, self.lm.loglikelihood_rolling, "loglikelihood_rolling", float, requests, *a, **k)
 
         # The chat-template protocol members below are DEFINED on the base `LM`
         # class (`tokenizer_name` raises NotImplementedError; `chat_template` /
@@ -195,35 +195,85 @@ def _make_resume_caching_lm_cls():
             return getattr(lm, attr)
 
         def generate_until(self, requests, *a, **k):
-            return _impl_request(self, self.lm.generate_until, "generate_until", requests, *a, **k)
+            return _impl_request(
+                self,
+                requests,
+                request_key=lambda unit, request: unit,
+                restore_output=lambda output: output,
+                model_call=lambda pending, record: self.lm.generate_until(pending, *a, **k),
+            )
 
     return ResumeCachingLM
 
-# -- method implementations (module-level so the lazy LM subclass can adopt them) ----
+
+def _impl_likelihood(
+    self,
+    model_call: Callable[..., List[Any]],
+    method: str,
+    restore_output: Callable[[Any], Any],
+    requests: List[Any],
+    *args: Any,
+    **kwargs: Any,
+) -> List[Any]:
+    """Checkpoint likelihood callbacks under each matching request's identity."""
+    if self._manager is not None and self.world_size > 1:
+        raise ValueError("Likelihood resume requires world_size=1; skipping requests across ranks can deadlock collectives")
+
+    def run_pending(pending, record):
+        if self._manager is None:
+            return model_call(pending, *args, **kwargs)
+        positions: Dict[str, List[int]] = {}
+        for pos, request in enumerate(pending):
+            positions.setdefault(hash_args(method, request.args), []).append(pos)
+
+        def record_partial(attr, request_args, output):
+            if attr != method:
+                return
+            for pos in positions.get(hash_args(attr, request_args), []):
+                record(pos, output)
+
+        original_hook = self.lm.cache_hook
+        self.lm.set_cache_hook(_LikelihoodCacheHook(original_hook, record_partial))
+        try:
+            return model_call(pending, *args, **kwargs)
+        finally:
+            self.lm.set_cache_hook(original_hook)
+
+    return _impl_request(
+        self,
+        requests,
+        # A multiple-choice document has one sample identity but several scores.
+        request_key=lambda unit, request: dict(unit, method=method, request=hash_args(method, request.args)),
+        restore_output=restore_output,
+        model_call=run_pending,
+    )
+
+
 def _impl_request(
-    self, model_call: Callable[..., List[Any]], method: str, requests: List[Any], *args: Any, **kwargs: Any
+    self,
+    requests: List[Any],
+    *,
+    request_key: Callable[[dict[str, Any], Any], dict[str, Any]],
+    restore_output: Callable[[Any], Any],
+    model_call: Callable[[List[Any], Callable[[int, Any], None]], List[Any]],
 ) -> List[Any]:
     """Restore completed requests and checkpoint new responses in input order."""
     manager = self._manager
-    likelihood = method != "generate_until"
     request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
     if manager is None:
-        outputs = model_call(requests, *args, **kwargs)
+        outputs = model_call(requests, lambda pos, output: None)
         self._sample_manifest.validate_output_count(len(requests), outputs)
         self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
         return outputs
-    if likelihood and self.world_size > 1:
-        raise ValueError("Likelihood resume requires world_size=1; skipping requests across ranks can deadlock collectives")
     results: List[Any] = [None] * len(requests)
 
     # Build a unit key per request (stable doc_id-based; sample_idx for sampled).
     keys = [
-        entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {})
+        request_key(
+            entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {}), req
+        )
         for req, entry in zip(requests, request_entries)
     ]
-    if likelihood:
-        # A multiple-choice document has one sample identity but several scores.
-        keys = [dict(unit, method=method, request=hash_args(method, req.args)) for unit, req in zip(keys, requests)]
     restored = manager.restore()  # {canonical_key: payload}
     self._sample_manifest.validate_prior_entries(list(restored.values()), unique_entries)
     remaining_reqs: List[Any] = []
@@ -233,8 +283,7 @@ def _impl_request(
         restored_match = find_restored_payload(restored, [unit])
         if restored_match is not None:
             _, payload = restored_match
-            output = payload["output"]
-            results[pos] = tuple(output) if method == "loglikelihood" else output
+            results[pos] = restore_output(payload["output"])
             skipped += 1
             continue
         remaining_reqs.append(req)
@@ -254,29 +303,14 @@ def _impl_request(
         if entry is not None:
             manager.record(keys[pos], {"output": output, "sample": entry.to_dict()})
 
-    positions_by_request: Dict[str, List[int]] = {}
-    if likelihood:
-        for pos in remaining_positions:
-            positions_by_request.setdefault(keys[pos]["request"], []).append(pos)
-
-    def record_partial(attr, request_args, output):
-        if attr == method:
-            for pos in positions_by_request.get(hash_args(attr, request_args), []):
-                record(pos, output)
-
-    original_hook = self.lm.cache_hook
     try:
         if remaining_reqs:
-            if likelihood:
-                self.lm.set_cache_hook(_LikelihoodCacheHook(original_hook, record_partial))
-            new_outputs = model_call(remaining_reqs, *args, **kwargs)
+            new_outputs = model_call(remaining_reqs, lambda pos, output: record(remaining_positions[pos], output))
             self._sample_manifest.validate_output_count(len(remaining_reqs), new_outputs)
             for pos, output in zip(remaining_positions, new_outputs):
                 results[pos] = output
                 record(pos, output)
     finally:
-        if likelihood:
-            self.lm.set_cache_hook(original_hook)
         manager.finalize()
     self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
     return results
