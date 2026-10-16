@@ -125,6 +125,6 @@ Here is my problem:
             prompt=lambda row: row["prompt"], target=lambda row: problems[row["task_id"]]["test"],
             grader="program_suite",
             reference=lambda row: {"suite": SUITE, "language": "python", "problem": problems[row["task_id"]],
-                                   "timeout": 3.0, "mbpp": True},
+                                   "timeout": 10.0, "mbpp": True},
             generation_kwargs={"do_sample": False, "max_gen_toks": self.max_tokens},
         )

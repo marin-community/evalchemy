@@ -19,6 +19,8 @@ from eval.contracts.eval_spec import SourceRef
 from eval.graders.specs import GRADERS
 from eval.execution.metrics import SourceMetrics
 from eval.chat_benchmarks.MultiPLE.eval_instruct import DATA_DIR, LANUGUAGES, LANGUAGE_MAP, MultipleBenchmark
+from eval.chat_benchmarks.MBPP.eval_instruct import MBPPBenchmark
+from eval.graders.program_suites import program_suite
 
 
 class _FixtureLM(LM):
@@ -43,6 +45,25 @@ class _FixtureBackend:
         if request.kind is RequestKind.LIKELIHOOD:
             return (-1.0 if request.continuation.strip() == "2" else -10.0, True)
         return -float(len(request.prompt))
+
+
+@pytest.mark.parametrize("answer, expected", [("signal.getitimer(signal.ITIMER_REAL)[0] > 5", 1.0), ("False", 0.0)])
+def test_mbpp_source_preserves_original_native_execution_budget(tmp_path, answer, expected):
+    # Observe the real sandbox timer without waiting: the original ten-second
+    # budget admits this program, whereas the regressed three-second budget fails.
+    code = f"def has_original_budget():\n    import signal\n    return {answer}\n"
+    examples = [{"task_id": index, "text": "Check the native execution budget", "test_list": ["assert has_original_budget()"],
+                 "code": code} for index in range(4)]
+    (tmp_path / "mbpp.jsonl").write_text("\n".join(json.dumps(row) for row in examples))
+    (tmp_path / "mbpp_test.jsonl").write_text(json.dumps({
+        "task_id": 0, "prompt": "Check the native execution budget", "test": ["assert has_original_budget()"], "code": code,
+    }) + "\n")
+    source = MBPPBenchmark(data_dir=str(tmp_path), start_idx=0, end_idx=1)
+    [spec] = source.iter_specs(SourceOptions("MBPP", source.SOURCE))
+
+    grade = program_suite(spec, [f"```python\n{code}```"])
+
+    assert grade.metrics == {"accuracy": expected}
 
 
 @pytest.mark.parametrize("language", LANUGUAGES)
