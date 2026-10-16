@@ -182,7 +182,7 @@ class BaseBenchmark(ABC):
         *,
         max_length: Optional[int] = None,
         max_tokens: Optional[int] = None,
-        limit: Optional[int] = None,
+        limit: Optional[float] = None,
     ) -> None:
         """Attach Evalchemy's resolved limits to this custom benchmark.
 
@@ -195,7 +195,13 @@ class BaseBenchmark(ABC):
         """
         self._evaluation_max_length = max_length
         self._evaluation_max_tokens = max_tokens
-        self._evaluation_limit = limit if limit is not None and limit > 0 else None
+        if limit is not None and limit > 0:
+            normalized_limit = int(limit)
+            if normalized_limit != limit:
+                raise ValueError("Custom benchmark limits must be integer sample counts")
+            self._evaluation_limit = normalized_limit
+        else:
+            self._evaluation_limit = None
         self._limited_sample_ids.clear()
         if max_length is not None and hasattr(self, "max_model_length"):
             self.max_model_length = max_length

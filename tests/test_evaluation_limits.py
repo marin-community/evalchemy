@@ -173,7 +173,7 @@ def test_custom_sample_cap_allows_repeats_and_applies_per_namespace():
 
 def test_custom_benchmark_can_limit_source_records_before_building_requests():
     benchmark = _BudgetBenchmark()
-    benchmark.set_evaluation_limits(limit=2)
+    benchmark.set_evaluation_limits(limit=2.0)
 
     assert benchmark.limit_samples(iter(range(5))) == [0, 1]
 
