@@ -7,10 +7,11 @@ import logging
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from .human_eval_plus.evaluation import evaluate_functional_correctness
+from .human_eval_plus.evaluation import grade_functional_correctness
 from .utils.utils import extract_generation_code, language_settings
 from eval.contracts.grading import GenerationArtifactManifest, GraderExecutionMode, generation_artifacts
 from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
+from eval.contracts.aggregation import functional_pass_at_k
 from eval.task import BaseBenchmark
 
 
@@ -160,23 +161,8 @@ Please continue to complete the function. You are not allowed to modify the give
             for language in self.languages
         }
 
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Serialize complete results or a single language's scored examples."""
-        examples = generation_result.get("examples")
-        if examples is None:
-            examples = [example for language in self.languages for example in generation_result.get(language, [])]
-        return super().to_samples({"examples": examples}, scored_result)
-
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -185,14 +171,12 @@ Please continue to complete the function. You are not allowed to modify the give
         artifacts.validate_required()
         temp_dir = str(artifacts.root)
 
-        evaluation_results = {}
-        scored_count = 0
 
         for lang in self.languages:
             problem_file = os.path.join(self.data_dir, f"humanevalplus-{lang}.jsonl")
             temp_file_path = str(artifacts.path(f"generated-{lang}"))
 
-            result = evaluate_functional_correctness(
+            result = grade_functional_correctness(
                 input_file=temp_file_path,
                 tmp_dir=temp_dir,
                 n_workers=self.num_workers,
@@ -201,21 +185,30 @@ Please continue to complete the function. You are not allowed to modify the give
                 language=lang,
             )
 
-            pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
-            for example in results["examples"]:
-                if example["language"] == lang:
-                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-            for metric, value in result.items():
-                if metric == "scored_count":
-                    scored_count += value
-                else:
-                    evaluation_results[f"{lang}_{metric}"] = value
+            for example in [example for example in results["examples"] if example["language"] == lang]:
+                verdicts = result[example["task_id"]]
+                example["grading_results"] = verdicts
+                record_sample_metrics(example, pass_rate=sum(row["passed"] for row in verdicts) / len(verdicts))
 
             self.logger.info(f"Completed evaluation for {lang}")
 
-        evaluation_results["scored_count"] = scored_count
-        return evaluation_results
+        return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = {}
+        scored_count = 0
+        for namespace in self.languages:
+            examples = [example for example in results["examples"] if example["language"] == namespace]
+            if not examples:
+                continue
+            verdicts = {example["task_id"]: example["grading_results"] for example in examples}
+            scored_count += sum(len(rows) for rows in verdicts.values())
+            metrics.update({
+                f"{namespace}_{name}": value
+                for name, value in functional_pass_at_k(verdicts, [1, 10, 100]).items()
+            })
+        metrics["scored_count"] = scored_count
+        return metrics
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

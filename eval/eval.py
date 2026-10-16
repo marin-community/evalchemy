@@ -61,7 +61,7 @@ from eval.contracts.benchmark_metadata import (
     infer_benchmark_metadata,
 )
 from eval.contracts.conformance import build_task_contract_registry
-from eval.contracts.custom_streaming import CustomSampleEmitter, SampleEmissionError
+from eval.contracts.custom_streaming import SampleEmissionError, score_responses
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import ResumeRefused
 from eval.contracts.grading import execute_grading_jobs, generation_artifacts
@@ -69,7 +69,6 @@ from eval.contracts.lm_eval_streaming import FineStoreSampleCallback, streams_sc
 from eval.contracts.preflight import prepare_requested_tasks
 from eval.contracts.result_serialization import handle_non_serializable_extended
 from eval.contracts.sample_manifest import SampleCoverageError, SampleManifest
-from eval.contracts.sample_results import emit_scored_samples
 from eval.contracts.task_outcome import (
     FailureCategory,
     FailurePhase,
@@ -112,20 +111,18 @@ class _CustomTaskWork:
     generation_result: Any
 
 
-def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | None = None) -> tuple[TaskOutcome, Any]:
+@dataclass(frozen=True)
+class _ScoredCustomTask:
+    outcome: TaskOutcome
+    metrics: Mapping[str, Any]
+    graded_result: Any
+
+
+def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | None = None) -> _ScoredCustomTask:
     try:
-        artifacts = generation_artifacts(work.generation_result)
-        if artifacts is not None:
-            artifacts.validate_required()
         with capture_endpoint_failures() as grader_failures:
-            if output_sink is None:
-                scored_result = work.benchmark.evaluate_responses(work.generation_result)
-            else:
-                emitter = CustomSampleEmitter(work.task_name, work.benchmark, work.generation_result, output_sink)
-                with emit_scored_samples(emitter.emit):
-                    scored_result = work.benchmark.evaluate_responses(work.generation_result)
-                if is_scored_result(scored_result):
-                    emitter.finish()
+            scored = score_responses(work.task_name, work.benchmark, work.generation_result, output_sink)
+            scored_result = scored.metrics
     except Exception as exc:
         category = (
             FailureCategory.INCOMPLETE_EVALUATION
@@ -135,7 +132,7 @@ def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | Non
                 exc,
             )
         )
-        return (
+        return _ScoredCustomTask(
             TaskOutcome.failed(
                 work.task_name,
                 CHAT_BENCHMARK_ROUTE,
@@ -144,6 +141,7 @@ def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | Non
                 exception=exc,
             ),
             {},
+            None,
         )
     metrics = without_embedded_samples(scored_result) if isinstance(scored_result, Mapping) else scored_result
     outcome = custom_task_outcome(
@@ -152,8 +150,13 @@ def _score_custom_task(work: _CustomTaskWork, output_sink: FineStoreOutput | Non
         work.generation_result,
         metrics,
         work.benchmark.sample_manifest,
+        excluded_count=scored.excluded_count,
     )
-    return replace(outcome, failure_counts=dict(grader_failures.counts)), scored_result
+    return _ScoredCustomTask(
+        replace(outcome, failure_counts=dict(grader_failures.counts)),
+        scored_result if outcome.status is TaskStatus.SUCCEEDED else {},
+        scored.graded_result,
+    )
 
 
 def _cleanup_generation_result(generation_result: Any) -> None:
@@ -239,7 +242,8 @@ def _grade_custom_tasks(
             ]
 
         outcomes: list[TaskOutcome] = []
-        for work, (outcome, scored_result) in zip(generation_work, evaluated):
+        for work, scored in zip(generation_work, evaluated):
+            outcome, scored_result = scored.outcome, scored.metrics
             if outcome.status is TaskStatus.FAILED:
                 outcomes.append(outcome)
                 continue
@@ -251,7 +255,7 @@ def _grade_custom_tasks(
 
             try:
                 if output_sink is None:
-                    task_samples = work.benchmark.to_samples(work.generation_result, scored_result)
+                    task_samples = work.benchmark.to_samples(scored.graded_result, scored_result)
                     if not task_samples:
                         utils.eval_logger.warning(
                             "Scored task %s produced no sample records; keeping aggregate score", work.task_name

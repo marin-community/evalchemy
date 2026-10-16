@@ -118,7 +118,10 @@ class _NativeBenchmark(BaseBenchmark):
     def generate_responses(self, model):
         raise NotImplementedError
 
-    def evaluate_responses(self, results):
+    def grade_responses(self, results):
+        raise NotImplementedError
+
+    def aggregate_results(self, results):
         raise NotImplementedError
 
 

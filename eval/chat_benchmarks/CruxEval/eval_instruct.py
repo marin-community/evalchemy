@@ -12,9 +12,10 @@ import re
 import itertools
 
 from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD, record_sample_metrics
+from eval.contracts.aggregation import functional_pass_at_k
 from eval.task import BaseBenchmark
 
-from .evaluation import evaluate_generations
+from .evaluation import grade_generations
 
 try:
     from vllm.distributed import (
@@ -262,16 +263,8 @@ class CruxEvalBenchmark(BaseBenchmark):
         results["temp_dir_obj"] = temp_dir_obj
         return results
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -279,7 +272,6 @@ class CruxEvalBenchmark(BaseBenchmark):
         temp_dir_obj = results["temp_dir_obj"]
         temp_dir = temp_dir_obj.name
 
-        evaluation_results = {}
 
         for task in self.tasks:
             try:
@@ -300,19 +292,17 @@ class CruxEvalBenchmark(BaseBenchmark):
                     self.logger.warning(f"Generated file not found: {temp_file_path}")
                     continue
 
-                result = evaluate_generations(
+                result = grade_generations(
                     input_file=temp_file_path,
                     mode=task,
                     examples=examples,
                     tmp_dir=temp_dir,
                 )
 
-                pass_rates = result.pop(PER_TASK_PASS_RATE_FIELD)
                 for example in results[task]:
-                    record_sample_metrics(example, pass_rate=pass_rates[example["task_id"]])
-
-                for metric, value in result.items():
-                    evaluation_results[f"{task}_{metric}"] = value
+                    verdicts = result[example["task_id"]]
+                    example["grading_results"] = verdicts
+                    record_sample_metrics(example, pass_rate=sum(row["passed"] for row in verdicts) / len(verdicts))
 
                 self.logger.info(f"Completed evaluation for {task}")
 
@@ -322,28 +312,40 @@ class CruxEvalBenchmark(BaseBenchmark):
                 continue
 
         temp_dir_obj.cleanup()
-        return evaluation_results
+        return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = {}
+        for namespace in self.tasks:
+            examples = results.get(namespace, [])
+            if not examples:
+                continue
+            verdicts = {example["task_id"]: example["grading_results"] for example in examples}
+            metrics.update({
+                f"{namespace}_{name}": value
+                for name, value in functional_pass_at_k(verdicts, [1, 5]).items()
+            })
+        return metrics
 
     def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
         """Expose both CruxEval directions to the scored-sample sink."""
         return {task: generation_result[task] for task in self.tasks if task in generation_result}
 
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> list[Dict[str, Any]]:
-        """Serialize both CruxEval directions as auditable sample records."""
-        examples = []
-        for task in self.tasks:
-            for example in (generation_result or {}).get(task, []):
-                sample = dict(example)
-                sample["cruxeval_task"] = task
-                sample["function_output"] = example["output"]
-                sample["prompt"] = self._prompt_for_task(example, task)
-                if task == "input":
-                    sample["answer"] = example["input"]
-                else:
-                    sample["answer"] = example["output"]
-                examples.append(sample)
+    def with_sample_groups(self, results: Dict[str, Any], groups: Dict[str, list[Dict[str, Any]]]) -> Dict[str, Any]:
+        return {**results, **groups}
 
-        return super().to_samples({"examples": examples}, scored_result)
+    def to_sample_group(self, namespace: str, examples: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        prepared = [
+            {
+                **example,
+                "cruxeval_task": namespace,
+                "function_output": example["output"],
+                "prompt": self._prompt_for_task(example, namespace),
+                "answer": example["input"] if namespace == "input" else example["output"],
+            }
+            for example in examples
+        ]
+        return super().to_sample_group(namespace, prepared)
 
     def _sample_gen_kwargs(self, example: Dict[str, Any]) -> Dict[str, Any]:
         kwargs = super()._sample_gen_kwargs(example)

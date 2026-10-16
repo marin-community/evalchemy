@@ -17,7 +17,78 @@ from eval.contracts.grading import (
     execute_grading_jobs,
     validate_serialized_artifact_manifests,
 )
-from eval.task import TaskManager
+from eval.contracts.aggregation import functional_pass_at_k, repeated_accuracy_results
+from eval.contracts.custom_streaming import aggregate_responses, score_responses
+from eval.contracts.sample_results import record_sample_metrics
+from eval.task import BaseBenchmark, TaskManager
+
+
+def test_per_example_grading_preserves_sample_groups_and_replay_metrics():
+    class GroupedBenchmark(BaseBenchmark):
+        def generate_responses(self, model):
+            raise AssertionError("grading must not generate responses")
+
+        def sample_groups(self, results):
+            return {name: results[name] for name in ("first", "second")}
+
+        def grade_response(self, example):
+            record_sample_metrics(example, accuracy=example["model_answer"] == example["answer"])
+
+        def aggregate_results(self, results):
+            examples = [example for group in self.sample_groups(results).values() for example in group]
+            return {"accuracy": sum(example["sample_metrics"]["accuracy"] for example in examples) / len(examples)}
+
+    benchmark = GroupedBenchmark()
+    generated = {
+        "first": [{"question": "one", "answer": "A", "model_answer": "A"}],
+        "second": [{"question": "two", "answer": "B", "model_answer": "A"}],
+        "metadata": {"source": "test"},
+    }
+
+    scored = score_responses("grouped", benchmark, generated)
+    restored = json.loads(json.dumps(scored.graded_result))
+    replayed = aggregate_responses("grouped", benchmark, restored)
+
+    assert scored.metrics == replayed.metrics == {"accuracy": 0.5}
+    assert scored.graded_result["metadata"] == {"source": "test"}
+    assert scored.graded_result["first"][0]["sample_metrics"] == {"accuracy": 1.0}
+    assert scored.graded_result["second"][0]["sample_metrics"] == {"accuracy": 0.0}
+
+
+def test_functional_pass_at_k_preserves_completion_counts_in_json_replay():
+    verdicts = {
+        "one": [{"passed": True}, {"passed": False}],
+        "two": [{"passed": True}, {"passed": True}, {"passed": False}, {"passed": False}],
+    }
+    restored = json.loads(json.dumps(verdicts))
+
+    metrics = functional_pass_at_k(restored, [1, 2, 3])
+
+    assert metrics == {"pass@1": pytest.approx(0.5), "pass@2": pytest.approx(11 / 12)}
+
+
+def test_repeated_accuracy_uses_trial_denominators_not_a_pooled_mean():
+    graded = [
+        {"sample_metrics_by_repeat": [{"accuracy": 1.0}, {"accuracy": 0.0}], "valid_repeats": [0]},
+        {"sample_metrics_by_repeat": [{"accuracy": 0.0}, {"accuracy": 1.0}], "valid_repeats": [0, 1]},
+    ]
+    restored = json.loads(json.dumps(graded))
+
+    metrics = repeated_accuracy_results(restored)
+
+    assert metrics["accuracy_avg"] == 0.75
+    assert metrics["accuracy_std_err"] == pytest.approx(0.25 / (2 ** 0.5))
+    assert metrics["run_stats"] == [
+        {"repetition": 1, "num_total": 2, "num_solved": 1.0, "accuracy": 0.5},
+        {"repetition": 2, "num_total": 1, "num_solved": 1.0, "accuracy": 1.0},
+    ]
+
+
+def test_humaneval_reduces_available_languages_when_another_is_missing():
+    benchmark = TaskManager(task_list=["HumanEval"]).get_benchmark("HumanEval")
+    graded = {"python": [{"task_id": "one", "grading_results": [{"passed": True}, {"passed": False}]}]}
+
+    assert benchmark.aggregate_results(graded) == {"python_pass@1": 0.5}
 
 
 class _Job:
@@ -97,15 +168,15 @@ def test_functional_correctness_infrastructure_failure_is_not_swallowed(monkeypa
     for name, (artifact_name, filename) in artifact_names.items():
         benchmark = manager.get_benchmark(name)
         monkeypatch.setitem(
-            benchmark.evaluate_responses.__func__.__globals__,
-            "evaluate_functional_correctness",
+            benchmark.grade_responses.__func__.__globals__,
+            "grade_functional_correctness",
             fail_functional_correctness,
         )
         artifacts = GenerationArtifactManifest.temporary()
         artifacts.write_jsonl(artifact_name, filename, [{"task_id": "x"}], expected_count=1)
         try:
             with pytest.raises(RuntimeError, match="os.fork is unsafe"):
-                benchmark.evaluate_responses({"artifacts": artifacts})
+                benchmark.grade_responses({"artifacts": artifacts})
         finally:
             artifacts.cleanup()
 

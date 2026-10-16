@@ -24,7 +24,7 @@ from lm_eval.api.model import LM
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .grader import PER_PROMPT_OUTCOMES, evaluate_accuracy
+from .grader import aggregate_accuracy, grade_accuracy
 
 
 class IFBenchBenchmark(BaseBenchmark):
@@ -146,23 +146,11 @@ class IFBenchBenchmark(BaseBenchmark):
             "total_examples": len(questions),
         }
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate generated responses by checking each verifiable constraint.
-
-        Reports strict + loose variants of prompt- and instruction-level accuracy
-        (the IFBench paper headlines prompt-level loose), plus a per-constraint-type
-        breakdown. See ``grader.py`` for the scoring protocol.
-
-        Args:
-            results: Dictionary carrying the generation temp dir and counts.
-
-        Returns:
-            Dictionary containing the evaluation metrics.
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         temp_dir_obj = results["temp_dir_obj"]
         try:
-            result = evaluate_accuracy(results["output_path"])
-            per_prompt = result.pop(PER_PROMPT_OUTCOMES)
+            per_prompt = grade_accuracy(results["output_path"])
             examples = results["examples"]
             if len(per_prompt) != len(examples):
                 raise ValueError("IFBench grader returned incomplete per-prompt outcomes")
@@ -180,20 +168,21 @@ class IFBenchBenchmark(BaseBenchmark):
                     strict_instruction_accuracy=sum(strict_flags) / len(strict_flags),
                     loose_instruction_accuracy=sum(loose_flags) / len(loose_flags),
                 )
-            result.update(
-                {
-                    "num_examples": results["num_examples"],
-                    "completion_rate": results["num_examples"]
-                    / results["total_examples"],
-                }
-            )
-            return result
+            return results
         finally:
             temp_dir_obj.cleanup()
 
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        samples = super().to_samples(generation_result, scored_result)
-        for sample, example in zip(samples, generation_result["examples"]):
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        return {
+            **aggregate_accuracy(examples),
+            "num_examples": len(examples),
+            "completion_rate": len(examples) / results["total_examples"],
+        }
+
+    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        samples = super().to_sample_group(namespace, examples)
+        for sample, example in zip(samples, examples):
             sample["strict_instruction_pass"] = example["strict_instruction_pass"]
             sample["loose_instruction_pass"] = example["loose_instruction_pass"]
         return samples

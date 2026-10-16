@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import numpy as np
+from eval.contracts.aggregation import functional_pass_at_k
 from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
 from .execution import check_correctness
 import json
@@ -57,12 +58,11 @@ def stream_jsonl_all(filename: str) -> Iterable[Dict]:
     return results
 
 
-def evaluate_generations(
+def grade_generations(
     input_file,
     mode,
     examples,
     tmp_dir,
-    k: List[int] = [1, 5],
     timeout=10.0,
 ):
     # Load the samples
@@ -112,35 +112,32 @@ def evaluate_generations(
             completion_id[task_id] += 1
             n_samples += 1
 
-        if len(completion_id) == len(examples):
-            evaluate_pass_at_k = True
-        else:
-            evaluate_pass_at_k = False
-
         print("Running test suites...")
         for future in tqdm(as_completed(futures), total=len(futures)):
             result = future.result()
             results[result["task_id"]].append((result["completion_id"], result))
     # print("all_scores: ", all_scores)
 
-    # Calculate pass@k.
-    total, correct = [], []
-    for result in results.values():
-        passed = [r[1]["passed"] for r in result]
-        total.append(len(passed))
-        correct.append(sum(passed))
-    total = np.array(total)
-    correct = np.array(correct)
-    evaluate_pass_at_k = True
-    if evaluate_pass_at_k:
-        ks = k
-        pass_at_k = {f"pass@{k}": estimate_pass_at_k(total, correct, k).mean() for k in ks if (total >= k).all()}
-        print(pass_at_k)
-    else:
-        print("Total:", np.sum(total))
-        print("Correct:", np.sum(correct))
-    # Per-task outcomes so the caller can record per-sample metrics.
-    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
-        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    return {
+        task_id: [verdict for _, verdict in sorted(completions, key=lambda row: row[0])]
+        for task_id, completions in results.items()
     }
-    return pass_at_k
+
+
+def evaluate_generations(
+    input_file,
+    mode,
+    examples,
+    tmp_dir,
+    k: List[int] = [1, 5],
+    timeout=10.0,
+):
+
+    verdicts = grade_generations(input_file, mode, examples, tmp_dir, timeout=timeout)
+    return {
+        **functional_pass_at_k(verdicts, k),
+        PER_TASK_PASS_RATE_FIELD: {
+            task_id: sum(row["passed"] for row in rows) / len(rows)
+            for task_id, rows in verdicts.items()
+        },
+    }

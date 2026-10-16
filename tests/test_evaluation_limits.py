@@ -92,7 +92,10 @@ class _BudgetBenchmark(BaseBenchmark):
     def generate_responses(self, model):
         raise NotImplementedError
 
-    def evaluate_responses(self, responses):
+    def grade_responses(self, responses):
+        raise NotImplementedError
+
+    def aggregate_results(self, responses):
         raise NotImplementedError
 
 

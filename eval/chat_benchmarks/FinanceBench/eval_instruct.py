@@ -158,12 +158,7 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
         return {"examples": examples, "judge_model": self.judge_model}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Grade the generated answers with the LLM judge and aggregate accuracy."""
-        # Handle None result from non-primary ranks.
-        if results is None:
-            return None
-
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         examples = results["examples"]
         total = len(examples)
         judge_model = results.get("judge_model", self.judge_model)
@@ -190,15 +185,10 @@ class FinanceBenchBenchmark(BaseBenchmark):
             )
         )
 
-        num_correct = 0
-        num_incorrect = 0
-        num_not_attempted = 0
-        num_judge_failed = 0
         for index, (example, judgment) in enumerate(zip(examples, judgments, strict=True)):
             if isinstance(judgment, BaseException):
                 if not isinstance(judgment, Exception):
                     raise judgment
-                num_judge_failed += 1
                 record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
                 example["judge_label"] = None
                 example["judge_raw"] = None
@@ -224,18 +214,23 @@ class FinanceBenchBenchmark(BaseBenchmark):
                 not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
                 judge_failed=False,
             )
-            if label == JudgeLabel.CORRECT:
-                num_correct += 1
-            elif label == JudgeLabel.NOT_ATTEMPTED:
-                num_not_attempted += 1
-            else:
-                num_incorrect += 1
+        return results
 
-        num_judged = total - num_judge_failed
-        results.update(
-            {
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        all_examples = [*examples, *results.get("excluded_examples", [])]
+        total = len(all_examples)
+        judge_model = results.get("judge_model", self.judge_model)
+        num_correct = sum(example["judge_label"] == JudgeLabel.CORRECT.value for example in examples)
+        num_incorrect = sum(example["judge_label"] == JudgeLabel.INCORRECT.value for example in examples)
+        num_not_attempted = sum(example["judge_label"] == JudgeLabel.NOT_ATTEMPTED.value for example in examples)
+        num_judge_failed = sum(example["judge_label"] is None for example in all_examples)
+        num_judged = sum(example["judge_label"] is not None for example in examples)
+        return {
+                **results,
                 "num_total": total,
                 "num_judged": num_judged,
+                "scored_count": num_judged,
                 "num_judge_failed": num_judge_failed,
                 "num_correct": num_correct,
                 "num_incorrect": num_incorrect,
@@ -244,13 +239,10 @@ class FinanceBenchBenchmark(BaseBenchmark):
                 "judge_coverage": num_judged / total if total else 0.0,
                 "judge_model": judge_model,
             }
-        )
 
-        return results
-
-    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        samples = super().to_samples(generation_result, scored_result)
-        for sample, example in zip(samples, generation_result["examples"], strict=True):
+    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        samples = super().to_sample_group(namespace, examples)
+        for sample, example in zip(samples, examples, strict=True):
             sample["judge_label"] = example["judge_label"]
             sample["judge_raw"] = example["judge_raw"]
             if "failure_category" in example:

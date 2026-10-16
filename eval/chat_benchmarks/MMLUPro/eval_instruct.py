@@ -228,10 +228,10 @@ class MMLUProBenchmark(BaseBenchmark):
 
         return {"examples": examples}
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        if results is None:
-            return None
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        record_sample_metrics(example, accuracy=example["model_answer"] == example["answer"])
 
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, float]:
         examples: List[Dict[str, Any]] = results["examples"]
         area_stats = defaultdict(lambda: {"corr": 0, "total": 0})
         correct_flags: List[int] = []  # collect 1/0 for each example
@@ -239,11 +239,10 @@ class MMLUProBenchmark(BaseBenchmark):
         # accumulate per‑example correctness
         for ex in examples:
             cat = ex["category"]
-            correct = int(ex["model_answer"] == ex["answer"])
+            correct = ex["sample_metrics"]["accuracy"]
             area_stats[cat]["total"] += 1
             area_stats[cat]["corr"] += correct
             correct_flags.append(correct)
-            record_sample_metrics(ex, accuracy=correct)
 
         n = len(correct_flags)
         flags_arr = np.asarray(correct_flags, dtype=float)

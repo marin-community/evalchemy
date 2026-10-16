@@ -14,7 +14,15 @@ from lm_eval.api.instance import Instance
 from eval.task import BaseBenchmark
 
 from mix_eval.utils.dataset import get_eval_dataset
-from mix_eval.compute_metrics import compute_metrics_p
+from mix_eval.utils.metric_utils import (
+    eval_freeform_model,
+    eval_freeform_rule,
+    eval_multi_choice,
+    parse_freeform_response_rule,
+    parse_multi_choice_response_model,
+    parse_multi_choice_response_rule,
+)
+from eval.contracts.sample_results import record_sample_metrics
 from mix_eval.utils.common_utils import cache_status, read_status, dict_equal
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -178,7 +186,7 @@ class MixEvalBenchmark(BaseBenchmark):
                     idx,
                 )
             )
-        all_responses = self.compute(model, all_instances)
+        all_responses = self.compute(model, all_instances, sample_namespace=split)
 
         for idx in list(range(len(eval_dataset.raw_inputs))):
             eval_dataset.raw_inputs[idx]["response"] = all_responses[idx]
@@ -190,33 +198,66 @@ class MixEvalBenchmark(BaseBenchmark):
                     f.write(json_line + "\n")
         return eval_dataset.raw_inputs
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Evaluate responses only on rank 0
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        return {split: generation_result[split] for split in ("close_freeform", "close_multichoice") if split in generation_result}
 
-        Args:
-            results: The model outputs to evaluate
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        for split, examples in self.sample_groups(results).items():
+            judge_inputs = [{**example, "grading_ordinal": index} for index, example in enumerate(examples)]
+            if split == "close_freeform" and self.args.free_form_parser == "model":
+                judgments = eval_freeform_model(self.args, judge_inputs)
+            elif split == "close_multichoice" and self.args.multi_choice_parser == "model":
+                judgments = parse_multi_choice_response_model(self.args, judge_inputs)
+            else:
+                judgments = []
+                for example in judge_inputs:
+                    if split == "close_freeform":
+                        parsed = parse_freeform_response_rule(self.args, example["response"])
+                        passed = eval_freeform_rule(example["target"], parsed)
+                    else:
+                        choices = [chr(ord("A") + i) for i in range(len(example["options"]))]
+                        parsed = parse_multi_choice_response_rule(
+                            self.args, example["response"], choices, dict(zip(choices, example["options"]))
+                        )
+                        passed = eval_multi_choice(choices[example["target"][0]], parsed)
+                    judgments.append({**example, "parsed_result": parsed, "eval_result": passed})
+            by_ordinal = {judgment["grading_ordinal"]: judgment for judgment in judgments}
+            if len(judgments) != len(examples) or set(by_ordinal) != set(range(len(examples))):
+                raise ValueError("MixEval judge returned incomplete or duplicate grading identities")
+            for index, example in enumerate(examples):
+                judgment = by_ordinal[index]
+                if "eval_result" in judgment:
+                    score = float(bool(judgment["eval_result"]))
+                elif split == "close_freeform":
+                    score = float(judgment["judge_score"])
+                else:
+                    target = chr(ord("A") + judgment["target"][0])
+                    score = float(eval_multi_choice(target, judgment["judge_option"]))
+                example["judge_answer"] = {key: value for key, value in judgment.items() if key != "grading_ordinal"}
+                record_sample_metrics(example, accuracy=score)
+        return results
 
-        Returns:
-            Dictionary containing evaluation metrics and samples
-        """
-        score_file = self._get_score_file()
-
-        if not os.path.exists(score_file):
-            compute_metrics_p(self.args)
-
-        with open(score_file, "r") as f:
-            metrics = json.load(f)
-
-        judge_results = self._load_judge_results()
-
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        groups = self.sample_groups(results)
+        splits = {}
+        for split, examples in groups.items():
+            scores = {"overall": [example["sample_metrics"]["accuracy"] for example in examples]}
+            for example in examples:
+                scores.setdefault(example["benchmark_name"], []).append(example["sample_metrics"]["accuracy"])
+            splits[split] = {name: (round(sum(values) / len(values), 3), len(values)) for name, values in scores.items() if values}
+        names = {name for scores in splits.values() for name in scores}
+        metrics = {
+            name: sum(scores.get(name, (0, 0))[0] * scores.get(name, (0, 0))[1] for scores in splits.values())
+            / sum(scores.get(name, (0, 0))[1] for scores in splits.values())
+            for name in names
+        }
         return {
-            self._get_judge_model_name(): {
-                "metrics": metrics,
-            },
+            self._get_judge_model_name(): {"metrics": metrics},
             "samples": {
-                "model_answers": results,
-                "judge_answers": judge_results,
+                "model_answers": groups,
+                "judge_answers": {
+                    split: [example["judge_answer"] for example in examples] for split, examples in groups.items()
+                },
             },
         }
 
@@ -310,26 +351,9 @@ class MixEvalBenchmark(BaseBenchmark):
         with open(response_file, "r") as f:
             return [json.loads(line) for line in f]
 
-    def _get_score_file(self) -> str:
-        score_dir = os.path.join(self.args.output_dir, self.args.model_name, self.args.benchmark, self.args.version)
-        judge_model = self._get_judge_model_name()
-        return os.path.join(score_dir, f"score_{judge_model}.json")
-
     def _get_judge_model_name(self) -> str:
         return (
             self.args.multichoice_judge
             if self.args.multichoice_judge == self.args.freeform_judge
             else f"mc{self.args.multichoice_judge}_ff{self.args.freeform_judge}"
         )
-
-    def _load_judge_results(self) -> Dict[str, List[Dict[str, Any]]]:
-        score_dir = os.path.join(self.args.output_dir, self.args.model_name, self.args.benchmark, self.args.version)
-        judge_results = {}
-        for result_file in os.listdir(score_dir):
-            if result_file.startswith("judge_results_ff"):
-                with open(os.path.join(score_dir, result_file), "r") as f:
-                    judge_results["close_freeform"] = [json.loads(line) for line in f]
-            elif result_file.startswith("judge_results_mp"):
-                with open(os.path.join(score_dir, result_file), "r") as f:
-                    judge_results["close_multichoice"] = [json.loads(line) for line in f]
-        return judge_results

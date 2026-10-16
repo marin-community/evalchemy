@@ -268,16 +268,8 @@ class WildBenchBenchmark(BaseBenchmark):
             "avg_output_length": sum(lengths) / len(lengths) if lengths else 0,
         }
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate generated responses using GPT-4.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -334,7 +326,7 @@ class WildBenchBenchmark(BaseBenchmark):
             with open(output_file, "r") as f:
                 eval_result = json.load(f)
 
-            results = self.process_evaluator_output(eval_result, task_mapping)
+            results = {"judgments": eval_result, "task_mapping": task_mapping}
 
             temp_dir_obj.cleanup()
             return results
@@ -344,6 +336,9 @@ class WildBenchBenchmark(BaseBenchmark):
             if "temp_dir_obj" in locals():
                 temp_dir_obj.cleanup()
             raise
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        return self.process_evaluator_output(results["judgments"], results["task_mapping"])
 
     def _process_evaluator_file(self, eval_file: str, client: OpenAI) -> None:
         """Process a single evaluation file with GPT-4."""

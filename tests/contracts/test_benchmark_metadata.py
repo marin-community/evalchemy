@@ -23,7 +23,10 @@ class _ChatBenchmark(BaseBenchmark):
     def generate_responses(self, model):
         raise NotImplementedError
 
-    def evaluate_responses(self, results):
+    def grade_responses(self, results):
+        return results
+
+    def aggregate_results(self, results):
         raise NotImplementedError
 
 

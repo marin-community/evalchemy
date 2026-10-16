@@ -7,8 +7,12 @@ import pandas as pd
 
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
-from alpaca_eval.main import evaluate as alpaca_eval_evaluate
-from alpaca_eval.constants import DEFAULT_ANNOTATOR_CONFIG
+from alpaca_eval import utils as alpaca_utils
+from alpaca_eval.annotators import PairwiseAnnotator
+from alpaca_eval.constants import ALPACAEVAL_REFERENCE_OUTPUTS, DEFAULT_ANNOTATOR_CONFIG, IS_ALPACA_EVAL_2
+from alpaca_eval.metrics import get_winrate
+from alpaca_eval.metrics.glm_winrate import get_length_controlled_winrate, load_gamed_data
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 
@@ -151,50 +155,51 @@ class AlpacaBenchmark(BaseBenchmark):
 
             self.logger.info(f"Generated {len(model_outputs)} responses")
 
-            return {"model_outputs": model_outputs, "model_identifier": model.model_identifier}
+            return {"examples": model_outputs, "model_outputs": model_outputs, "model_identifier": model.model_identifier}
 
         except Exception as e:
             self.logger.error(f"Error in generate_responses: {str(e)}")
             raise
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated responses using Alpaca evaluation metrics.
-
-        Args:
-            results: Dictionary containing model outputs and identifier
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
-        if results is None:
-            return None
-
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
         model_outputs = results["model_outputs"]
-        model_identifier = results["model_identifier"]
-
         if not model_outputs:
             raise ValueError("No model outputs to evaluate")
-
-        self.logger.info("Running Alpaca evaluation...")
-        leaderboard = alpaca_eval_evaluate(
-            model_outputs=model_outputs,
-            is_return_instead_of_print=True,
-            is_overwrite_leaderboard=True,
-            annotators_config=self.annotator_conf,
+        reference_outputs = alpaca_utils.load_or_convert_to_dataframe(ALPACAEVAL_REFERENCE_OUTPUTS)
+        annotations = PairwiseAnnotator(annotators_config=self.annotator_conf).annotate_head2head(
+            outputs_1=reference_outputs,
+            outputs_2=pd.DataFrame(model_outputs),
         )
+        by_output = {(row["instruction"], row["output_2"]): row for row in annotations}
+        for example in model_outputs:
+            annotation = by_output[(example["instruction"], example["output"])]
+            example["annotation"] = annotation
+            preference = float(annotation["preference"])
+            record_sample_metrics(example, win_rate=(1.5 if preference == 0 else preference) - 1)
+        return {
+            **results,
+            "glm_reference": load_gamed_data().to_dict(orient="records") if IS_ALPACA_EVAL_2 else [],
+        }
 
-        metrics = leaderboard[0].loc[model_identifier].to_dict()
-
-        metrics.update(
-            {
-                "num_examples": len(model_outputs),
-                "completion_rate": len(model_outputs) / len(results.get("total_examples", model_outputs)),
-            }
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        annotations = [example["annotation"] for example in examples]
+        metrics = (
+            get_length_controlled_winrate(
+                annotations,
+                df_gamed=pd.DataFrame(results["glm_reference"]),
+                save_weights_dir=None,
+                is_add_glm_preference_inplace=False,
+            )
+            if IS_ALPACA_EVAL_2 else get_winrate(annotations)
         )
-
-        self.logger.info("Evaluation complete")
-        return metrics
+        return {
+            **metrics,
+            "mode": "community",
+            "avg_length": int(sum(len(example["output"]) for example in examples) / len(examples)),
+            "num_examples": len(examples),
+            "completion_rate": len(examples) / len(results["model_outputs"]),
+        }
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

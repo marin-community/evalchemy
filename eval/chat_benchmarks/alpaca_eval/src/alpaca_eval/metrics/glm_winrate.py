@@ -49,6 +49,7 @@ def get_length_controlled_winrate(
     is_add_glm_preference_inplace: bool = True,
     is_warn_extreme_changes: bool = True,
     glm_info=None,
+    df_gamed: Optional[pd.DataFrame] = None,
 ) -> dict[str, float]:
     """Extract head2head metrics (n_wins, n_counts, win_rate) from a sequence preference, and also predict the length
     controlled winrate using a GLM.
@@ -96,6 +97,7 @@ def get_length_controlled_winrate(
             df,
             formula=glm_info["formula"],
             regularize_to_baseline_lambda=glm_info["regularize_to_baseline_lambda"],
+            df_gamed=load_gamed_data() if df_gamed is None else df_gamed,
         )
         filter_df = df_XY_train["preference"].notna()
         df_XY_train = df_XY_train[filter_df]
@@ -199,7 +201,8 @@ def _logistic(x):
 
 
 def _get_featurized_data(
-    df_annotations: pd.DataFrame, formula: str, regularize_to_baseline_lambda: Optional[float]
+    df_annotations: pd.DataFrame, formula: str, regularize_to_baseline_lambda: Optional[float],
+    df_gamed: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, Optional[pd.Series]]:
     """Featurizes annotations using R-style formula and returns the design matrix for the train and test set.
 
@@ -215,16 +218,6 @@ def _get_featurized_data(
     regularize_to_baseline_lambda : float, optional
         Strength of the regularizations to the baseline parameters. If None, no regularization is applied.
     """
-    # 1. get precomputed data: instruction_difficulty and annotations of gamed models
-    out = hf_hub_download(
-        repo_id="tatsu-lab/alpaca_eval",
-        filename="df_gamed.csv",
-        repo_type="dataset",
-        token=constants.DATASETS_TOKEN,
-        force_download=constants.DATASETS_FORCE_DOWNLOAD,
-        cache_dir=constants.DEFAULT_CACHE_DIR,
-    )
-    df_gamed = pd.read_csv(out).drop(columns=["model"])
     instruction_difficulty = df_gamed.drop_duplicates("index")["instruction_difficulty"]
 
     # 2. add features necessary for the glm
@@ -255,6 +248,19 @@ def _get_featurized_data(
         df_XY_train, df_X_test = make_dmatrix_for_model(df, df_test, formula=formula)
 
     return df_XY_train, df_X_test, sample_weight
+
+
+def load_gamed_data() -> pd.DataFrame:
+    """Load instruction difficulty and reference-model annotations for length control."""
+    path = hf_hub_download(
+        repo_id="tatsu-lab/alpaca_eval",
+        filename="df_gamed.csv",
+        repo_type="dataset",
+        token=constants.DATASETS_TOKEN,
+        force_download=constants.DATASETS_FORCE_DOWNLOAD,
+        cache_dir=constants.DEFAULT_CACHE_DIR,
+    )
+    return pd.read_csv(path).drop(columns=["model"])
 
 
 def make_dmatrix_for_model(

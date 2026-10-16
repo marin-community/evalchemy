@@ -9,9 +9,11 @@ from datasets import load_dataset
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 
+from eval.contracts.aggregation import functional_pass_at_k
+from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
-from .evaluation import evaluate_functional_correctness
+from .evaluation import grade_functional_correctness
 from .sanitize import code_extract
 
 try:
@@ -184,7 +186,7 @@ class BigCodeBenchBenchmark(BaseBenchmark):
                     self.logger.info(f"Using ground truth as output")
                     outputs = [example["canonical_solution"] for example in examples]
                 else:
-                    outputs = self.compute(model, all_instances)
+                    outputs = self.compute(model, all_instances, sample_namespace=prompt_type)
 
                 if model.rank != 0:
                     continue
@@ -225,16 +227,8 @@ class BigCodeBenchBenchmark(BaseBenchmark):
         # results["temp_dir_obj"] = temp_dir
         return results
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Evaluate the generated code completions.
-
-        Args:
-            results: Dictionary containing generation results
-
-        Returns:
-            Dictionary containing evaluation metrics
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        """Grade responses and retain the per-example verdicts and task context."""
         # Handle None result from non-primary ranks
         if results is None:
             return None
@@ -243,7 +237,6 @@ class BigCodeBenchBenchmark(BaseBenchmark):
         temp_dir = temp_dir_obj.name
         # temp_dir = results["temp_dir_obj"]
 
-        evaluation_results = {}
 
         for prompt_type in self.prompt_types:
             try:
@@ -254,7 +247,7 @@ class BigCodeBenchBenchmark(BaseBenchmark):
                     self.logger.warning(f"Generated file not found: {temp_file_path}")
                     continue
 
-                result = evaluate_functional_correctness(
+                result = grade_functional_correctness(
                     input_file=temp_file_path,
                     tmp_dir=temp_dir,
                     n_workers=self.num_workers,
@@ -264,8 +257,10 @@ class BigCodeBenchBenchmark(BaseBenchmark):
                     safe_mode=self.safe_mode,
                 )
 
-                for metric, value in result.items():
-                    evaluation_results[f"{prompt_type}_{metric}"] = value
+                for example in results[prompt_type]:
+                    verdicts = result[example["task_id"]]
+                    example["grading_results"] = verdicts
+                    record_sample_metrics(example, pass_rate=sum(row["passed"] for row in verdicts) / len(verdicts))
 
                 self.logger.info(f"Completed evaluation for {prompt_type}")
 
@@ -275,7 +270,23 @@ class BigCodeBenchBenchmark(BaseBenchmark):
                 continue
 
         temp_dir_obj.cleanup()
-        return evaluation_results
+        return results
+
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        metrics = {}
+        for namespace in self.prompt_types:
+            examples = results.get(namespace, [])
+            if not examples:
+                continue
+            verdicts = {example["task_id"]: example["grading_results"] for example in examples}
+            metrics.update({
+                f"{namespace}_{name}": value
+                for name, value in functional_pass_at_k(verdicts, [1, 10, 100]).items()
+            })
+        return metrics
+
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, list[Dict[str, Any]]]:
+        return {namespace: generation_result[namespace] for namespace in self.prompt_types if namespace in generation_result}
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

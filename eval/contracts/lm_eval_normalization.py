@@ -136,6 +136,12 @@ def _grading(metrics: dict[str, float], extraction_filter: str | None) -> Gradin
     )
 
 
+def is_infrastructure_failure(raw: Mapping[str, object]) -> bool:
+    """Whether a sample records an infrastructure failure excluded from scoring."""
+    category = raw.get("failure_category")
+    return isinstance(category, str) and category in _INFRASTRUCTURE_FAILURE_CATEGORIES
+
+
 def _generation_fields(arguments: object, responses: object, raw: Mapping[str, object]) -> dict[str, object]:
     prompt = ""
     if isinstance(arguments, list) and arguments:
@@ -155,7 +161,7 @@ def _generation_fields(arguments: object, responses: object, raw: Mapping[str, o
         filtered = filtered[0]
     messages = _parse_chat_messages(prompt)
     failure_category = raw.get("failure_category")
-    if isinstance(failure_category, str) and failure_category in _INFRASTRUCTURE_FAILURE_CATEGORIES:
+    if is_infrastructure_failure(raw):
         output = f"{_INFRASTRUCTURE_ERROR_MARKER} {failure_category}"
         filtered = output
     return {

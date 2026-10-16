@@ -8,7 +8,7 @@ from lm_eval.api.model import LM
 from lm_eval.api.instance import Instance
 from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
-from .evaluation import PER_PROMPT_FOLLOW_RATE, evaluate_accuracy
+from .evaluation import aggregate_accuracy, grade_accuracy
 
 
 class IFEvalBenchmark(BaseBenchmark):
@@ -149,49 +149,32 @@ class IFEvalBenchmark(BaseBenchmark):
             self.logger.error(f"Error in generate_responses: {str(e)}")
             raise
 
-    def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Evaluate generated responses for specific instructions
-
-        Args:
-            results: Dictionary containing generation responses
-
-        Returns:
-            Dictionary containing evaluation metrics -- i.e. strict and loose
-        """
+    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        temp_dir_obj = results["temp_dir_obj"]
         try:
-            temp_dir_obj = results["temp_dir_obj"]
-            temp_dir = temp_dir_obj.name
-
-            input_file = os.path.join(self.data_dir, "input_data.jsonl")
-            response_file = os.path.join(temp_dir, "ifeval.jsonl")
-            result = evaluate_accuracy(response_file)
-            follow_rates = result.pop(PER_PROMPT_FOLLOW_RATE)
-            for example in results["examples"]:
-                rates = follow_rates[example["prompt"]]
+            response_file = os.path.join(temp_dir_obj.name, "ifeval.jsonl")
+            graded = grade_accuracy(response_file)
+            for example, verdict in zip(results["examples"], graded, strict=True):
+                if example["prompt"] != verdict["prompt"]:
+                    raise ValueError("IFEval grader changed prompt order")
+                example["strict_instruction_pass"] = verdict["strict_instruction_pass"]
+                example["loose_instruction_pass"] = verdict["loose_instruction_pass"]
                 record_sample_metrics(
                     example,
-                    prompt_level_strict=rates["strict"],
-                    prompt_level_loose=rates["loose"],
+                    prompt_level_strict=all(verdict["strict_instruction_pass"]),
+                    prompt_level_loose=all(verdict["loose_instruction_pass"]),
                 )
-
-            result.update(
-                {
-                    "num_examples": results["num_examples"],
-                    "completion_rate": results["num_examples"] / results["total_examples"],
-                }
-            )
-
+            return results
+        finally:
             temp_dir_obj.cleanup()
 
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error in evaluate_responses: {str(e)}")
-            if temp_dir_obj:
-                temp_dir_obj.cleanup()
-
-            raise
+    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
+        examples = results["examples"]
+        return {
+            **aggregate_accuracy(examples),
+            "num_examples": len(examples),
+            "completion_rate": len(examples) / results["total_examples"],
+        }
 
     def run_benchmark(self, model: LM) -> Dict[str, float]:
         """

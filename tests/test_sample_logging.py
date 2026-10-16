@@ -30,9 +30,12 @@ class _RecordingBenchmark(BaseBenchmark):
     def generate_responses(self, model):
         return self.generation_result
 
-    def evaluate_responses(self, results):
+    def grade_responses(self, results):
         for example in results.get("examples", []):
             record_sample_metrics(example, accuracy=1.0)
+        return results
+
+    def aggregate_results(self, results):
         return self.scored_result
 
 
