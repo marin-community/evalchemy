@@ -13,6 +13,8 @@ from itertools import islice
 from time import monotonic
 from typing import Generic, TypeVar
 
+from eval.runtime.resources import SerialIO
+
 Job = TypeVar("Job")
 Result = TypeVar("Result")
 logger = logging.getLogger(__name__)
@@ -82,10 +84,16 @@ class ExecutionPool:
     ) -> AsyncIterator[Completed[Job, Result]]:
         source = enumerate(jobs)
         ready: deque[tuple[int, Job]] = deque()
+        admission = SerialIO()
 
-        def next_job() -> tuple[int, Job] | None:
+        def read_window() -> list[tuple[int, Job]]:
+            return sorted(islice(source, self.lookahead), key=lambda item: group(item[1]))
+
+        async def next_job() -> tuple[int, Job] | None:
             if not ready:
-                ready.extend(sorted(islice(source, self.lookahead), key=lambda item: group(item[1])))
+                # Source construction can tokenize large documents or read
+                # checkpoints; keep HTTP responses and deadlines responsive.
+                ready.extend(await admission.call(read_window))
             return ready.popleft() if ready else None
 
         pending: dict[asyncio.Task[Result], tuple[int, Job]] = {}
@@ -95,7 +103,7 @@ class ExecutionPool:
         try:
             while pending or not exhausted:
                 while len(pending) < self.workers and not exhausted:
-                    item = next_job()
+                    item = await next_job()
                     if item is None:
                         exhausted = True
                     else:
@@ -117,7 +125,12 @@ class ExecutionPool:
                         last_report = now
                     yield completed
         finally:
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+            finally:
+                # SerialIO joins an active read before cancellation escapes, so
+                # source/checkpoint owners can close safely after this iterator.
+                admission.close()
             logger.info("Pool finished: completed=%d failed=%d elapsed=%.1fs rate=%.2f items/s", count, failures, monotonic() - started, count / max(monotonic() - started, 1e-9))

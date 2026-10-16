@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import asdict, replace
+from threading import Event
 
 import pytest
 
@@ -69,6 +70,105 @@ def test_pool_closing_early_cancels_and_joins_outstanding_work():
 
     assert asyncio.run(run()) == 0
     assert cancelled == [1]
+
+
+def test_pool_blocking_source_refill_allows_inflight_response_to_finish():
+    release_refill = Event()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        refill_started = asyncio.Event()
+        second_started = asyncio.Event()
+        release_response = asyncio.Event()
+        response_finished = asyncio.Event()
+
+        def source():
+            yield 0
+            yield 1
+            loop.call_soon_threadsafe(refill_started.set)
+            if not release_refill.wait(timeout=5):
+                raise RuntimeError("source refill blocked the event loop")
+            yield 2
+
+        async def execute(value):
+            if value == 0:
+                await second_started.wait()
+            elif value == 1:
+                second_started.set()
+                await release_response.wait()
+                response_finished.set()
+            return value
+
+        stream = ExecutionPool(2, lookahead=2).map(source(), execute)
+        results = [await anext(stream)]
+        refill = asyncio.create_task(anext(stream))
+        try:
+            async with asyncio.timeout(3):
+                await refill_started.wait()
+                release_response.set()
+                await response_finished.wait()
+        finally:
+            release_refill.set()
+        results.append(await refill)
+        results.extend([item async for item in stream])
+        return results
+
+    results = asyncio.run(run())
+    assert sorted((item.position, item.result) for item in results) == [(0, 0), (1, 1), (2, 2)]
+
+
+def test_pool_cancellation_joins_source_admission_before_checkpoint_cleanup():
+    release_refill = Event()
+    refill_finished = Event()
+    finalized = []
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        refill_started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        def source():
+            for position in range(2):
+                yield replace(_spec(), source_id=str(position), ordinal=position, requests=_spec().requests[:1])
+            loop.call_soon_threadsafe(refill_started.set)
+            if not release_refill.wait(timeout=5):
+                raise RuntimeError("cancelled admission was not released")
+            refill_finished.set()
+            yield replace(_spec(), source_id="2", ordinal=2, requests=_spec().requests[:1])
+
+        class Archive:
+            def records(self):
+                yield from ()
+
+            def record(self, row):
+                pass
+
+            def finalize(self):
+                assert refill_finished.is_set()
+                finalized.append("checkpoint_closed")
+
+        engine = Evaluator(_Model(), _grade, CollectSamples(), workers=1, checkpoints={"conversation": Archive()})
+        engine.pool.lookahead = 2
+        stream = engine.run(source())
+        await anext(stream)
+        await anext(stream)
+        refill = asyncio.create_task(anext(stream))
+        try:
+            async with asyncio.timeout(3):
+                await refill_started.wait()
+                refill.cancel()
+                loop.call_soon(cancelled.set)
+                await cancelled.wait()
+                assert not refill.done()
+                assert finalized == []
+        finally:
+            release_refill.set()
+        with pytest.raises(asyncio.CancelledError):
+            await refill
+        await stream.aclose()
+
+    asyncio.run(run())
+    assert finalized == ["checkpoint_closed"]
 
 
 def test_pool_reports_item_failure_and_finishes_siblings():
