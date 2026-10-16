@@ -20,20 +20,27 @@ class ExecutionMode(StrEnum):
     SANDBOXED = "sandboxed"
 
 
+def initialize_grader_worker() -> None:
+    # The outer worker starts cleanly with spawn. Canonical code graders then
+    # fork their local sandbox entrypoints from this worker's main thread.
+    multiprocessing.set_start_method("fork", force=True)
+
+
 class Resources:
     def __init__(self, workers: int = 1):
-        self.workers = min(workers, os.cpu_count() or 1)
+        self.workers = min(workers, os.cpu_count() or 1, 16)
         self.processes: ProcessPoolExecutor | None = None
 
     async def call(self, function: Callable[..., Result], args: tuple[Any, ...], mode: ExecutionMode) -> Result:
         if mode is ExecutionMode.THREAD_SAFE:
             return await asyncio.to_thread(function, *args)
-        if mode is ExecutionMode.PROCESS_ISOLATED:
+        if mode in (ExecutionMode.PROCESS_ISOLATED, ExecutionMode.SANDBOXED):
             if self.processes is None:
-                self.processes = ProcessPoolExecutor(max_workers=self.workers, mp_context=multiprocessing.get_context("spawn"))
+                self.processes = ProcessPoolExecutor(
+                    max_workers=self.workers, mp_context=multiprocessing.get_context("spawn"),
+                    initializer=initialize_grader_worker,
+                )
             return await asyncio.get_running_loop().run_in_executor(self.processes, function, *args)
-        # Functions owning a sandbox may fork or use process-global signal state.
-        # They run on the driver and own their child-process lifecycle.
         return function(*args)
 
     def close(self) -> None:

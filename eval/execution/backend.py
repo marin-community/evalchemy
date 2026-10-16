@@ -105,7 +105,7 @@ class LMBackend:
             raise ValueError("the shared runtime requires one client process; serve distributed models behind an endpoint")
         if isinstance(self.model, TemplateAPI):
             self.session = ClientSession(
-                connector=TCPConnector(ssl=self.model.verify_certificate), timeout=ClientTimeout(total=None),
+                connector=TCPConnector(limit=0, ssl=self.model.verify_certificate), timeout=ClientTimeout(total=None),
             )
         return self
 

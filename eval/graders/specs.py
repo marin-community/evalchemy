@@ -32,8 +32,7 @@ GRADERS = {
     "matharena": Grader(matharena),
     "program": Grader(program, ExecutionMode.PROCESS_ISOLATED),
     "answer_number": Grader(answer_number), "jee": Grader(jee), "nupa": Grader(nupa),
-    # These suites own fork-based sandboxes with local child entrypoints. A
-    # spawned outer worker would make those entrypoints unpicklable.
+    # The shared worker runs canonical fork-based sandboxes off the driver loop.
     "program_suite": Grader(program_suite, ExecutionMode.SANDBOXED),
     "simpleqa": Grader(simpleqa), "simpleqa_label": Grader(simpleqa_label),
     "judge_failed": Grader(judge_failed),

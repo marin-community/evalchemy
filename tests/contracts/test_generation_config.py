@@ -32,6 +32,9 @@ from eval.execution.backend import LMBackend
 from eval.execution.engine import CollectSamples, Evaluator
 from eval.contracts.eval_spec import ModelRequest, RequestKind
 from eval.sources.common import SourceOptions
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+from eval.execution.grading import Graders
+from eval.graders.specs import GRADERS
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
 
@@ -112,6 +115,96 @@ def test_livebench_wire_preserves_fastchat_template_and_cleaned_turn_history(end
         [*outer_system, {"role": "user", "content": second}],
     ]
     assert sink.samples["LiveBench"][0]["filtered_resps"] == ["First answer", "Second answer"]
+
+
+@pytest.mark.parametrize("answer, expected", [(42, 1.0), (41, 0.0)])
+def test_model_request_progresses_while_humaneval_sandbox_waits(endpoint, answer, expected):
+    async def run():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def sandbox_connection(reader, writer):
+            try:
+                assert await reader.readline() == b"grading\n"
+                started.set()
+                await release.wait()
+                writer.write(b"42")
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_server(sandbox_connection, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            completion = (
+                "```python\ndef answer():\n    import socket\n"
+                f"    with socket.create_connection(('127.0.0.1', {port}), timeout=3) as connection:\n"
+                "        connection.sendall(b'grading\\n')\n"
+                f"        return int(connection.recv(2)) - {42 - answer}\n```"
+            )
+            problem = {"task_id": "python/0", "prompt": "def answer():\n", "test": "assert answer() == 42"}
+            spec = EvalSpec(
+                task="HumanEval", source=SourceRef("fixture"), source_id="0", ordinal=0, requests=(),
+                grader=GraderSpec("program_suite", {"suite": "HumanEval", "language": "python",
+                                                      "problem": problem, "timeout": 5.0}), doc=problem,
+            )
+            graders = Graders(GRADERS, workers=1)
+            grading = asyncio.create_task(graders(spec, [completion]))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=15)
+                async with LMBackend(_model(endpoint, LocalChatCompletion)) as backend:
+                    output = await backend.execute(ModelRequest(RequestKind.GENERATE, [{"role": "user", "content": "Next example"}]))
+                assert output == "\\boxed{42}"
+                assert not grading.done()
+            finally:
+                # The real sandbox cannot finish until the driver completes this
+                # separate HTTP model operation and releases its socket response.
+                release.set()
+                result = await grading
+                graders.close()
+            return result
+
+    assert asyncio.run(run()).metrics["accuracy"] == expected
+
+
+def test_endpoint_admission_exceeds_aiohttp_default_connection_limit():
+    async def run():
+        received = []
+        admitted = asyncio.Event()
+        release = asyncio.Event()
+
+        async def respond(reader, writer):
+            try:
+                headers = (await reader.readuntil(b"\r\n\r\n")).decode()
+                content_length = next(int(line.split(":", 1)[1]) for line in headers.split("\r\n") if line.lower().startswith("content-length:"))
+                received.append(json.loads(await reader.readexactly(content_length)))
+                if len(received) == 101:
+                    admitted.set()
+                await release.wait()
+                body = b'{"choices":[{"index":0,"message":{"content":"done"}}]}'
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_server(respond, "127.0.0.1", 0, backlog=256) as server:
+            model = LocalChatCompletion(
+                model="served", base_url=f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/v1/chat/completions",
+                tokenizer_backend=None, tokenized_requests=False,
+            )
+            async with LMBackend(model) as backend:
+                tasks = [asyncio.create_task(backend.execute(ModelRequest(RequestKind.GENERATE, [{"role": "user", "content": f"Example {index}"}]))) for index in range(101)]
+                try:
+                    await asyncio.wait_for(admitted.wait(), timeout=10)
+                finally:
+                    release.set()
+                outputs = await asyncio.gather(*tasks)
+            return received, outputs
+
+    received, outputs = asyncio.run(run())
+    assert {request["messages"][0]["content"] for request in received} == {f"Example {index}" for index in range(101)}
+    assert outputs == ["done"] * 101
 
 
 class _PlainLM(LM):

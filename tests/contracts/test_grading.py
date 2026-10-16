@@ -19,7 +19,7 @@ def test_grader_runs_under_its_declared_isolation(mode):
         pid = asyncio.run(resources.call(worker_pid, (), mode))
     finally:
         resources.close()
-    assert (pid != os.getpid()) == (mode is ExecutionMode.PROCESS_ISOLATED)
+    assert (pid != os.getpid()) == (mode in (ExecutionMode.PROCESS_ISOLATED, ExecutionMode.SANDBOXED))
 
 
 def test_grader_failure_propagates_without_becoming_a_score():
