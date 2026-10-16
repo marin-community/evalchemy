@@ -10,7 +10,7 @@ from eval.graders.program_suites import program_suite
 from eval.graders.instructions import instruction_following
 from eval.graders.conversations import livebench, mtbench, turn_ratings
 from eval.graders.structured import code_line, gsm8k_flexible, json_answer
-from eval.graders.judged import mixeval, mixeval_score, wildbench, wildbench_score
+from eval.graders.judged import mixeval, mixeval_fallback, mixeval_score, wildbench, wildbench_score
 from eval.graders.swebench import swe_patch
 from eval.graders.alpaca import alpaca, alpaca_preference
 from eval.graders.math_specs import answer_number, boxed_math, gsm8k, jee, letter_choice, math_equivalence, matharena, mmlu_choice, nupa
@@ -43,7 +43,7 @@ GRADERS = {
     "mtbench": Grader(mtbench), "turn_ratings": Grader(turn_ratings),
     "livebench": Grader(livebench, ExecutionMode.PROCESS_ISOLATED),
     "gsm8k_flexible": Grader(gsm8k_flexible), "json_answer": Grader(json_answer), "code_line": Grader(code_line),
-    "mixeval": Grader(mixeval), "mixeval_score": Grader(mixeval_score),
+    "mixeval": Grader(mixeval), "mixeval_score": Grader(mixeval_score), "mixeval_fallback": Grader(mixeval_fallback),
     "wildbench": Grader(wildbench), "wildbench_score": Grader(wildbench_score),
     "swe_patch": Grader(swe_patch, ExecutionMode.PROCESS_ISOLATED),
     "alpaca": Grader(alpaca), "alpaca_preference": Grader(alpaca_preference),

@@ -15,10 +15,11 @@ from eval.execution.judge import JudgeBackend
 from eval.execution.metrics import SourceMetrics
 from eval.contracts.eval_spec import ModelRequest, RequestKind
 from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source
+from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
 from eval.graders.answer_equivalence import JudgeConfig
 from eval.graders.specs import GRADERS
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import FixedEndpoint
+from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 
 from eval.sample_logging import canonicalize_samples
@@ -73,6 +74,63 @@ def _response(kind):
 async def _generate(adapter, prompt):
     async with LMBackend(adapter) as backend:
         return [await backend.execute(ModelRequest(RequestKind.GENERATE, prompt))]
+
+
+@pytest.mark.parametrize("status,choice,fallback", [
+    (200, {"message": {"content": ""}}, True),
+    (200, {"message": {"content": "  \n"}}, True),
+    (200, {"message": {"content": None}}, True),
+    (200, {"message": {"content": "malformed"}}, True),
+    (402, None, False),
+    (200, {"finish_reason": "content_filter"}, False),
+    (200, {"message": {"content": 99}}, False),
+])
+def test_mixeval_http_semantic_retries_preserve_empty_judgments_and_payment_errors(status, choice, fallback):
+    requests = []
+
+    async def handler(request):
+        requests.append(await request.json())
+        payload = {"choices": [choice]} if status == 200 else {"error": "prepayment required"}
+        return web.json_response(payload, status=status)
+
+    source = MixEvalBenchmark(debug=True)
+    spec = next(spec for spec in source.iter_specs(SourceOptions("MixEval", source.SOURCE, limit=1))
+                if spec.namespace == "multichoice")
+    checkpoint = MemoryCheckpoints()
+
+    async def run():
+        runner, base_url = await _endpoint(handler)
+        grading = Graders(GRADERS)
+        try:
+            async with ClientSession() as session:
+                judge = JudgeBackend(JudgeConfig("judge", base_url, "test-key"), session)
+
+                async def evaluate():
+                    sink = CollectSamples()
+                    candidate = FixedEndpoint("candidate")
+                    engine = Evaluator(candidate, grading, sink, workers=1, judges={"MixEval": judge},
+                                       checkpoints={"MixEval": checkpoint})
+                    completed = [item async for item in engine.run([spec])]
+                    return completed[0], sink.samples["MixEval"], candidate.requests
+
+                first, samples, candidate_requests = await evaluate()
+                assert len(candidate_requests) == 1
+                if not fallback:
+                    assert first.error is not None
+                    assert all("accuracy" not in sample for sample in samples)
+                    return
+                assert first.error is None
+                assert samples[0]["judge_fallback"] == "malformed_response_exhaustion"
+                replay, replay_samples, candidate_requests = await evaluate()
+                assert replay.error is None
+                assert replay_samples == samples
+                assert candidate_requests == []
+        finally:
+            grading.close()
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert len(requests) == (10 if fallback else 1)
 
 
 @pytest.mark.parametrize("available", [0, 1])

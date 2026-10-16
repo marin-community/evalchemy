@@ -1,6 +1,8 @@
 """Prompt construction and response parsing for named judge protocols."""
 
+import ast
 import json
+import random
 import re
 from collections.abc import Sequence
 from functools import lru_cache
@@ -10,7 +12,7 @@ from typing import Any
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, JudgePlan, ModelRequest, RequestKind
 from eval.graders.answer_equivalence import JUDGE_PROMPT, JudgeLabel
 from eval.graders.simpleqa import SIMPLEQA_GRADER_TEMPLATE, _parse_simpleqa_judgment
-from eval.contracts.failures import FailureCategory
+from eval.contracts.failures import FailureCategory, MalformedJudgeResponse
 
 
 @lru_cache
@@ -77,24 +79,44 @@ def mixeval(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:
     else:
         choices = "\n".join(f"{chr(65 + index)}. {option}" for index, option in enumerate(doc["options"]))
         prompt = gpt_judge_for_closeended_multiplechoice(doc["prompt"], choices, str(responses[-1]))
+    reference = {"kind": kind, "target": doc["target"],
+                 "num_options": len(doc["options"]) if kind == "multichoice" else 0}
     return JudgePlan((ModelRequest(RequestKind.GENERATE, prompt, {"max_gen_toks": 999}),),
-                     GraderSpec("mixeval_score", {"kind": kind, "target": doc["target"]}))
+                     GraderSpec("mixeval_score", reference), max_attempts=10,
+                     on_exhausted=GraderSpec("mixeval_fallback", reference))
 
 
 def mixeval_score(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     raw = str(responses[-1])
     reference = spec.grader.reference
     if reference["kind"] == "multichoice":
-        match = re.search(r"\[\[?([A-Z])\]\]?", raw)
+        match = re.search(r"\[\[([A-Z])\]\]", raw) or re.search(r"\[([A-Z])\]", raw)
         if match is None:
-            raise ValueError("MixEval judge returned no choice")
+            raise MalformedJudgeResponse("MixEval judge returned no choice")
         score = float(match.group(1) == chr(65 + reference["target"][0]))
     else:
-        match = re.search(r"\[\[?(\d+\.?\d*)\]\]?", raw)
-        if match is None or not 0 <= float(match.group(1)) <= 1:
-            raise ValueError("MixEval judge returned no valid correctness score")
-        score = float(match.group(1))
+        match = re.search(r"\[\[(\d+\.?\d*)\]\]", raw) or re.search(r"\[(\d+\.?\d*)\]", raw)
+        if match is None:
+            raise MalformedJudgeResponse("MixEval judge returned no correctness score")
+        score = float(ast.literal_eval(match.group(1)))
+        if not 0 <= score <= 1:
+            raise MalformedJudgeResponse("MixEval judge returned an out-of-range correctness score")
     return Grade({"accuracy": score}, {"judge_raw": raw})
+
+
+def mixeval_fallback(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
+    # Preserve native fallback distributions without sharing mutable RNG state
+    # with asynchronous transport retries or changing a grade on checkpoint replay.
+    seed = json.dumps([spec.task, spec.namespace, spec.source_id, spec.trial], sort_keys=True)
+    rng = random.Random(seed)
+    reference = spec.grader.reference
+    if reference["kind"] == "multichoice":
+        choice = rng.choice([chr(65 + index) for index in range(reference["num_options"])])
+        score = float(choice == chr(65 + reference["target"][0]))
+    else:
+        score = round(rng.random(), 1)
+    return Grade({"accuracy": score}, {"judge_raw": str(responses[-1]),
+                 "judge_fallback": "malformed_response_exhaustion", "judge_fallback_rng": "stable_item_v1"})
 
 
 def simpleqa(spec: EvalSpec, responses: Sequence[Any]) -> JudgePlan:

@@ -98,8 +98,18 @@ class Grade:
 
 @dataclass(frozen=True)
 class JudgePlan:
-    """Grader-produced model operations and the parser for their responses."""
+    """Judge operations, with separate semantic-retry and infrastructure policies.
+
+    Only MalformedJudgeResponse permits another parse attempt. Infrastructure
+    failures use on_error; they never consume the malformed-response fallback.
+    """
 
     requests: tuple[ModelRequest, ...]
     grader: GraderSpec
     on_error: GraderSpec | None = None
+    max_attempts: int = 1
+    on_exhausted: GraderSpec | None = None
+
+    def __post_init__(self):
+        if self.max_attempts < 1:
+            raise ValueError("judge plans require at least one attempt")

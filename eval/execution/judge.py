@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from aiohttp import ClientSession
@@ -34,10 +35,12 @@ class JudgeBackend:
             ) as response:
                 response.raise_for_status()
                 document = await response.json()
-                completion = completion_response_from_chat_choice(document, document["choices"][0])
-                content = completion.content
-                if not isinstance(content, str) or not content.strip():
-                    raise ValueError("judge returned an empty response")
-                return CompletionText(content, completion, CompletionContentPolicy.FINAL_ONLY)
+                choice = document["choices"][0]
+                if not isinstance(choice.get("message"), Mapping) or "content" not in choice["message"]:
+                    raise ValueError("judge response requires a message with content")
+                completion = completion_response_from_chat_choice(document, choice)
+                # A valid empty completion is a parser input, not a transport
+                # failure. The named judge protocol decides whether to retry it.
+                return CompletionText(completion.content or "", completion, CompletionContentPolicy.FINAL_ONLY)
 
         return await retry(call, RetryPolicy(budget=180, attempt_timeout=60, max_attempts=3), retryable_transport, transport_retry_delay)
