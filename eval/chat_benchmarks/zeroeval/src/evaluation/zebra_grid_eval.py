@@ -17,27 +17,13 @@ def load_private_solutions():
     return
 
 
-def eval_model(model, filepath):
+def grade_model(model, data):
     global private_solutions
-    with open(filepath, "r") as f:
-        print(f"Processing {filepath}")
-        data = json.load(f)
 
-    solved_puzzles = 0
-    num_total_puzzles = len(data)
-    correct_cells = 0
-    total_cells = 0
-    no_asnwer = 0
-
-    num_total_puzzles_by_size = defaultdict(int)
-    solved_puzzles_by_size = defaultdict(int)
-    reason_lens = []
     parsed_results = []  # New list to store parsed results
     for item in data:
         # solution = item["solution"]
         solution = private_solutions[item["id"]]
-        size = item["size"]
-        num_total_puzzles_by_size[size] += 1
 
         # Process the solution
         solution_table = {}
@@ -49,7 +35,6 @@ def eval_model(model, filepath):
         for i in range(num_houses):
             solution_table[f"House {i+1}"] = {columns[j]: solution["rows"][i][j] for j in range(1, len(columns))}
             this_total_cells += len(columns) - 1
-        total_cells += this_total_cells
 
         # Read and Parse the prediction from model output
         prediction_str = item["output"][0]
@@ -59,13 +44,11 @@ def eval_model(model, filepath):
             # prediction_str = prediction_str.replace("\n", "")
             # print([prediction_str])
             # json.loads(prediction_str)
-            no_asnwer += 1
+            parsed_results.append({**item, "correct_cells": 0, "total_cells": this_total_cells, "solved": False, "answered": False})
             # print(item["id"])
             continue
         reason = prediction_json.get("reasoning", "")
         prediction_table = prediction_json["solution"]
-
-        reason_lens.append(len(reason))
 
         this_correct_cells = 0  # number in the solution_table
         for house in solution_table:
@@ -83,72 +66,39 @@ def eval_model(model, filepath):
                         raise ValueError(f"Unknown type: {type(prediction_table[house][column])}")
                     if truth_cell.lower().strip() == predicted_cell.lower().strip():
                         this_correct_cells += 1
-        correct_cells += this_correct_cells
-
-        # compute puzzle success rate
-        if this_correct_cells == this_total_cells:
-            solved_puzzles += 1
-            solved_puzzles_by_size[size] += 1
-
         parsed_item = item.copy()
         parsed_item["reasoning"] = reason
         parsed_item["correct_cells"] = this_correct_cells
         parsed_item["total_cells"] = this_total_cells
         parsed_item["solved"] = this_correct_cells == this_total_cells
+        parsed_item["answered"] = True
         parsed_results.append(parsed_item)
+    return parsed_results
 
-    # # print the success rate by size; order the dict by size first
-    sizes = sorted(num_total_puzzles_by_size.keys())
-    easy_sizes = [
-        "2*2",
-        "2*3",
-        "2*4",
-        "2*5",
-        "2*6",
-        "3*2",
-        "3*3",
-    ]
-    hard_sizes = [
-        "3*4",
-        "3*5",
-        "4*2",
-        "3*6",
-        "4*3",
-        "4*4",
-        "5*2",
-        "6*2",
-        "4*5",
-        "4*6",
-        "5*3",
-        "5*4",
-        "5*5",
-        "5*6",
-        "6*3",
-        "6*4",
-        "6*5",
-        "6*6",
-    ]
 
-    easy_solved_puzzles = sum([solved_puzzles_by_size[size] for size in easy_sizes])
-    easy_total_puzzles = sum([num_total_puzzles_by_size[size] for size in easy_sizes])
-    hard_solved_puzzles = sum([solved_puzzles_by_size[size] for size in hard_sizes])
-    hard_total_puzzles = sum([num_total_puzzles_by_size[size] for size in hard_sizes])
+def aggregate_model(model, graded):
+    answered = [row for row in graded if row["answered"]]
+    easy_sizes = {"2*2", "2*3", "2*4", "2*5", "2*6", "3*2", "3*3"}
+    easy = [row for row in graded if row["size"] in easy_sizes]
+    hard = [row for row in graded if row["size"] not in easy_sizes]
+    return {
+        "Model": model_name_replacement(model.split("%")[0]),
+        "Mode": model.split("%")[1],
+        "Puzzle Acc": f"{sum(row['solved'] for row in graded) / len(graded) * 100:.2f}",
+        "Cell Acc": f"{sum(row['correct_cells'] for row in graded) / sum(row['total_cells'] for row in graded) * 100:.2f}",
+        "No answer": f"{(len(graded) - len(answered)) / len(graded) * 100:.2f}",
+        "Easy Puzzle Acc": f"{sum(row['solved'] for row in easy) / len(easy) * 100:.2f}" if easy else "0.00",
+        "Hard Puzzle Acc": f"{sum(row['solved'] for row in hard) / len(hard) * 100:.2f}" if hard else "0.00",
+        "Total Puzzles": len(graded),
+        "Reason Lens": f"{sum(len(row['reasoning']) for row in answered) / len(answered):.2f}",
+    }
 
-    # for size in sizes:
-    # print(f"Size {size}: {solved_puzzles_by_size[size]}/{num_total_puzzles_by_size[size]} -> {solved_puzzles_by_size[size]/num_total_puzzles_by_size[size]*100:.2f}%")
 
-    result = {}
-    result["Model"] = model.split("%")[0]
-    result["Mode"] = model.split("%")[1]
-    result["Puzzle Acc"] = f"{solved_puzzles/num_total_puzzles*100:.2f}"
-    result["Cell Acc"] = f"{correct_cells/total_cells*100:.2f}"
-    result["No answer"] = f"{no_asnwer/num_total_puzzles*100:.2f}"
-    result["Easy Puzzle Acc"] = f"{easy_solved_puzzles/easy_total_puzzles*100:.2f}"
-    result["Hard Puzzle Acc"] = f"{hard_solved_puzzles/hard_total_puzzles*100:.2f}"
-    result["Total Puzzles"] = num_total_puzzles
-    result["Reason Lens"] = f"{sum(reason_lens)/len(reason_lens):.2f}"
-    result["Model"] = model_name_replacement(result["Model"])
-    return result, parsed_results  # Return parsed_results along with the result
+def eval_model(model, filepath):
+    with open(filepath) as stream:
+        data = json.load(stream)
+    graded = grade_model(model, data)
+    return aggregate_model(model, graded), graded
 
 
 def gen_results(run_name_folders):

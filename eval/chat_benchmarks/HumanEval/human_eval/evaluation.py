@@ -9,6 +9,7 @@ import itertools
 
 from typing import *
 from tqdm.auto import tqdm
+from eval.contracts.aggregation import functional_pass_at_k
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from eval.contracts.sample_results import PER_TASK_PASS_RATE_FIELD
@@ -185,14 +186,13 @@ def stream_jsonl_all(filename: str) -> Iterable[Dict]:
     return results
 
 
-def evaluate_functional_correctness(
+def grade_functional_correctness(
     input_file: str = None,
     tmp_dir: str = "./",
     n_workers: int = 32,
     timeout: float = 10.0,
     problem_file: str = "../data/humaneval_python.jsonl.gz",
     out_dir: str = None,
-    k: List[int] = [1, 10, 100],
     test_groundtruth: bool = False,
     example_test: bool = False,
     is_mbpp: bool = False,
@@ -255,35 +255,47 @@ def evaluate_functional_correctness(
                 completion_id[task_id] += 1
                 n_samples += 1
 
-        if len(completion_id) == len(problems):
-            evaluate_pass_at_k = True
-        else:
-            evaluate_pass_at_k = False
-
         print("Running test suites...")
         for future in tqdm(as_completed(futures), total=len(futures)):
             result = future.result()
             results[result["task_id"]].append((result["completion_id"], result))
 
-    # Calculate pass@k.
-    total, correct = [], []
-    for result in results.values():
-        passed = [r[1]["passed"] for r in result]
-        total.append(len(passed))
-        correct.append(sum(passed))
-    total = np.array(total)
-    correct = np.array(correct)
-    evaluate_pass_at_k = True
-    if evaluate_pass_at_k:
-        ks = k
-        pass_at_k = {f"pass@{k}": estimate_pass_at_k(total, correct, k).mean() for k in ks if (total >= k).all()}
-        print(pass_at_k)
-    else:
-        print("Total:", np.sum(total))
-        print("Correct:", np.sum(correct))
-    # Per-task outcomes so the caller can record per-sample metrics. MBPP vendors a
-    # module of the same name, so whichever loads first serves both: keep them equal.
-    pass_at_k[PER_TASK_PASS_RATE_FIELD] = {
-        task_id: sum(r[1]["passed"] for r in result) / len(result) for task_id, result in results.items()
+    return {
+        task_id: [verdict for _, verdict in sorted(completions, key=lambda row: row[0])]
+        for task_id, completions in results.items()
     }
-    return pass_at_k
+
+def evaluate_functional_correctness(
+    input_file: str = None,
+    tmp_dir: str = "./",
+    n_workers: int = 32,
+    timeout: float = 10.0,
+    problem_file: str = "../data/humaneval_python.jsonl.gz",
+    out_dir: str = None,
+    k: List[int] = [1, 10, 100],
+    test_groundtruth: bool = False,
+    example_test: bool = False,
+    is_mbpp: bool = False,
+    language: str = "python",
+):
+
+    """Grade completions and aggregate their pass@k estimates."""
+    verdicts = grade_functional_correctness(
+        input_file=input_file,
+        tmp_dir=tmp_dir,
+        n_workers=n_workers,
+        timeout=timeout,
+        problem_file=problem_file,
+        out_dir=out_dir,
+        test_groundtruth=test_groundtruth,
+        example_test=example_test,
+        is_mbpp=is_mbpp,
+        language=language,
+    )
+    return {
+        **functional_pass_at_k(verdicts, k),
+        PER_TASK_PASS_RATE_FIELD: {
+            task_id: sum(row["passed"] for row in rows) / len(rows)
+            for task_id, rows in verdicts.items()
+        },
+    }
