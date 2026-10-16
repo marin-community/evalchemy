@@ -210,7 +210,7 @@ def _attach_benchmark_metadata(
                 )
             )
         except ValueError as exc:
-            eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
+            utils.eval_logger.warning("Could not infer benchmark metadata for %s: %s", outcome.task_name, exc)
     results["benchmark_metadata"] = {description.task: description.to_dict() for description in metadata}
     results["canonical_results"] = canonicalize_results(results["results"], metadata)
 
@@ -539,6 +539,12 @@ def evaluate(
                         )
                     )
                 continue
+            # Context-selected benchmarks learn their attempted population at generation time.
+            description = benchmark.describe(task)
+            if description is not None:
+                args.resolved_benchmark_metadata = tuple(
+                    item for item in getattr(args, "resolved_benchmark_metadata", ()) if item.task != task
+                ) + (description,)
             generation_work.append(
                 _CustomTaskWork(
                     task_name=task,
@@ -1164,3 +1170,4 @@ def handle_evaluation_output(
 
 if __name__ == "__main__":
     cli_evaluate()
+
