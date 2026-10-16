@@ -148,17 +148,17 @@ def _make_resume_caching_lm_cls():
         # Rank and world size determine the FineStore resume namespace.
         @property
         def rank(self):
-            return getattr(self.lm, "rank", 0)
+            return self.lm.rank
 
         @property
         def world_size(self):
-            return getattr(self.lm, "world_size", 1)
+            return self.lm.world_size
 
         def loglikelihood(self, requests, *a, **k):
-            return _impl_request(self, "loglikelihood", requests, *a, **k)
+            return _impl_request(self, self.lm.loglikelihood, "loglikelihood", requests, *a, **k)
 
         def loglikelihood_rolling(self, requests, *a, **k):
-            return _impl_request(self, "loglikelihood_rolling", requests, *a, **k)
+            return _impl_request(self, self.lm.loglikelihood_rolling, "loglikelihood_rolling", requests, *a, **k)
 
         # The chat-template protocol members below are DEFINED on the base `LM`
         # class (`tokenizer_name` raises NotImplementedError; `chat_template` /
@@ -195,18 +195,20 @@ def _make_resume_caching_lm_cls():
             return getattr(lm, attr)
 
         def generate_until(self, requests, *a, **k):
-            return _impl_request(self, "generate_until", requests, *a, **k)
+            return _impl_request(self, self.lm.generate_until, "generate_until", requests, *a, **k)
 
     return ResumeCachingLM
 
 # -- method implementations (module-level so the lazy LM subclass can adopt them) ----
-def _impl_request(self, method: str, requests: List[Any], *args: Any, **kwargs: Any) -> List[Any]:
+def _impl_request(
+    self, model_call: Callable[..., List[Any]], method: str, requests: List[Any], *args: Any, **kwargs: Any
+) -> List[Any]:
     """Restore completed requests and checkpoint new responses in input order."""
     manager = self._manager
     likelihood = method != "generate_until"
     request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
     if manager is None:
-        outputs = getattr(self.lm, method)(requests, *args, **kwargs)
+        outputs = model_call(requests, *args, **kwargs)
         self._sample_manifest.validate_output_count(len(requests), outputs)
         self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
         return outputs
@@ -242,7 +244,7 @@ def _impl_request(self, method: str, requests: List[Any], *args: Any, **kwargs: 
         logger.info(
             "resume[%s] rank=%s: skipped %d done units, generating %d remaining",
             self._task_name,
-            getattr(self.lm, "rank", 0),
+            self.lm.rank,
             skipped,
             len(remaining_reqs),
         )
@@ -267,7 +269,7 @@ def _impl_request(self, method: str, requests: List[Any], *args: Any, **kwargs: 
         if remaining_reqs:
             if likelihood:
                 self.lm.set_cache_hook(_LikelihoodCacheHook(original_hook, record_partial))
-            new_outputs = getattr(self.lm, method)(remaining_reqs, *args, **kwargs)
+            new_outputs = model_call(remaining_reqs, *args, **kwargs)
             self._sample_manifest.validate_output_count(len(remaining_reqs), new_outputs)
             for pos, output in zip(remaining_positions, new_outputs):
                 results[pos] = output
