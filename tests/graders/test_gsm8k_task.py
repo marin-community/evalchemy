@@ -26,6 +26,15 @@ from eval.lm_eval_tasks.gsm8k.utils import (
         ("10\\ \\text{days}", "10", 1.0),
         ("\\$15/week", "15", 1.0),
         ("\\frac{1}{2}", "0.5", 1.0),
+        ("€77", "77", 1.0),
+        ("There are 5 rats in each cage.", "5", 1.0),
+        ("49^\\circ\\text{F}", "49", 1.0),
+        ("\\text{Sid averaged a speed of 50 miles per hour.}", "50", 1.0),
+        ("160\\text{ minutes}\\;(= 2\\text{ hours }40\\text{ minutes})", "160", 1.0),
+        ("\\$25{,}000 \\text{ per year}", "25000", 1.0),
+        ("50\\% - 25\\% = 25\\%", "25", 1.0),
+        ("3 \\text{ onions} + 1 \\text{ potato}", "4", 1.0),
+        ("16\\text{ chocolate bars} \\over 8\\text{ children}", "2", 1.0),
         ("0.5", "1/2", 1.0),
         ("0.5", "1", 0.0),
         ("9.1", "9", 0.0),
@@ -70,3 +79,23 @@ def test_gsm8k_task_treats_whole_hour_clock_answer_as_reference_hour(response, e
     prediction = extract_gsm8k_flexible_answer(response)
 
     assert process_results(doc, [prediction]) == {"exact_match": expected}
+
+
+@pytest.mark.parametrize("prediction", ["\\frac{1}{4}", "1/4", "0.25"])
+def test_gsm8k_task_accepts_fractional_form_for_percentage_question(prediction):
+    doc = {
+        "question": "What percentage of the watermelon does each adult get?",
+        "answer": "Each adult gets 25 percent.\n#### 25",
+    }
+
+    assert process_results(doc, [prediction]) == {"exact_match": 1.0}
+
+
+@pytest.mark.parametrize("prediction", ["\\$600", "Friday", "Not enough information", "70"])
+def test_gsm8k_task_rejects_wrong_box_even_if_reasoning_contains_reference(prediction):
+    doc = {
+        "question": "How many OLED TVs did the store sell?",
+        "answer": "The store sold 25 OLED TVs.\n#### 25",
+    }
+
+    assert process_results(doc, [prediction]) == {"exact_match": 0.0}
