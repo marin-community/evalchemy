@@ -153,6 +153,20 @@ Please continue to complete the function. You are not allowed to modify the give
         results["artifacts"] = artifacts
         return results
 
+    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        """Group scored examples by their generation namespace."""
+        return {
+            language: [example for example in generation_result["examples"] if example["language"] == language]
+            for language in self.languages
+        }
+
+    def to_samples(self, generation_result: Dict[str, Any], scored_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Serialize complete results or a single language's scored examples."""
+        examples = generation_result.get("examples")
+        if examples is None:
+            examples = [example for language in self.languages for example in generation_result.get(language, [])]
+        return super().to_samples({"examples": examples}, scored_result)
+
     def evaluate_responses(self, results: Dict[str, Any]) -> Dict[str, float]:
         """
         Evaluate the generated code completions.

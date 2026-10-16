@@ -158,10 +158,7 @@ def _humanevalplus_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Prep
     (tmp_path / "humanevalplus-python.jsonl").write_text(json.dumps(problem) + "\n")
     benchmark = _load_benchmark("HumanEvalPlus", data_dir=str(tmp_path), num_workers=1)
     _patch_code_sandbox(monkeypatch, benchmark)
-    example = {**problem, "language": "python", "generation": "def answer():\n    return 42"}
-    artifacts = GenerationArtifactManifest.temporary()
-    artifacts.write_jsonl("generated-python", "generated_python.jsonl", [example], expected_count=1)
-    return benchmark, {"examples": [example], "artifacts": artifacts}
+    return benchmark, benchmark.generate_responses(_AnsweringModel())
 
 
 def _mbppplus_case(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> PreparedCase:
