@@ -76,7 +76,7 @@ class MATH500Benchmark(BaseBenchmark):
             Dictionary containing generated responses and temporary directory,
             or None for non-primary ranks
         """
-        examples = self.load_questions()
+        examples = self.limit_samples(self.load_questions())
 
         # ---- native pass@k path (Stage 2b): num_samples > 1 ----
         if self.num_samples > 1:

@@ -69,7 +69,7 @@ class AIME24Benchmark(BaseBenchmark):
             Dictionary containing generated responses and temporary directory,
             or None for non-primary ranks
         """
-        examples = self.load_questions()
+        examples = self.limit_samples(self.load_questions())
 
         def build_instances(_repeat_idx: int) -> List[Instance]:
             all_instances = []

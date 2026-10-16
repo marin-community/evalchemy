@@ -224,6 +224,23 @@ def test_math500_generation_respects_caller_overrides_at_endpoint(endpoint, tmp_
         assert "top_p" not in payload
 
 
+def test_math500_limit_caps_source_records_before_grading(endpoint, tmp_path):
+    data_file = tmp_path / "math.jsonl"
+    data_file.write_text(
+        "\n".join(
+            json.dumps({"problem": problem, "answer": "42"}) for problem in ("What is 6 times 7?", "What is 40 plus 2?")
+        )
+        + "\n"
+    )
+    benchmark = MATH500Benchmark(data_file=str(data_file))
+    benchmark.set_evaluation_limits(limit=1)
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"]) == 1
+    assert benchmark.evaluate_responses(result)["accuracy"] == 1.0
+
+
 def _assert_seeded_requests(requests, first_seed, count):
     assert [request["seed"] for request in requests] == list(range(first_seed, first_seed + count))
     assert all(request["temperature"] == 0.7 for request in requests)
@@ -252,6 +269,24 @@ def test_aime24_one_repeat_uses_same_prompt_and_grader_with_one_request(endpoint
     assert score["accuracy_avg"] == 1.0
 
 
+def test_aime24_limit_caps_source_records_before_repeated_grading(endpoint, tmp_path):
+    data_file = tmp_path / "aime24.jsonl"
+    data_file.write_text(
+        "\n".join(
+            json.dumps({"id": str(index), "problem": problem, "expected_answer": "42"})
+            for index, problem in enumerate(("What is 6 times 7?", "What is 40 plus 2?"))
+        )
+        + "\n"
+    )
+    benchmark = AIME24OneRepeatBenchmark(data_file=str(data_file), seed=[42, 42, 42, 42])
+    benchmark.set_evaluation_limits(limit=1)
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"]) == 1
+    assert benchmark.evaluate_responses(result)["accuracy_avg"] == 1.0
+
+
 def test_gpqa_repeats_use_distinct_sampling_seeds(endpoint, monkeypatch):
     dataset = {
         "train": [
@@ -271,6 +306,29 @@ def test_gpqa_repeats_use_distinct_sampling_seeds(endpoint, monkeypatch):
 
     assert len(result["examples"][0]["model_outputs"]) == 3
     _assert_seeded_requests(endpoint.requests, 42, 3)
+
+
+def test_gpqa_limit_caps_source_records_before_repeated_grading(endpoint, monkeypatch):
+    dataset = {
+        "train": [
+            {
+                "Question": question,
+                "Correct Answer": "42",
+                "Incorrect Answer 1": "40",
+                "Incorrect Answer 2": "41",
+                "Incorrect Answer 3": "43",
+            }
+            for question in ("What is 6 times 7?", "What is 40 plus 2?")
+        ]
+    }
+    monkeypatch.setattr(gpqa_module, "load_dataset", lambda *_args, **_kwargs: dataset)
+    benchmark = GPQADiamondBenchmark(seed=[42, 42, 42, 42])
+    benchmark.set_evaluation_limits(limit=1)
+
+    result = benchmark.generate_responses(_model(endpoint, LocalChatCompletion))
+
+    assert len(result["examples"]) == 1
+    benchmark.evaluate_responses(result)
 
 
 def test_olympiadbench_repeats_use_distinct_sampling_seeds(endpoint, tmp_path):

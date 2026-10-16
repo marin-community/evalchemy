@@ -64,7 +64,7 @@ class GPQADiamondBenchmark(BaseBenchmark):
         Returns:
             Dictionary containing generated responses and examples
         """
-        examples = self.load_questions()
+        examples = self.limit_samples(self.load_questions())
         for example in examples:
             multiple_choice_string, correct_answer = self.generate_multiple_choice_answers(example)
             example["multiple_choice_string"] = multiple_choice_string
