@@ -1,174 +1,77 @@
-"""Construct per-task FineStore resume managers from CLI inputs.
-
-The factory feeds both lm-eval and chat benchmarks. Request state lives in the
-FineStore archive, and a fresh evaluation requires a new archive path.
-
-The fingerprint here is built from the run inputs that are *cheaply available
-from ``args`` + the initialized ``lm``* (model repo/revision, decoding params,
-seeds, template on/off, num_fewshot, max_model_len, num_samples / pass@k batch
-``B``, and a light rendered-config dict). Heavy per-benchmark controlling-file
-digests (loaded dataset bytes, grader ``__file__``) are NOT loaded here — they
-would require materializing each benchmark's dataset/grader at wiring time; the
-decision table is correct without them (they would only ADD refuse-sensitivity).
-Each task gets its own namespace in the archive, and ``task_name`` is a
-material fingerprint field so tasks never collide.
-"""
+"""Construct one streaming FineStore checkpoint namespace per source task."""
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Callable
-from typing import Any, Optional
+from dataclasses import asdict
+from importlib.metadata import distributions
+from pathlib import Path
+from finestore.store import DataStore
+from packaging.utils import canonicalize_name
 
 from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
-from eval.contracts.finestore_resume import FineStoreResumeManager
+from eval.contracts.finestore_resume import FineStoreResumeManager, OPERATION_PROTOCOL
+from eval.execution.run_spec import RunSpec
+from eval.limits import parse_key_value_args
+from eval.resume.fingerprint import RunFingerprint, digest_files, resolve_model_revision
+from eval.runtime.checkpoints import input_digest
 
-from .fingerprint import RunFingerprint, resolve_model_revision
-
-logger = logging.getLogger(__name__)
-
-
-def _parse_model_args(model_args: Optional[str]) -> dict:
-    """Best-effort parse of the ``key=val,key=val`` model_args string into a dict."""
-    out: dict = {}
-    if not model_args:
-        return out
-    if isinstance(model_args, dict):
-        return dict(model_args)
-    for part in str(model_args).split(","):
-        if "=" in part:
-            k, v = part.split("=", 1)
-            out[k.strip()] = v.strip()
-    return out
+MODEL_IDENTITY_FIELDS = {
+    "pretrained", "model", "revision", "tokenizer", "tokenizer_backend", "tokenizer_revision",
+    "chat_template", "chat_template_args", "chat_template_kwargs", "extra_body", "completion_content_policy",
+    "truncate", "max_length", "max_model_len", "dtype",
+    "lora_local_path", "peft", "add_bos_token", "base_url", "model_url_suffix",
+}
 
 
-def _parse_gen_kwargs(gen_kwargs: Optional[str]) -> dict:
-    """Parse the ``--gen_kwargs`` ``temperature=0,top_p=1`` string into a dict.
-
-    Numbers are coerced to int/float so two spellings of the same value hash
-    identically; everything else stays a string.
-    """
-    out: dict = {}
-    if not gen_kwargs:
-        return out
-    for part in str(gen_kwargs).split(","):
-        if "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        k, v = k.strip(), v.strip()
-        try:
-            out[k] = int(v)
-        except ValueError:
-            try:
-                out[k] = float(v)
-            except ValueError:
-                out[k] = v
-    return out
-
-
-def _world_rank(lm: Any) -> tuple[int, int]:
-    return int(getattr(lm, "world_size", 1) or 1), int(getattr(lm, "rank", 0) or 0)
+def installed_dependency_versions() -> dict[str, str]:
+    """Record installed versions in import order, excluding wheel-owned vendors."""
+    installed = list(distributions())
+    owned_roots = set()
+    for distribution in installed:
+        root = Path(str(distribution.locate_file(""))).resolve()
+        # Vendored metadata belongs to its enclosing wheel. Importing that
+        # wheel must not add its private copies as installed dependencies.
+        for file in distribution.files or ():
+            if file.name in {"METADATA", "PKG-INFO"} and file.parent.suffix in {".dist-info", ".egg-info"}:
+                nested = Path(str(distribution.locate_file(file))).resolve().parent.parent
+                if nested != root and nested.is_relative_to(root):
+                    owned_roots.add(nested)
+    versions = {}
+    for distribution in installed:
+        if Path(str(distribution.locate_file(""))).resolve() not in owned_roots:
+            name = canonicalize_name(distribution.metadata["Name"])
+            # Independent overlays follow the same first-match precedence as
+            # importlib.metadata.distribution(), rather than last-wins order.
+            versions.setdefault(name, distribution.version)
+    return versions
 
 
-def build_resume_wiring(args: Any, lm: Any) -> Callable[[str], FineStoreResumeManager]:
-    """Build the per-task FineStore manager factory and stash it on ``args``.
+def build_resume_wiring(args, lm, run: RunSpec, *, store: DataStore, judge_configs=None):
+    model_args = parse_key_value_args(args.model_args or "")
+    identity = {name: value for name, value in model_args.items() if name in MODEL_IDENTITY_FIELDS}
+    repository = identity.get("pretrained", identity.get("model"))
+    identity["resolved_revision"] = resolve_model_revision(repository, identity.get("revision"), allow_network=False)
+    identity["adapter"] = args.model
+    identity["template"] = lm.chat_template(run.apply_chat_template)
+    root = Path(__file__).resolve().parents[1]
+    code = digest_files([*root.rglob("*.py"), *root.rglob("*.yaml")])
+    # Wheels have no checkout lockfile. Record the versions actually executing
+    # the run in both installed and source environments.
+    dependencies = installed_dependency_versions()
 
-    Returns the factory (also set as ``args.resume_manager_factory``) so the
-    caller can ``attach_resume_manager`` to chat benchmark instances.
-    """
-    mode = args.resume_mode
-    if mode == "off":
-        raise ValueError("FineStore resume cannot be disabled")
-
-    finestore_output_path = args.finestore_output_path
-    if not finestore_output_path:
-        raise ValueError("--finestore_output_path is required for resume")
-
-    world_size, rank = _world_rank(lm)
-
-    margs = _parse_model_args(getattr(args, "model_args", "") or "")
-    model_repo = margs.get("pretrained") or margs.get("model") or getattr(args, "model_name", None)
-    revision = margs.get("revision")
-    model_revision = resolve_model_revision(model_repo, revision, allow_network=False)
-    # The endpoint may also report this as max_model_len.
-    max_model_len = margs.get("max_length", margs.get("max_model_len"))
-    if max_model_len is not None:
-        try:
-            max_model_len = int(max_model_len)
-        except (TypeError, ValueError):
-            max_model_len = None
-
-    gen = _parse_gen_kwargs(getattr(args, "gen_kwargs", None))
-    max_tokens = getattr(args, "max_tokens", None)
-    decoding = dict(gen)
-    # max generation length: prefer the explicit --max_tokens, else gen_kwargs alias.
-    if max_tokens is not None:
-        try:
-            decoding["max_tokens"] = int(max_tokens)
-        except (TypeError, ValueError):
-            pass
-    elif "max_gen_toks" in gen:
-        decoding["max_gen_toks"] = gen["max_gen_toks"]
-    num_samples = int(getattr(args, "num_samples", 1) or 1)
-    if num_samples > 1:
-        decoding["num_samples"] = num_samples
-
-    apply_chat_template = bool(getattr(args, "apply_chat_template", False))
-    num_fewshot = getattr(args, "num_fewshot", None)
-    passk_batch_size = getattr(args, "passk_batch_size", None)
-
-    seed = getattr(args, "seed", None)
-    seed_set = list(seed) if seed is not None else None
-
-    # A light rendered-config dict (material): the resolved knobs that change the
-    # run's meaning but are not already covered by the scalars above.
-    rendered_config = {
-        "annotator_model": getattr(args, "annotator_model", None),
-        "limit": getattr(args, "limit", None),
-        "predict_only": bool(getattr(args, "predict_only", False)),
-        "fewshot_as_multiturn": bool(getattr(args, "fewshot_as_multiturn", False)),
-        "system_instruction": getattr(args, "system_instruction", None),
-    }
-
-    def factory(task_name: str) -> FineStoreResumeManager:
-        fp = RunFingerprint.from_run_inputs(
-            model_repo=model_repo,
-            model_revision=model_revision,
-            task_name=task_name,
-            decoding=decoding or None,
-            seed_set=seed_set,
-            max_model_len=max_model_len,
-            num_fewshot=num_fewshot,
-            passk_batch_size=passk_batch_size,
-            apply_chat_template=apply_chat_template,
-            rendered_config=rendered_config,
-        )
+    def factory(task):
+        judge = (judge_configs or {}).get(task)
+        fingerprint = RunFingerprint(inputs={
+            "protocol": OPERATION_PROTOCOL, "task": task, "model": identity,
+            "run": asdict(run), "implementation": code,
+            "dependencies": dependencies,
+            "judge": {"model": judge.model, "endpoint": input_digest(judge.base_url)} if judge else None,
+            "include_path": args.include_path,
+        })
         return FineStoreResumeManager(
-            root=finestore_output_path,
+            store=store,
             source_prefix=getattr(args, "finestore_output_prefix", DEFAULT_SOURCE_PREFIX),
-            task_name=task_name,
-            fingerprint=fp,
-            mode=mode,
-            world_size=world_size,
-            rank=rank,
+            task_name=task, fingerprint=fingerprint, mode=args.resume_mode,
         )
 
-    args.resume_manager_factory = factory
-    logger.info(
-        "resume: --resume-mode=%s active; per-task state under %s (model=%s, rev=%s).",
-        mode,
-        finestore_output_path,
-        model_repo,
-        model_revision,
-    )
     return factory
-
-
-def attach_to_chat_benchmarks(task_manager: Any, task_list: list, factory: Any) -> None:
-    """Attach each chat benchmark's FineStore resume manager."""
-    instances = getattr(task_manager, "benchmark_instances", {}) or {}
-    for task_name in task_list:
-        bench = instances.get(task_name)
-        if bench is None:
-            continue
-        bench.attach_resume_manager(factory(task_name))

@@ -111,6 +111,9 @@ class CompletionText(str):
         """Return the raw response fields that produced this scorer text."""
         return self.response.artifact(self.content_policy)
 
+    def __getnewargs__(self):
+        return str(self), self.response, self.content_policy
+
 
 class FailedGeneration(str):
     """Empty scorer text carrying a classified endpoint failure."""
@@ -126,6 +129,9 @@ class FailedGeneration(str):
             "normalized_content": "",
             "failure_category": self.failure_category,
         }
+
+    def __getnewargs__(self):
+        return (self.failure_category,)
 
 
 def completion_response_from_chat_choice(response: Mapping[str, Any], choice: Mapping[str, Any]) -> CompletionResponse:

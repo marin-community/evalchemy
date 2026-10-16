@@ -18,7 +18,7 @@ def living_children() -> set[int]:
     ``resource_tracker`` daemon; neither is a grader worker, so they are not leaks.
     """
     out = subprocess.run(
-        ["ps", "-A", "-o", "pid=", "-o", "ppid=", "-o", "command="],
+        ["ps", "-ww", "-A", "-o", "pid=", "-o", "ppid=", "-o", "command="],
         capture_output=True,
         text=True,
     ).stdout

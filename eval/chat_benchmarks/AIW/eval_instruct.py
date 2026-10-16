@@ -1,19 +1,20 @@
+from __future__ import annotations
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
 import json
 import logging
 import os
-import numpy as np
-import re
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv
 
-from eval.contracts.sample_results import record_sample_metrics
 from eval.task import BaseBenchmark
 
 
 class AIWBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("AIW", "local")
+    METRICS = ("overall_accuracy", "overall_variance")
+    PRIMARY_METRIC = "overall_accuracy"
+    REDUCER = ReducerSpec(name="last_trial", accuracy="overall_accuracy", groups={"id": "per_id_stats"})
     """
     AIW Benchmark for evaluating the math reasoning of LLMs.
     """
@@ -45,71 +46,8 @@ class AIWBenchmark(BaseBenchmark):
         self.debug = debug
         self.max_new_tokens = max_tokens
         self.seed = seed
-        self.n_trials = n_trials
+        self.n_repeat = n_trials
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
-
-        Args:
-            model: Language model
-
-        Returns:
-            Dictionary containing generated responses
-        """
-        examples = self.load_questions()
-
-        # Filter examples based on the target IDs
-        examples = [ex for ex in examples if ex["id"] in self.TARGET_IDS]
-
-        if not examples:
-            self.logger.warning("No matching examples found for the given IDs.")
-            return None
-
-        # Store results for each ID
-        id_results = {ex["id"]: [] for ex in examples}
-
-        for t_id in range(self.n_trials):
-            all_instances = []
-            seed = [s + t_id for s in self.seed]
-            for example in examples:
-                messages = [{"role": "user", "content": example["prompt"]}]
-                try:
-                    templated_messages = self._prepare_messages(messages, model)
-                except Exception as e:
-                    print(f"Error preparing messages: {e}")
-                    templated_messages = messages
-
-                all_instances.append(
-                    Instance(
-                        "generate_until",
-                        example,
-                        (
-                            templated_messages,
-                            {
-                                "do_sample": True,
-                                "max_new_tokens": self.max_new_tokens,
-                                "temperature": 1.0,
-                                "seed": seed,
-                            },
-                        ),
-                        example["id"],
-                    )
-                )
-                all_instances[-1].repeat_idx = t_id
-
-            # Generate model responses
-            outputs = self.compute(model, all_instances)
-
-            if model.rank != 0:
-                return None
-
-            # Store per-ID results
-            for example, output in zip(examples, outputs):
-                example["model_output"] = output
-                example["model_answer"] = self.extract_answer(output)
-
-        return {"examples": examples}
 
     def load_questions(self) -> List[Dict[str, str]]:
         """Load AIW questions from the data file."""
@@ -123,62 +61,11 @@ class AIWBenchmark(BaseBenchmark):
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
 
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution."""
-        try:
-            return re.findall(r"answer:.*?(\d+)", output.lower())[-1]
-        except:
-            try:
-                return re.findall(r"answer is.*?(\d+)", output.lower())[-1]
-            except:
-                try:
-                    return re.findall(r"boxed{(\d+)}", output.lower())[-1]
-                except:
-                    return None
-
-    def grade_response(self, example: Dict[str, Any]) -> None:
-        record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        # Filter only the target IDs
-        examples = [ex for ex in results["examples"] if ex["id"] in self.TARGET_IDS]
-        if not examples:
-            self.logger.warning("No matching examples found for the given IDs.")
-            return None
-
-        # Store results per ID
-        id_results = {ex["id"]: [] for ex in examples}
-
-        for _ in range(self.n_trials):
-            trial_results = []
-            for example in examples:
-                correct = example["sample_metrics"]["accuracy"]
-                id_results[example["id"]].append(correct)
-                trial_results.append(correct)
-
-        # Compute per-ID statistics
-        per_id_stats = {}
-        for qid, id_result in id_results.items():
-            results_array = np.array(id_result)  # Convert to numpy array
-            mean_accuracy = np.mean(results_array)
-            variance = np.var(results_array)
-            per_id_stats[qid] = {"accuracy": mean_accuracy, "variance": variance}
-
-        # Compute overall statistics
-        all_accuracies = np.concatenate([id_results[qid] for qid in id_results])
-        overall_mean_accuracy = np.mean(all_accuracies)
-        overall_variance = np.var(all_accuracies)
-
-        # Log results
-        self.logger.info(f"Overall Accuracy: {overall_mean_accuracy:.4f}, Overall Variance: {overall_variance:.6f}")
-        for qid, stats in per_id_stats.items():
-            self.logger.info(f"ID {qid}: Accuracy = {stats['accuracy']:.4f}, Variance = {stats['variance']:.6f}")
-
-        return {
-            **results,
-            "num_trials": self.n_trials,
-            "num_examples": len(examples),
-            "per_id_stats": per_id_stats,
-            "overall_accuracy": overall_mean_accuracy,
-            "overall_variance": overall_variance,
-        }
+    def iter_specs(self, options):
+        rows = (row for row in self.load_questions() if row["id"] in self.TARGET_IDS)
+        return text_specs(
+            rows, options, prompt=lambda row: row["prompt"], target=lambda row: str(row["right_answer"]),
+            grader="answer_number", reference=lambda _row: {"comparator": "hendrycks_math"}, generation_kwargs={"do_sample": True, "temperature": 1.0,
+                                                "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
+            tags=lambda row: {"id": str(row["id"])},
+        )

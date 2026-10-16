@@ -1,34 +1,13 @@
-import asyncio
+from eval.contracts.eval_spec import SourceRef
+from eval.sources.common import text_specs
 import json
 import logging
 import os
 import re
-from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.aggregation import repeated_accuracy_results
-from eval.contracts.failures import FailureCategory
-from eval.contracts.sample_results import record_sample_metrics
-from eval.contracts.task_outcome import TaskFailure
 from eval.generation_stops import END_OF_TURN_SEQUENCES
-from eval.graders.answer_equivalence import (
-    EquivalenceMethod,
-    EquivalenceRequest,
-    EquivalenceResult,
-    JudgeConfig,
-    grade_math_equivalence,
-)
-from eval.graders.answer_extraction import (
-    AnswerExtractionError,
-    ExtractionFailure,
-    extract_boxed_answer,
-    extraction_failure,
-)
-from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
 # Same prompt shape as MATH500/AMC23/AIME24 (math reasoning benchmarks in this tree):
@@ -92,6 +71,7 @@ def _flatten_reference_answers(raw: Any) -> List[str]:
 
 
 class OlympiadBenchBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("lmms-lab/olympiadbench", "test_en")
     """
     OlympiadBench Benchmark for evaluating competition math/physics reasoning of LLMs.
     Link: https://huggingface.co/datasets/lmms-lab/olympiadbench
@@ -107,8 +87,8 @@ class OlympiadBenchBenchmark(BaseBenchmark):
     PRIMARY_METRIC = "accuracy"
     REQUIRES_JUDGE = True
 
-    def benchmark_size(self) -> int:
-        return len(self.load_questions())
+    def benchmark_size(self) -> int | None:
+        return len(self.load_questions()) if self.data_file is not None else None
 
     def benchmark_metrics(self):
         if self.num_samples > 1:
@@ -135,8 +115,6 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         pass_at_k: Optional[Any] = None,
         n_repeat: int = 10,
         annotator_model: Optional[str] = None,
-        judge_api_key: Optional[str] = None,
-        judge_base_url: Optional[str] = None,
     ):
         """
         Initialize OlympiadBench benchmark.
@@ -155,8 +133,6 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             pass_at_k: k-list for pass@k aggregation (only used when num_samples > 1).
             n_repeat: Number of seeded repetitions for the subset's single-sample score.
             annotator_model: Explicit judge model, or ``auto`` to use ``$JUDGE_MODEL``.
-            judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
-            judge_base_url: Judge endpoint. Falls back to ``$JUDGE_BASE_URL``.
         """
         super().__init__(
             logger=logger,
@@ -172,308 +148,15 @@ class OlympiadBenchBenchmark(BaseBenchmark):
         self.seed = seed
         self.max_new_tokens = max_tokens
         self.n_repeat = n_repeat
-        self.judge_config = (
-            JudgeConfig.resolve(
-                judge_model=annotator_model,
-                api_key=judge_api_key,
-                base_url=judge_base_url,
-            )
-            if self.REQUIRES_JUDGE
-            else None
-        )
+        self.judge_model = annotator_model
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
 
-        Args:
-            model: Language model
 
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        examples = self.load_questions()
 
-        # ---- native pass@k path: num_samples > 1 ----
-        if self.num_samples > 1:
-            return self._generate_pass_at_k(model, examples)
 
-        if self.n_repeat > 1:
-            return self._generate_repeated_responses(model, examples)
 
-        # Prepare instances for model
-        all_instances = []
-        for idx, example in enumerate(examples):
-            messages = [
-                {"role": "user", "content": PROMPT.format(problem=example["problem"])},
-            ]
 
-            templated_messages = self._prepare_messages(messages, model)
 
-            all_instances.append(
-                Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "do_sample": False,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": self.seed,
-                            "until": list(END_OF_TURN_SEQUENCES),
-                        },
-                    ),
-                    idx,
-                )
-            )
-
-        # Generate model responses
-        self.logger.info("Generating responses for OlympiadBench...")
-        outputs = self.compute(model, all_instances)
-
-        # Return None early for non-primary ranks
-        if model.rank != 0:
-            return None
-
-        for example, output in zip(examples, outputs):
-            example["model_output"] = output
-            example["model_answer"], example["answer_extraction_error"] = self._extract_for_scoring(output)
-
-        return {"examples": examples}
-
-    def _generate_repeated_responses(self, model: LM, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate one sampled completion per problem for each seeded repetition."""
-
-        def build_instances(_repeat_idx: int) -> List[Instance]:
-            all_instances = []
-            for idx, example in enumerate(examples):
-                messages = [
-                    {"role": "user", "content": PROMPT.format(problem=example["problem"])},
-                ]
-                templated_messages = self._prepare_messages(messages, model)
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "max_new_tokens": self.max_new_tokens,
-                            "until": list(END_OF_TURN_SEQUENCES),
-                        },
-                    ),
-                    idx,
-                )
-                all_instances.append(instance)
-            return all_instances
-
-        self.logger.info("Generating seeded responses for OlympiadBench...")
-        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
-        if model.rank != 0:
-            return None
-
-        for example, outputs in zip(examples, outputs_by_problem):
-            example["model_outputs"] = outputs
-            extracted = [self._extract_for_scoring(output) for output in outputs]
-            example["model_answers"] = [answer for answer, _ in extracted]
-            example["answer_extraction_errors"] = [error for _, error in extracted]
-        return {"examples": examples}
-
-    def _generate_pass_at_k(self, model: LM, examples: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Generate ``num_samples`` completions per problem via the base scaffold."""
-
-        def build_instances(sample_idx: int, seed: List[int]) -> List[Instance]:
-            instances = []
-            for idx, example in enumerate(examples):
-                messages = [
-                    {
-                        "role": "user",
-                        "content": PROMPT.format(problem=example["problem"]),
-                    }
-                ]
-                templated_messages = self._prepare_messages(messages, model)
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            # Sampling on (pass@k needs diversity); seed varies per sample.
-                            "do_sample": True,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "top_p": 1.0,
-                            "seed": seed,
-                            "until": list(END_OF_TURN_SEQUENCES),
-                        },
-                    ),
-                    idx,
-                )
-                instance.repeat_idx = sample_idx
-                instances.append(instance)
-            return instances
-
-        self.logger.info(f"Generating {self.num_samples} samples/problem for OlympiadBench pass@k...")
-        per_problem = self.generate_n_samples_batched(model, build_instances, self.num_samples)
-        if model.rank != 0:
-            return None
-        for example, outputs in zip(examples, per_problem):
-            example["model_outputs"] = list(outputs)
-            extracted = [self._extract_for_scoring(output) for output in outputs]
-            example["model_answers"] = [answer for answer, _ in extracted]
-            example["answer_extraction_errors"] = [error for _, error in extracted]
-        return {"examples": examples, "pass_at_k": True}
-
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        examples = results["examples"]
-        multiple = results.get("pass_at_k") or self.n_repeat > 1
-        answers = [example["model_answers"] if multiple else [example["model_answer"]] for example in examples]
-        correct_by_example = self._grade_model_answers(examples, answers)
-        for example, correct in zip(examples, correct_by_example, strict=True):
-            example["num_correct"] = sum(correct)
-        if results.get("pass_at_k"):
-            self.record_pass_at_k_metrics(examples, [example["num_correct"] for example in examples])
-        elif self.n_repeat > 1:
-            self.record_repeated_accuracy(examples, list(zip(*correct_by_example)))
-        else:
-            for example, correct in zip(examples, correct_by_example, strict=True):
-                record_sample_metrics(example, accuracy=correct[0])
-        return results
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        examples = results["examples"]
-        total = len(examples)
-        if not examples:
-            raise ValueError("OlympiadBench cannot aggregate an empty result set")
-        grades = [grade for example in examples for grade in example["equivalence_grades"]]
-        all_grades = [
-            grade for example in [*examples, *results.get("excluded_examples", [])]
-            for grade in example["equivalence_grades"]
-        ]
-        grading_summary = {
-            "num_graded_by_minerva": sum(grade["method"] == EquivalenceMethod.MINERVA.value for grade in grades),
-            "num_judged_by_llm": sum(
-                grade["method"] == EquivalenceMethod.LLM_JUDGE.value and "judge_error" not in grade
-                for grade in grades
-            ),
-            "num_judge_failed": sum("judge_error" in grade for grade in all_grades),
-            "judge_model": self.judge_config.model if self.judge_config is not None else None,
-        }
-        metadata = {**grading_summary, **self._dataset_provenance(total)}
-        if results.get("pass_at_k"):
-            num_correct = [example["num_correct"] for example in examples]
-            return {
-                **results,
-                "num_total": total,
-                "num_samples": self.num_samples,
-                "num_correct": num_correct,
-                **metadata,
-                **self.aggregate_pass_at_k(num_correct),
-            }
-        if self.n_repeat > 1:
-            return {**results, **repeated_accuracy_results(examples), **metadata}
-        solved = sum(example["sample_metrics"]["accuracy"] for example in examples)
-        accuracy = solved / total
-        return {
-            **results,
-            "num_total": total,
-            "num_solved": solved,
-            "accuracy": accuracy,
-            "accuracy_stderr": np.sqrt(accuracy * (1 - accuracy) / (total - 1)) if total > 1 else 0.0,
-            **metadata,
-        }
-
-    def _grade_model_answers(
-        self,
-        examples: List[Dict[str, Any]],
-        answers_by_example: List[List[str]],
-    ) -> List[List[bool]]:
-        """Grade extracted answers with Minerva followed by the shared LLM judge."""
-        requests = []
-        positions = []
-        for example_index, (example, answers) in enumerate(zip(examples, answers_by_example, strict=True)):
-            references = tuple(_flatten_reference_answers(example["answer"]))
-            for answer_index, answer in enumerate(answers):
-                requests.append(
-                    EquivalenceRequest(
-                        question=str(example.get("problem", example.get("question", ""))),
-                        reference_answers=references,
-                        candidate_answer=answer,
-                    )
-                )
-                positions.append((example_index, answer_index))
-
-        outcomes = asyncio.run(grade_math_equivalence(requests, self.judge_config))
-        correct_by_example = [[False] * len(answers) for answers in answers_by_example]
-        grades_by_example: List[List[Dict[str, Any]]] = [[{} for _ in answers] for answers in answers_by_example]
-        for (example_index, answer_index), outcome in zip(positions, outcomes, strict=True):
-            if isinstance(outcome, BaseException):
-                if not isinstance(outcome, Exception):
-                    raise outcome
-                record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
-                grades_by_example[example_index][answer_index] = {
-                    "method": EquivalenceMethod.LLM_JUDGE.value,
-                    "judge_label": None,
-                    "judge_raw": None,
-                    "judge_error": asdict(
-                        TaskFailure(
-                            category=FailureCategory.GRADER_INFRASTRUCTURE,
-                            message=str(outcome)[:512] or type(outcome).__name__,
-                            exception_type=type(outcome).__name__,
-                        )
-                    ),
-                }
-                continue
-
-            assert isinstance(outcome, EquivalenceResult)
-            correct_by_example[example_index][answer_index] = outcome.equivalent
-            if outcome.method == EquivalenceMethod.MINERVA:
-                grades_by_example[example_index][answer_index] = {
-                    "method": outcome.method.value,
-                    "judge_label": None,
-                    "judge_raw": None,
-                }
-                continue
-
-            assert outcome.judgment is not None
-            grades_by_example[example_index][answer_index] = {
-                "method": outcome.method.value,
-                "judge_label": outcome.judgment.label.value,
-                "judge_raw": outcome.judgment.raw,
-            }
-
-        for example, grades in zip(examples, grades_by_example, strict=True):
-            example["equivalence_grades"] = grades
-            if len(grades) == 1:
-                example.update(grades[0])
-
-        return correct_by_example
-
-    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        samples = super().to_sample_group(namespace, examples)
-        for sample in samples:
-            grades = examples[sample["doc_id"]]["equivalence_grades"]
-            repeat = sample.get("sample_repeat")
-            sample["equivalence_grades"] = grades if repeat is None else [grades[repeat]]
-            if any("judge_error" in grade for grade in sample["equivalence_grades"]):
-                sample["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
-        return samples
-
-    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        doc = super()._sample_doc(example)
-        for key in ("equivalence_grades", "method", "judge_label", "judge_raw", "judge_error"):
-            doc.pop(key, None)
-        return doc
-
-    def _dataset_provenance(self, total: int) -> Dict[str, Any]:
-        """Return source details persisted with each score artifact."""
-        return {
-            "dataset_name": self.dataset_name,
-            "dataset_revision": self.dataset_revision,
-            "dataset_split": self.dataset_split,
-            "dataset_num_samples": total,
-        }
 
     def load_questions(self) -> List[Dict[str, Any]]:
         """Load the bundled legacy OlympiadBench subset."""
@@ -529,18 +212,15 @@ class OlympiadBenchBenchmark(BaseBenchmark):
             )
         return out
 
-    def extract_answer(self, output: str) -> str:
-        """Extract the first boxed answer before any later task boundary.
 
-        Raises:
-            EmptyResponseError: The model response is empty.
-            MissingAnswerError: No complete boxed answer precedes the boundary.
-        """
-        return extract_boxed_answer(output)
 
-    def _extract_for_scoring(self, output: str) -> tuple[str, Optional[ExtractionFailure]]:
-        """Score missing syntax as incorrect while retaining a structured error."""
-        try:
-            return self.extract_answer(output), None
-        except AnswerExtractionError as exc:
-            return "", extraction_failure(exc)
+    def iter_specs(self, options):
+        return text_specs(
+            self.load_questions(), options, prompt=lambda row: PROMPT.format(problem=row["problem"]),
+            target=lambda row: row["answer"], grader="math_equivalence",
+            reference=lambda row: {"question": row["problem"], "answers": _flatten_reference_answers(row["answer"]),
+                                   "judge": self.REQUIRES_JUDGE},
+            generation_kwargs={"do_sample": self.n_repeat > 1, "temperature": 0.7, "top_p": 1.0,
+                        "max_gen_toks": self.max_new_tokens, "until": list(END_OF_TURN_SEQUENCES)},
+            repeats=self.n_repeat,
+        )

@@ -5,8 +5,8 @@
 pyproject.toml declares one optional-dependency per eval/chat_benchmarks dir (the PEP-685
 normalized dir name). This guards the contract that extra ``x`` carries exactly the
 module-level deps benchmark dir X needs beyond the lean base: for each non-empty extra it
-syncs a throwaway env with ONLY the base + that one extra, then exec-imports the
-benchmark's eval_instruct.py the way eval/task.py does. It also asserts that the resolved
+syncs a throwaway env with ONLY the base + that one extra, then imports the
+benchmark's source module the way eval/task.py does. It also asserts that the resolved
 environment has no torch, which belongs to the local-inference extra. A missing or
 mis-scoped dependency fails here, in CI, instead of at eval time.
 
@@ -16,7 +16,7 @@ check_lean_install.py, so they are skipped unless ``--all`` is passed.
 Modes:
   (outer, default)  Sync one venv per extra under --venv-root, reuse uv's download cache,
                     and dispatch the import into each.
-  --import-one NAME Inner mode, run by the per-extra venv's own python: exec-import that
+  --import-one NAME Inner mode, run by the per-extra venv's own python: import that
                     one benchmark and exit nonzero on any import error.
 
 Usage:
@@ -38,11 +38,6 @@ from dataclasses import dataclass
 from check_lean_install import CHAT_BENCHMARKS_DIR, REPO_ROOT, import_benchmark
 
 PYTHON_VERSION = "3.12"
-
-# eval/task.py sets an empty OPENAI_API_KEY so benchmarks that read it at import do not hit
-# a NoneType; HLE's judge client rejects an EMPTY key, so use a non-empty dummy here. It
-# never leaves the import (no request is made), it only has to be truthy.
-HLE_DUMMY_OPENAI_KEY = "ci-dummy"
 
 # One venv per extra lives here across runs so a rerun reuses the resolved env (uv sync is
 # idempotent); overridable with --venv-root.
@@ -162,56 +157,13 @@ def main() -> None:
     parser.add_argument("benchmarks", nargs="*", help="Specific benchmark dir names to check (default: all non-empty).")
     parser.add_argument("--all", action="store_true", help="Include empty extras (equivalent to the lean check).")
     parser.add_argument("--venv-root", default=DEFAULT_VENV_ROOT, help="Where the per-extra venvs live.")
-    parser.add_argument("--import-one", metavar="DIR", help="Inner mode: exec-import one benchmark and exit.")
+    parser.add_argument("--import-one", metavar="DIR", help="Inner mode: import one benchmark and exit.")
     args = parser.parse_args()
 
     if args.import_one:
-        # Inner mode runs under a per-extra venv's python. HLE's module load needs a
-        # truthy OPENAI_API_KEY; set the dummy for every benchmark (harmless -- no request).
-        os.environ["OPENAI_API_KEY"] = HLE_DUMMY_OPENAI_KEY
-        # Mirror production: eval/task.py (the loader) is already in sys.modules when it
-        # execs a benchmark, so `from eval.task import BaseBenchmark` resolves from the
-        # cache. Without this, a benchmark dir with a sibling eval.py (RepoBench) shadows
-        # the installed `eval` package via the sys.path[0] insert.
-        importlib.import_module("eval.task")
         if importlib.util.find_spec("torch") is not None:
-            raise RuntimeError(
-                f"Benchmark extra for {args.import_one} installed torch; endpoint/grading extras must stay torch-free."
-            )
-        module = import_benchmark(args.import_one)
-        if args.import_one == "BigCodeBench":
-            module.cleanup_resources()
-        elif args.import_one == "LiveBench":
-            conversation = module.get_conversation_template("gpt-4o-mini-2024-07-18")
-            if conversation.name != "chatgpt":
-                raise RuntimeError("LiveBench's torch-free model adapter selected the wrong conversation template.")
-            common = importlib.import_module("livebench.common")
-            if common.model_display_name("gpt-4o-mini") != "gpt-4o-mini-2024-07-18":
-                raise RuntimeError("LiveBench's torch-free model alias lookup changed.")
-            model_adapter = importlib.import_module("livebench.model.model_adapter")
-            try:
-                model_adapter.load_model("local-model")
-            except ModuleNotFoundError as exc:
-                if "evalchemy[vllm]" not in str(exc):
-                    raise
-            else:
-                raise RuntimeError("LiveBench local model loading did not require the local-inference extra.")
-        elif args.import_one == "MTBench":
-            api_models = importlib.import_module("fastchat.model.api_models")
-            conversation = api_models.get_api_conversation_template("gpt-4o-mini-2024-07-18")
-            if conversation.name != "gpt-mini":
-                raise RuntimeError("MTBench's torch-free judge conversation template changed.")
-            importlib.import_module("fastchat.llm_judge.gen_api_answer")
-        elif args.import_one == "MixEval":
-            common_utils = importlib.import_module("mix_eval.utils.common_utils")
-            common_utils.set_seed(123)
-            first = common_utils.random.random()
-            common_utils.set_seed(123)
-            if common_utils.random.random() != first:
-                raise RuntimeError("MixEval's torch-free grader seeding is not deterministic.")
-        elif args.import_one == "alpaca_eval":
-            with module._no_grad():
-                pass
+            raise RuntimeError(f"Benchmark extra for {args.import_one} installed torch")
+        import_benchmark(args.import_one)
         print(f"imported {args.import_one} OK")
         return
 

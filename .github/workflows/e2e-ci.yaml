@@ -71,7 +71,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Run grader parity tests
-        run: uv run --python 3.12 --extra dev pytest tests/graders/ -q
+        run: uv run --python 3.12 --extra dev --extra ifeval --extra alpaca-eval pytest tests/graders/ -q
 
   contracts:
     # The framework-wide task contracts, including the per-sample metrics every
@@ -86,7 +86,7 @@ jobs:
         run: >-
           uv run --python 3.12 --extra dev
           --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
-          --extra ifeval --extra mrcr --extra nupa-loose --extra nupa5k-loose --extra serve-eval
+          --extra ifeval --extra livebench --extra mrcr --extra nupa-loose --extra nupa5k-loose --extra repobench --extra serve-eval
           python -m pytest tests/contracts/ -q
 
   lean-install:

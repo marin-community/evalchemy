@@ -1,4 +1,4 @@
-from livebench.lcb_runner.lm_styles import LMStyle
+from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.lm_styles import LMStyle
 
 
 def extract_code(model_output: str, lmstyle: LMStyle):

@@ -10,7 +10,6 @@ from types import ModuleType
 
 from lm_eval.tasks import TaskManager as LMEvalTaskManager
 
-from .grading import GraderExecutionMode
 from .preflight import ResourceRequirement
 from .task_outcome import TaskRoute
 
@@ -84,25 +83,12 @@ def validate_custom_benchmark_class(benchmark_class: type, base_class: type) -> 
         or inspect.isabstract(benchmark_class)
     ):
         raise TypeError("custom benchmark must be a concrete BaseBenchmark subclass")
-    if benchmark_class.compute is not base_class.compute:
-        raise TypeError(
-            "custom benchmark must not override BaseBenchmark.compute; "
-            "the shared method enforces evaluation limits"
-        )
-    GraderExecutionMode(benchmark_class.GRADER_EXECUTION_MODE)
     requirements = benchmark_class.RESOURCE_REQUIREMENTS
     if not isinstance(requirements, tuple):
         raise TypeError("custom benchmark RESOURCE_REQUIREMENTS must be a tuple")
     for requirement in requirements:
         if not isinstance(requirement, ResourceRequirement):
             raise TypeError("custom benchmark resource requirements must implement the shared contract")
-    if benchmark_class.evaluate_responses is not base_class.evaluate_responses:
-        raise TypeError("custom benchmark must implement grading and aggregation, not override evaluate_responses")
-    if (
-        benchmark_class.grade_responses is base_class.grade_responses
-        and benchmark_class.grade_response is base_class.grade_response
-    ):
-        raise TypeError("custom benchmark must implement grade_response or grade_responses")
-    for method_name in ("prepare", "generate_responses", "grade_responses", "aggregate_results", "sample_groups", "to_samples"):
+    for method_name in ("prepare", "describe", "iter_specs"):
         if not callable(getattr(benchmark_class, method_name, None)):
             raise TypeError(f"custom benchmark is missing lifecycle method: {method_name}")

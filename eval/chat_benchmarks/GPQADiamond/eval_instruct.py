@@ -1,3 +1,6 @@
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
+
 import hashlib
 import logging
 import os
@@ -5,14 +8,9 @@ import random
 from typing import Any, Dict, List, Optional
 
 from datasets import load_dataset
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.aggregation import repeated_accuracy_results
-from eval.contracts.sample_results import record_repeated_sample_metrics
 from eval.task import BaseBenchmark
 
-from .testing_utils import get_multiple_choice_answer
 
 PROMPT = """Return your final response within \\boxed{{}} and only include the letter choice (A, B, C, or D) as your final response.
 Problem: {problem}
@@ -27,10 +25,14 @@ if not HF_HUB_CACHE:
 
 
 class GPQADiamondBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("Idavidrein/gpqa", "train")
+    METRICS = ("accuracy_avg",)
+    PRIMARY_METRIC = "accuracy_avg"
     """
     GPQADiamond Benchmark for evaluating multiple choice reasoning of LLMs.
     Link: https://huggingface.co/datasets/Idavidrein/gpqa
     """
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
 
     def __init__(
         self,
@@ -55,70 +57,20 @@ class GPQADiamondBenchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.n_repeat = 3
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
+    def iter_specs(self, options):
+        def records():
+            for source in self.load_questions():
+                choices, answer = self.generate_multiple_choice_answers(source)
+                yield {**source, "multiple_choice_string": choices, "answer": answer}
 
-        Args:
-            model: Language model
+        return text_specs(
+            records(), options,
+            prompt=lambda example: PROMPT.format(problem=example["Question"], options=example["multiple_choice_string"]),
+            target=lambda example: example["answer"], grader="letter_choice",
+            generation_kwargs={"do_sample": True, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
+            repeats=self.n_repeat,
+        )
 
-        Returns:
-            Dictionary containing generated responses and examples
-        """
-        examples = self.load_questions()
-        for example in examples:
-            multiple_choice_string, correct_answer = self.generate_multiple_choice_answers(example)
-            example["multiple_choice_string"] = multiple_choice_string
-            example["answer"] = correct_answer
-
-        def build_instances(_repeat_idx: int) -> List[Instance]:
-            all_instances = []
-            for idx, example in enumerate(examples):
-                messages = [
-                    {
-                        "role": "user",
-                        "content": PROMPT.format(
-                            problem=example["Question"], options=example["multiple_choice_string"]
-                        ),
-                    },
-                ]
-
-                templated_messages = self._prepare_messages(messages, model)
-
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "max_new_tokens": self.max_new_tokens,
-                        },
-                    ),
-                    idx,
-                )
-                all_instances.append(instance)
-            return all_instances
-
-        self.logger.info("Generating seeded responses for GPQADiamond...")
-        outputs_by_problem = self.generate_seeded_repeats(model, build_instances, self.n_repeat)
-        if model.rank != 0:
-            return None
-
-        for example, outputs in zip(examples, outputs_by_problem):
-            example["model_outputs"] = outputs
-            example["model_answers"] = [get_multiple_choice_answer(o) for o in outputs]
-
-        return {"examples": examples}
-
-    def grade_response(self, example: Dict[str, Any]) -> None:
-        scores = [
-            example["answer"] == answer
-            for answer in example["model_answers"]
-        ]
-        record_repeated_sample_metrics(example, accuracy=scores)
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        return {**results, **repeated_accuracy_results(results["examples"])}
 
     def load_questions(self) -> List[Dict[str, Any]]:
         """Load GPQADiamond questions from the dataset."""

@@ -16,23 +16,23 @@ import numpy as np
 from tqdm import tqdm
 
 # todo: find a better solution than all these imports.
-from livebench.process_results.data_analysis.tablereformat.utils import table_process_results
-from livebench.process_results.data_analysis.cta.utils import cta_process_results
-from livebench.process_results.data_analysis.tablejoin.utils import joinmap_process_results
-from livebench.process_results.reasoning.web_of_lies_v2.utils import web_of_lies_process_results
-from livebench.process_results.reasoning.house_traversal.utils import house_traversal_process_results
-from livebench.process_results.reasoning.zebra_puzzle.utils import get_zebra_puzzle_evaluator
-from livebench.process_results.reasoning.spatial.utils import spatial_process_results
-from livebench.process_results.math.math_competitions.utils import mathcontest_process_results, aime_process_results
-from livebench.process_results.math.olympiad.utils import proof_rearrangement_process_results
-from livebench.process_results.math.AMPS_Hard.utils import amps_hard_process_results
-from livebench.process_results.writing.plot_unscrambling.utils import plot_unscrambling_process_results
-from livebench.process_results.writing.typos.utils import typos_process_results
-from livebench.process_results.writing.connections.utils import get_connections_puzzle_evaluator
-from livebench.process_results.coding.utils import LCB_generation_process_results
-from livebench.process_results.instruction_following.utils import instruction_following_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.data_analysis.tablereformat.utils import table_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.data_analysis.cta.utils import cta_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.data_analysis.tablejoin.utils import joinmap_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.reasoning.web_of_lies_v2.utils import web_of_lies_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.reasoning.house_traversal.utils import house_traversal_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.reasoning.zebra_puzzle.utils import get_zebra_puzzle_evaluator
+from eval.chat_benchmarks.LiveBench.livebench.process_results.reasoning.spatial.utils import spatial_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.math.math_competitions.utils import mathcontest_process_results, aime_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.math.olympiad.utils import proof_rearrangement_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.math.AMPS_Hard.utils import amps_hard_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.writing.plot_unscrambling.utils import plot_unscrambling_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.writing.typos.utils import typos_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.writing.connections.utils import get_connections_puzzle_evaluator
+from eval.chat_benchmarks.LiveBench.livebench.process_results.coding.utils import LCB_generation_process_results
+from eval.chat_benchmarks.LiveBench.livebench.process_results.instruction_following.utils import instruction_following_process_results
 
-from livebench.common import (
+from eval.chat_benchmarks.LiveBench.livebench.common import (
     LIVE_BENCH_RELEASES,
     load_questions,
     load_questions_jsonl,

@@ -27,6 +27,7 @@ DEFAULT_SOURCE_PREFIX = "run"
 _SOURCE_PREFIX = "source_prefix"
 _DOCUMENT = "document"
 _SCORED = "scored"
+_SAMPLE_BUFFER_BYTES = 64 * 1024 * 1024
 _RESULTS_SCHEMA = pa.schema(
     [pa.field(_SOURCE_PREFIX, pa.string()), pa.field(_DOCUMENT, pa.large_string()), pa.field(_SCORED, pa.bool_())]
 )
@@ -64,11 +65,14 @@ class FineStoreOutput:
         self.source_prefix = source_prefix
         self.task_names = tuple(task_names)
         self._store = DataStore.open(root, writer_id=f"evalchemy-{uuid.uuid4().hex}")
+        self._sample_schema = samples_schema()
+        self._sample_bytes = 0
         self._samples = self._store.table(
             ARCHIVE_SAMPLES_TABLE,
             primary_key=SAMPLES_MERGE_KEY,
-            schema=samples_schema(),
+            schema=self._sample_schema,
             schema_version=SCHEMA_VERSION,
+            on_conflict=OnConflict.SUPERSEDE,
         )
         self._results = self._store.table(
             RESULTS_TABLE,
@@ -87,15 +91,30 @@ class FineStoreOutput:
         repeat = record.get("sample_repeat")
         trial_id = "" if repeat is None else str(repeat)
         for sample in samples_from_lm_eval(normalized_task, dict(record)):
-            self._samples.append(sample_to_archive_row(sample, trial_id=trial_id))
+            row = sample_to_archive_row(sample, trial_id=trial_id)
+            row_bytes = pa.Table.from_pylist([row], schema=self._sample_schema).nbytes
+            self._samples.append(row)
+            self._sample_bytes += row_bytes
+            if self._sample_bytes >= _SAMPLE_BUFFER_BYTES:
+                # Background flush requests do not bound admission while a
+                # previous write or compaction owns the storage commit lock.
+                self._samples.flush()
+                self._sample_bytes = 0
+
+    @property
+    def store(self) -> DataStore:
+        """Share this archive's writer; this output context owns its lifetime."""
+        return self._store
 
     def finish_task(self) -> None:
         """Make the task's staged samples readable before starting another task."""
         self._store.flush()
+        self._sample_bytes = 0
 
     def finish(self, results: Mapping[str, Any]) -> None:
         """Publish success only after all samples and task outcomes are complete."""
         self._store.flush()
+        self._sample_bytes = 0
         self._results.append(
             {
                 _SOURCE_PREFIX: self.source_prefix,

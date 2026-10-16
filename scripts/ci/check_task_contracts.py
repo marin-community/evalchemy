@@ -4,6 +4,8 @@
 
 from pathlib import Path
 
+from check_source_architecture import check_source_architecture
+
 from eval.contracts.conformance import discover_task_contracts
 from eval.contracts.task_outcome import TaskRoute
 
@@ -12,6 +14,7 @@ LM_EVAL_INCLUDE_DIR = REPO_ROOT / "eval" / "lm_eval_tasks"
 
 
 def main() -> None:
+    check_source_architecture()
     custom_root = REPO_ROOT / "eval" / "chat_benchmarks"
     contracts = discover_task_contracts(custom_root, LM_EVAL_INCLUDE_DIR)
     custom_count = sum(contract.route is TaskRoute.CUSTOM for contract in contracts)

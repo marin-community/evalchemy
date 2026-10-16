@@ -4,8 +4,6 @@ import pytest
 from lm_eval.tasks import TaskManager
 from lm_eval.tasks._yaml_loader import load_yaml
 
-from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
-from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
 from eval.eval import DEFAULT_LM_EVAL_INCLUDE_DIR
 from eval.generation_stops import (
     GSM8K_STOP_SEQUENCES,
@@ -15,6 +13,7 @@ from eval.generation_stops import (
     chat_request_stops,
     truncate_at_stop,
 )
+from eval.graders.answer_extraction import extract_final_boxed_answer
 from eval.lm_eval_tasks.humaneval.scoring import build_predictions
 
 
@@ -28,8 +27,7 @@ def test_math_graders_ignore_boxed_answers_from_a_repeated_turn():
     output = (
         r"Reasoning. \boxed{17}" + "\nQuestion: unrelated\n" + r"Reasoning. \boxed{42}"
     )
-    assert AIME24Benchmark.extract_answer(None, output) == "17"
-    assert MATH500Benchmark.extract_answer(None, output) == "17"
+    assert extract_final_boxed_answer(output) == "17"
 
 
 @pytest.mark.parametrize(

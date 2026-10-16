@@ -1,7 +1,6 @@
 import asyncio
 
 from eval import robust_api  # noqa: F401 - installs the rolling-likelihood patch
-from lm_eval.api.instance import Instance
 from lm_eval.models.api_models import TemplateAPI
 
 
@@ -15,6 +14,7 @@ class _CacheHook:
 
 class _ConcurrentRollingAPI(TemplateAPI):
     def __init__(self):
+        self._world_size = 1
         self._batch_size = 1
         self._concurrent = 3
         self.max_length = 32
@@ -60,15 +60,17 @@ class _ConcurrentRollingAPI(TemplateAPI):
 def test_rolling_loglikelihood_batches_documents_concurrently():
     model = _ConcurrentRollingAPI()
     documents = ["one", "three", "seven", "nine", "eleven", "thirteen", "fifteen"]
-    requests = [
-        Instance(request_type="loglikelihood_rolling", doc={}, arguments=(document,), idx=index)
-        for index, document in enumerate(documents)
-    ]
+    from eval.contracts.eval_spec import ModelRequest, RequestKind
+    from eval.execution.backend import LMBackend
+    from eval.runtime.pool import ExecutionPool
+    requests = [ModelRequest(RequestKind.ROLLING_LIKELIHOOD, document) for document in documents]
 
-    scores = model.loglikelihood_rolling(requests, disable_tqdm=True)
+    async def run():
+        async with LMBackend(model) as backend:
+            return sorted([completed async for completed in ExecutionPool(3).map(requests, backend.execute)],
+                          key=lambda completed: completed.position)
 
-    assert scores == [-float(len(document)) for document in documents]
+    completed = asyncio.run(run())
+    assert all(item.error is None for item in completed)
+    assert [item.result for item in completed] == [-float(len(document)) for document in documents]
     assert model.max_active_requests == 3
-    assert model.cache_hook.values == {
-        ("loglikelihood_rolling", (document,)): -float(len(document)) for document in documents
-    }

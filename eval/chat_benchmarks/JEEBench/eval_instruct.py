@@ -1,14 +1,12 @@
+from __future__ import annotations
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from datasets import Dataset, load_dataset
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from utils import compute_score, last_boxed_only_string, remove_boxed
 
-from eval.contracts.aggregation import repeated_accuracy_results
-from eval.contracts.sample_results import record_repeated_sample_metrics
 from eval.task import BaseBenchmark
 
 ########################################################################
@@ -70,10 +68,14 @@ def prompt_for_boxed_answer(prompt_library):
 
 
 class JEEBenchBenchmark(BaseBenchmark):
+    SOURCE = SourceRef("daman1209arora/jeebench", "test")
+    METRICS = ("accuracy_avg",)
+    PRIMARY_METRIC = "accuracy_avg"
     """
     JEEBench, comprising "515 challenging preengineering mathematics, physics and chemistry problems from the highly competitive IIT JEE-Advanced exam."
     Link: https://huggingface.co/datasets/daman1209arora/jeebench
     """
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err", trial_metric=None)
 
     def __init__(
         self,
@@ -97,92 +99,9 @@ class JEEBenchBenchmark(BaseBenchmark):
         self.seed = seed
         self.n_repeat = 3
 
-        self.prompt_library = prompt_for_boxed_answer(PROMPT_LIBRARY)
+        self.prompt_library = prompt_for_boxed_answer(dict(PROMPT_LIBRARY))
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
 
-        Args:
-            model: Language model
-
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-
-        self.logger.info("Generating responses in 'normal' mode (no CoT, SC, or Exam mode)...")
-
-        examples = self.load_questions()
-        if self.debug:
-            examples = examples.select(range(3))
-            self.logger.info(f"Debug mode: using 3 examples")
-
-        # Prepare instances for model
-        all_outputs = []
-
-        for i in range(self.n_repeat):
-            all_instances = []
-            seed = [s + i for s in self.seed]
-
-            for idx, example in enumerate(examples):
-                messages = format_message(example, self.prompt_library)
-
-                templated_messages = self._prepare_messages(messages, model)
-
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "do_sample": False,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": seed,
-                        },
-                    ),
-                    idx,
-                )
-
-                # Add repetition information to instance metadata
-                instance.repeat_idx = i
-                instance.metadata = {
-                    "problem_id": str(example["index"]) if "index" in example else str(idx),
-                    "expected_answer": str(example["gold"]),
-                    "subject": str(example["subject"]),
-                    "type": str(example["type"]),
-                }
-
-                all_instances.append(instance)
-
-            # Generate model responses
-            self.logger.info("Generating responses for JEEBench...")
-            outputs = self.compute(model, all_instances)
-            all_outputs.append(outputs)
-        # Return None early for non-primary ranks
-        if model.rank != 0:
-            return None
-
-        examples_list = []
-
-        for example, outputs in zip(examples, zip(*all_outputs)):
-            example["model_outputs"] = list(outputs)
-            example["model_answers"] = [self.extract_answer(o) for o in outputs]
-            examples_list.append(example)
-
-        return {"examples": examples_list}
-
-    def grade_response(self, example: Dict[str, Any]) -> None:
-        scores = [
-            compute_score(example["gold"], answer, example["type"])
-            for answer in example["model_answers"]
-        ]
-        example["score"] = scores
-        record_repeated_sample_metrics(example, accuracy=scores)
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        return {**results, **repeated_accuracy_results(results["examples"])}
 
     def load_questions(self) -> Dataset:
         """
@@ -193,19 +112,14 @@ class JEEBenchBenchmark(BaseBenchmark):
         self.logger.info(f"{len(dataset)} examples retrieved.")
         return dataset
 
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Uses the same logic as hendrycks_math.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
-        """
-        try:
-            answer = remove_boxed(last_boxed_only_string(output))
-            return answer
-        except:
-            return ""
+    def iter_specs(self, options):
+        rows = self.load_questions()
+        if self.debug:
+            rows = list(rows)[:3]
+        return text_specs(
+            rows, options, prompt=lambda row: format_message(row, self.prompt_library),
+            target=lambda row: row["gold"], grader="jee", reference=lambda row: {"type": row["type"]},
+            source_id=lambda row: f"{row['description']}/{row['subject']}/{row['index']}",
+            generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens}, repeats=self.n_repeat,
+            tags=lambda row: {"subject": row["subject"], "type": row["type"]},
+        )

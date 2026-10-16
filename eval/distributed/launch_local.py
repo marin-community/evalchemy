@@ -337,49 +337,6 @@ def launch_local(
     return job_id
 
 
-def launch_eval_sbatch(cmd, logs_dir):
-    """Launch the sbatch job for evaluation step."""
-    print_header("Launching SBATCH Job")
-
-    sbatch_script = "eval/distributed/run_evaluations_tacc.sbatch"
-    # Create a temporary sbatch script with the correct parameters
-    temp_sbatch_file = os.path.join(logs_dir, "job.sbatch")
-    with open(sbatch_script, "r") as f:
-        sbatch_content = f.read()
-
-    sbatch_content = re.sub(r"export EVAL_COMMAND=.*", f'export EVAL_COMMAND="{cmd}"', sbatch_content)
-    sbatch_content = re.sub(r"(^#!.*\n)", r"\1#SBATCH --output=" + logs_dir + r"/%A_%a.out\n", sbatch_content)
-
-    with open(temp_sbatch_file, "w") as f:
-        f.write(sbatch_content)
-
-    print_success(f"Created temporary sbatch file: {temp_sbatch_file}")
-
-    # Launch the sbatch job
-    cmd = f"sbatch {temp_sbatch_file}"
-    stdout, stderr, return_code = execute_command(cmd)
-
-    if return_code != 0:
-        print_error(f"Failed to launch sbatch job: {stderr}")
-        return None, None
-
-    # Extract the job ID from the output
-    job_id_match = re.search(r"Submitted batch job (\d+)", stdout)
-    if job_id_match:
-        job_id = job_id_match.group(1)
-        print_success(f"SBATCH job submitted with ID: {job_id}")
-    else:
-        print_error("Could not determine job ID from sbatch output.")
-        job_id = None
-
-    print_info(f"[Job status] squeue -j {job_id}")
-    print_info(f"[Job status] sacct -j {job_id} -X --format=JobID,JobName,State,Elapsed")
-    print_info(f"[Cancel job] scancel {job_id}")
-    print_info(f"[View logs] tail {logs_dir}/{job_id}_*.out")
-
-    return job_id
-
-
 def launch_sbatch(
     model_path,
     dataset_path,
@@ -809,44 +766,6 @@ def upload_shards_to_hub(output_dir, output_repo_id):
     return True
 
 
-def compute_and_upload_scores(tasks, output_repo_id, model_name, logs_dir, use_database=True):
-    """Compute and upload scores."""
-    print_header("Computing and Uploading Scores")
-    if "LiveCodeBench" in tasks:
-        print_warning("LiveCodeBench evaluation takes ~15mins")
-
-    tasks_str = ",".join(tasks)
-    db_flag = "--use_database" if use_database else ""
-    cmd = f'python -m eval.eval --model precomputed_hf --model_args "repo_id={output_repo_id}",model="{model_name}" --tasks {tasks_str} --output_path logs/$(date -u +%Y%m%dT%H%M%S)-$$ {db_flag}'
-
-    # Check hostname to determine which sbatch script to use
-    hostname_cmd = "echo $HOSTNAME"
-    hostname, _, _ = execute_command(hostname_cmd, verbose=False)
-    print_info(f"Using $HOSTNAME: {hostname} to determine cluster environment.")
-    if "tacc" in hostname:
-        print_info("Detected TACC environment. Computing scores on TACC.")
-        job_id = launch_eval_sbatch(cmd, logs_dir)
-        if not job_id:
-            return False
-
-        print_info("Watchdog mode enabled. Monitoring job progress...")
-        monitor_job(job_id, logs_dir, 1)
-
-        # Check completion
-        if not check_job_completion(job_id):
-            print_error("Some jobs failed. Failed to compute and upload scores.")
-            return False
-    else:
-        stdout, stderr, return_code = execute_command(cmd)
-
-        if return_code != 0:
-            print_error(f"Failed to compute and upload scores: {stderr}")
-            return False
-
-    print_success("Scores computed and uploaded successfully.")
-    return True
-
-
 def main():
     parser = argparse.ArgumentParser(description="Distributed Evaluation Job Manager")
     parser.add_argument(
@@ -857,7 +776,7 @@ def main():
     )
     parser.add_argument("--model_name", type=str, required=True, help="Model name/path to evaluate")
     parser.add_argument("--num_shards", type=int, default=128, help="Number of shards for distributed evaluation")
-    parser.add_argument("--watchdog", action="store_true", help="Monitor job progress and compute scores when done")
+    parser.add_argument("--watchdog", action="store_true", help="Monitor job progress and upload generated outputs")
     parser.add_argument(
         "--max-job-duration",
         type=int,
@@ -1007,15 +926,11 @@ def main():
         exit(1)
 
     # Upload shards
-    upload_shards_to_hub(output_dataset_dir, output_dataset)
-
-    # Compute and upload scores
-    if compute_and_upload_scores(tasks, output_dataset, args.model_name, logs_dir):
-        print_success(f"Evaluation completed successfully. Results uploaded to {output_dataset}")
-        print_info(f"View the results at: https://huggingface.co/datasets/{output_dataset}")
-    else:
-        print_error("Failed to compute and upload scores.")
+    if not upload_shards_to_hub(output_dataset_dir, output_dataset):
+        print_error("Failed to upload generated outputs.")
         exit(1)
+    print_success(f"Inference completed successfully. Outputs uploaded to {output_dataset}")
+    print_info(f"View the outputs at: https://huggingface.co/datasets/{output_dataset}")
 
 
 if __name__ == "__main__":

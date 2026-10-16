@@ -3,7 +3,7 @@
 import pytest
 
 from eval.lm_eval_tasks.gsm8k.utils import gsm8k_flexible_extraction_filter
-from eval.chat_benchmarks.GSM8KPerturbed.eval_instruct import extract_flexible_answer
+from eval.graders.gsm8k import extract_flexible
 from lm_eval.api.instance import Instance
 from lm_eval.filters import build_filter_ensemble
 
@@ -45,7 +45,7 @@ def test_flexible_extract_uses_final_answer_syntax_before_numeric_fallback(respo
     assert selected == expected
 
 
-def test_perturbed_gsm8k_uses_the_same_continuation_boundary():
+def test_shared_gsm8k_extractor_uses_the_next_turn_boundary():
     response = "The answer is 12.\nQ: unrelated question with 8088 rows"
 
-    assert extract_flexible_answer(response) == "12."
+    assert extract_flexible(response) == "12."

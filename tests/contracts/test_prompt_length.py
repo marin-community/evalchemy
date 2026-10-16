@@ -167,11 +167,11 @@ def test_a_loaded_benchmark_requests_the_derived_response_budget(monkeypatch):
         "OlympiadBench",
         context_length=CONTEXT_LENGTH,
         requested_max_tokens=None,
-        prompt_lengths=manager.prompt_lengths,
+        prompt_lengths=load_prompt_lengths(),
     )
-    model = _RequestCapturingLM()
-
-    benchmark.generate_responses(model)
-
+    from eval.sources.common import SourceOptions
+    from eval.contracts.eval_spec import SourceRef
+    options = SourceOptions("OlympiadBench", SourceRef("fixture"), limit=1, max_tokens=expected)
+    specs = list(benchmark.iter_specs(options))
     assert expected > 8_192
-    assert {kwargs["max_new_tokens"] for kwargs in model.gen_kwargs} == {expected}
+    assert {spec.requests[0].generation["max_gen_toks"] for spec in specs} == {expected}

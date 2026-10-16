@@ -1,14 +1,11 @@
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from eval.sources.common import text_specs
+
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
-
-from eval.contracts.aggregation import repeated_accuracy_results
-from eval.contracts.sample_results import record_repeated_sample_metrics
 from eval.task import BaseBenchmark
 
 # Modified version of hendrycks_math with additional instruction to mark the solution with \\boxed
@@ -17,6 +14,9 @@ PROMPT = """Problem: {problem}\nMark your solution with \\boxed\nAnswer:"""
 
 
 class AMC23Benchmark(BaseBenchmark):
+    SOURCE = SourceRef("zwhe99/amc23", "train")
+    METRICS = ("accuracy_avg",)
+    PRIMARY_METRIC = "accuracy_avg"
     """
     AMC23 Benchmark for evaluating the math reasoning of LLMs.
     Link: https://huggingface.co/datasets/zwhe99/amc23
@@ -24,6 +24,7 @@ class AMC23Benchmark(BaseBenchmark):
     Follows the evaluation logic of hendrycks_math answer extraction.
     Added additional instruction to the prompt to mark the solution with \\boxed.
     """
+    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
 
     def __init__(
         self,
@@ -51,82 +52,16 @@ class AMC23Benchmark(BaseBenchmark):
         self.max_new_tokens = max_tokens
         self.n_repeat = 10
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate solution completions using the provided model.
+    def iter_specs(self, options):
+        return text_specs(
+            self.load_questions(), options,
+            prompt=lambda example: PROMPT.format(problem=example['question']),
+            target=lambda example: example['answer'], grader="boxed_math",
+            generation_kwargs={"do_sample": False, "temperature": 0.7, "max_gen_toks": self.max_new_tokens},
+            repeats=self.n_repeat,
+            reference=lambda _row: {"extractor": "hendrycks_math", "comparator": "hendrycks_math"},
+        )
 
-        Args:
-            model: Language model
-
-        Returns:
-            Dictionary containing generated responses and temporary directory,
-            or None for non-primary ranks
-        """
-        examples = self.load_questions()
-
-        # Prepare instances for model
-        all_instances = []
-
-        all_outputs = []
-        for i in range(self.n_repeat):
-            seed = [s + i for s in self.seed]
-            all_instances = []
-            for idx, example in enumerate(examples):
-                messages = [
-                    {"role": "user", "content": PROMPT.format(problem=example["question"])},
-                ]
-
-                templated_messages = self._prepare_messages(messages, model)
-
-                instance = Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "do_sample": False,
-                            "max_new_tokens": self.max_new_tokens,
-                            "temperature": 0.7,
-                            "seed": seed,
-                        },
-                    ),
-                    idx,
-                )
-
-                # Add repetition information to instance metadata
-                instance.repeat_idx = i
-                instance.metadata = {
-                    "problem_id": str(example["id"]) if "id" in example else str(idx),
-                    "expected_answer": str(example["answer"]),
-                    "reference_solution": str(example["solution"]) if "solution" in example else "",
-                }
-
-                all_instances.append(instance)
-
-            # Generate model responses
-            self.logger.info("Generating responses for AMC23...")
-            outputs = self.compute(model, all_instances)
-            all_outputs.append(outputs)
-
-        # Return None early for non-primary ranks
-        if model.rank != 0:
-            return None
-
-        for example, outputs in zip(examples, zip(*all_outputs)):
-            example["model_outputs"] = list(outputs)
-            example["model_answers"] = [self.extract_answer(o) for o in outputs]
-
-        return {"examples": examples}
-
-    def grade_response(self, example: Dict[str, Any]) -> None:
-        scores = [
-            is_equiv(str(example["answer"]), answer)
-            for answer in example["model_answers"]
-        ]
-        record_repeated_sample_metrics(example, accuracy=scores)
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        return {**results, **repeated_accuracy_results(results["examples"])}
 
     def load_questions(self) -> List[Dict[str, str]]:
         """Load AMC23 questions from the data file."""
@@ -139,20 +74,3 @@ class AMC23Benchmark(BaseBenchmark):
  
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
-
-    def extract_answer(self, output: str) -> str:
-        """Extract the final answer from a model-generated solution, which is expected to be in the format of \boxed{answer}.
-
-        Uses the same logic as hendrycks_math.
-
-        Args:
-            output (str): Model-generated solution text
-
-        Returns:
-            str: Extracted final answer. Returns empty string if no answer found in \boxed.
-        """
-        try:
-            answer = remove_boxed(last_boxed_only_string(output))
-            return answer
-        except:
-            return ""

@@ -1,9 +1,9 @@
 import sys
 import warnings
 
-from livebench.model.completions import chat_completion_openai, chat_completion_palm
-from livebench.model.model_adapter import BaseModelAdapter, PaLM2Adapter, get_model_adapter
-from livebench.model.models import (
+from eval.chat_benchmarks.LiveBench.livebench.model.completions import chat_completion_openai, chat_completion_palm
+from eval.chat_benchmarks.LiveBench.livebench.model.model_adapter import BaseModelAdapter, PaLM2Adapter, get_model_adapter
+from eval.chat_benchmarks.LiveBench.livebench.model.models import (
     AnthropicModel,
     AWSModel,
     CohereModel,

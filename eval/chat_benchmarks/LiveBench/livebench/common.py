@@ -12,7 +12,7 @@ import os
 import re
 from typing import Optional
 
-from livebench.model.api_models import get_model
+from eval.chat_benchmarks.LiveBench.livebench.model.api_models import get_model
 
 
 # Extract scores from judgments

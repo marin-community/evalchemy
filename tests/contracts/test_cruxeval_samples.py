@@ -1,42 +1,22 @@
 import json
 
 from eval.chat_benchmarks.CruxEval.eval_instruct import CruxEvalBenchmark
-from eval.sample_logging import canonicalize_samples
+from eval.contracts.eval_spec import SourceRef
+from eval.sources.common import SourceOptions
 
 
-class _CandidateModel:
-    rank = 0
-    world_size = 1
-
-    def __init__(self):
-        self.generated_ids = []
-
-    def apply_chat_template(self, messages):
-        return messages
-
-    def generate_until(self, instances):
-        self.generated_ids.extend(instance.idx for instance in instances)
-        return ["[ANSWER] candidate [/ANSWER]" for _ in instances]
-
-
-def test_cruxeval_sample_cap_emits_one_record_per_direction(tmp_path):
+def test_cruxeval_source_limits_before_expanding_directions(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
     rows = [
         {"id": f"sample_{index}", "code": "def f(x): return x + 1", "input": str(index), "output": str(index + 1)}
         for index in range(3)
     ]
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
     (data_dir / "cruxeval.jsonl").write_text("".join(f"{json.dumps(row)}\n" for row in rows))
-    benchmark = CruxEvalBenchmark(data_dir=str(data_dir))
-    benchmark.set_evaluation_limits(limit=1)
-    model = _CandidateModel()
 
-    generated = benchmark.generate_responses(model)
-    scored = benchmark.evaluate_responses(generated)
-    samples = benchmark.to_samples(generated, scored)
-    canonical = canonicalize_samples("CruxEval", samples, benchmark.sample_manifest)
+    specs = list(CruxEvalBenchmark(data_dir=str(data_dir)).iter_specs(SourceOptions("CruxEval", SourceRef("fixture"), limit=1)))
 
-    assert model.generated_ids == ["sample_0", "sample_0"]
-    assert [sample["sample_namespace"] for sample in canonical] == ["input", "output"]
-    assert [sample["target"] for sample in canonical] == ["0", "1"]
-    assert all(sample["doc_hash"] and sample["prompt_hash"] and sample["target_hash"] for sample in canonical)
+    assert [(spec.source_id, spec.namespace, spec.target) for spec in specs] == [
+        ("sample_0", "input", "0"),
+        ("sample_0", "output", "1"),
+    ]

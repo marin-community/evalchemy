@@ -5,6 +5,7 @@ import random
 from typing import Any, Dict, List, Optional
 
 from eval.chat_benchmarks.SimpleQA.eval_instruct import DEFAULT_DATA_FILE, SimpleQABenchmark
+from eval.contracts.eval_spec import SourceRef
 
 MINI_DATASET_SIZE = 500
 MINI_SAMPLE_SEED = 0
@@ -13,6 +14,8 @@ MINI_SAMPLE_SEED = 0
 class SimpleQAMiniBenchmark(SimpleQABenchmark):
     """Evaluate OpenAI's seeded 500-question SimpleQA mini subset."""
 
+    SOURCE = SourceRef("openai/simple-evals", "simple_qa_test_set", "mini-seed-0")
+
     def __init__(
         self,
         data_file: str = DEFAULT_DATA_FILE,
@@ -20,8 +23,6 @@ class SimpleQAMiniBenchmark(SimpleQABenchmark):
         seed: tuple[int, int, int, int] = (0, 1234, 1234, 1234),
         max_tokens: int = 512,
         annotator_model: Optional[str] = None,
-        judge_api_key: Optional[str] = None,
-        judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
     ):
@@ -31,8 +32,6 @@ class SimpleQAMiniBenchmark(SimpleQABenchmark):
             seed=seed,
             max_tokens=max_tokens,
             annotator_model=annotator_model,
-            judge_api_key=judge_api_key,
-            judge_base_url=judge_base_url,
             logger=logger,
             system_instruction=system_instruction,
         )

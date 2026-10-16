@@ -18,7 +18,7 @@ from eval.completion_response import (
 )
 from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import record_sample_metrics
-from eval.robust_api import TRANSPORT_FAILURE_MARKER, capture_endpoint_failures
+
 from eval.sample_logging import canonicalize_samples
 from eval.task import BaseBenchmark
 
@@ -26,7 +26,6 @@ from eval.task import BaseBenchmark
 def _adapter(policy: CompletionContentPolicy = CompletionContentPolicy.COMBINE):
     adapter = object.__new__(LocalChatCompletion)
     adapter.completion_content_policy = policy
-    adapter.completion_responses = []
     return adapter
 
 
@@ -114,15 +113,6 @@ def test_local_completions_payload_uses_the_same_bounded_stop_policy():
     assert _local_completions_payload(stops)["stop"] == ["Question:", "\nQ:", "\n[Question]", "\nUser:"]
 
 
-class _NativeBenchmark(BaseBenchmark):
-    def generate_responses(self, model):
-        raise NotImplementedError
-
-    def grade_responses(self, results):
-        raise NotImplementedError
-
-    def aggregate_results(self, results):
-        raise NotImplementedError
 
 
 def test_local_chat_completion_preserves_reasoning_when_final_content_is_null():
@@ -154,173 +144,14 @@ def test_failed_completion_is_empty_and_classified_in_sample_artifact():
     assert record["completion_responses"][0][0]["normalized_content"] == ""
 
 
-@pytest.mark.parametrize(
-    ("request_error", "expected_category"),
-    [
-        (TimeoutError("endpoint timed out"), FailureCategory.AGENT_TIMEOUT),
-        (RuntimeError("endpoint failed"), FailureCategory.MODEL_TRANSPORT),
-    ],
-)
-def test_one_failed_async_request_returns_an_empty_classified_response(request_error, expected_category):
-    adapter = object.__new__(LocalChatCompletion)
-    adapter._concurrent = 2
-    adapter.verify_certificate = True
-    adapter.timeout = 1
-    adapter.max_retries = 1
-    adapter._batch_size = 1
-    adapter.tokenizer = None
-    adapter.max_length = None
-
-    async def fake_model_call(*, messages, **_kwargs):
-        if messages[0] == "bad":
-            raise request_error
-        return ["ok"]
-
-    adapter.amodel_call = fake_model_call
-
-    async def fetch():
-        with capture_endpoint_failures() as failures:
-            outputs = await adapter.get_batched_requests(["bad", "good"], ["a", "b"], gen_kwargs={})
-        return outputs, failures
-
-    outputs, failures = asyncio.run(fetch())
-
-    assert isinstance(outputs[0][0], FailedGeneration)
-    assert outputs[0][0] == ""
-    assert outputs[1] == ["ok"]
-    assert failures.counts == {expected_category: 1}
 
 
-def test_endpoint_timeout_is_not_retried_within_trial_deadline():
-    adapter = object.__new__(LocalChatCompletion)
-    adapter._concurrent = 1
-    adapter.verify_certificate = True
-    adapter.timeout = 1
-    adapter.max_retries = 2
-    adapter._batch_size = 1
-    adapter.tokenizer = None
-    adapter.max_length = None
-    attempts = 0
-
-    async def fake_model_call(**_kwargs):
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise TimeoutError("endpoint timed out")
-        return ["incorrectly retried"]
-
-    adapter.amodel_call = fake_model_call
-
-    async def fetch():
-        with capture_endpoint_failures() as failures:
-            outputs = await adapter.get_batched_requests(["prompt"], ["cache"], gen_kwargs={})
-        return outputs, failures
-
-    outputs, failures = asyncio.run(fetch())
-
-    assert outputs == [[""]]
-    assert failures.counts == {FailureCategory.AGENT_TIMEOUT: 1}
 
 
-def test_generation_retry_loop_is_bounded_by_one_agent_timeout():
-    adapter = object.__new__(LocalChatCompletion)
-    adapter._concurrent = 1
-    adapter.verify_certificate = True
-    adapter.timeout = 0.01
-    adapter.max_retries = 8
-    adapter._batch_size = 1
-    adapter.tokenizer = None
-    adapter.max_length = None
-    never_returns = asyncio.Event()
-
-    async def fake_model_call(*, messages, **_kwargs):
-        if messages[0] == "slow":
-            await never_returns.wait()
-        return ["ok"]
-
-    adapter.amodel_call = fake_model_call
-
-    async def fetch():
-        with capture_endpoint_failures() as failures:
-            outputs = await adapter.get_batched_requests(
-                ["slow", "queued"],
-                ["slow-cache", "queued-cache"],
-                gen_kwargs={},
-            )
-        return outputs, failures
-
-    outputs, failures = asyncio.run(fetch())
-    record = canonicalize_samples(
-        "task",
-        [{"resps": [outputs[0]], "metrics": ["accuracy"], "accuracy": 0.0}],
-    )[0]
-
-    assert outputs[0] == [""]
-    assert outputs[1] == ["ok"]
-    assert failures.counts == {FailureCategory.AGENT_TIMEOUT: 1}
-    assert record["failure_category"] == "AgentTimeoutError"
 
 
-def test_loglikelihood_request_error_keeps_session_open_until_siblings_settle():
-    adapter = object.__new__(LocalChatCompletion)
-    adapter._concurrent = 2
-    adapter.verify_certificate = True
-    adapter.timeout = 1
-    adapter.max_retries = 1
-    adapter._batch_size = 1
-    adapter.tokenizer = None
-    adapter.max_length = None
-    session_states = []
-
-    async def fake_model_call(*, session, messages, **_kwargs):
-        if messages[0] == "bad":
-            raise RuntimeError("serve error")
-        await asyncio.sleep(0.01)
-        session_states.append(session.closed)
-        return [(-1.0, False)]
-
-    adapter.amodel_call = fake_model_call
-
-    async def fetch():
-        with pytest.raises(RuntimeError, match="serve error"):
-            await adapter.get_batched_requests(
-                ["bad", "good"],
-                ["a", "b"],
-                generate=False,
-            )
-        # The old gather path left the sibling alive after closing its session.
-        await asyncio.sleep(0.02)
-
-    asyncio.run(fetch())
-
-    assert session_states == [False]
 
 
-def test_chat_request_without_client_tokenizer_skips_preflight_and_sends_cap():
-    adapter = object.__new__(LocalChatCompletion)
-    adapter._concurrent = 2
-    adapter.verify_certificate = True
-    adapter.timeout = 1
-    adapter.max_retries = 1
-    adapter._batch_size = 1
-    adapter.tokenizer = None
-    adapter.max_length = 4095
-    sent_kwargs = []
-
-    async def fake_model_call(*, gen_kwargs, **_kwargs):
-        sent_kwargs.append(gen_kwargs)
-        return ["ok"]
-
-    adapter.amodel_call = fake_model_call
-    messages = [{"role": "user", "content": "question"}]
-
-    async def fetch():
-        return await adapter.get_batched_requests([messages], ["cache"], gen_kwargs={"max_gen_toks": 128})
-
-    outputs = asyncio.run(fetch())
-
-    assert outputs == [["ok"]]
-    assert sent_kwargs == [{"max_gen_toks": 128}]
 
 
 def test_successful_empty_chat_responses_invalidate_result_quality():
@@ -346,18 +177,11 @@ def test_successful_empty_chat_responses_invalidate_result_quality():
         {"index": 0, "finish_reason": "stop", "message": {"content": None}, "reasoning": "reasoning"},
     ],
 )
-@pytest.mark.parametrize("pipeline", ["lm_eval_native", "evalchemy_native"])
-def test_reasoning_aliases_are_scored_and_audited_in_every_task_path(choice, pipeline):
+def test_reasoning_aliases_are_scored_and_audited_in_every_task_path(choice):
     response = {"id": "completion-1", "usage": {"completion_tokens": 4}, "choices": [choice]}
     generated = _adapter().parse_generations(response)[0]
 
-    if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
-    else:
-        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
-        record_sample_metrics(example, accuracy=1.0)
-        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
-    record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
+    record = json.loads(json.dumps(_scored_record(generated)))
 
     assert str(generated) == "reasoning"
     assert record["completion_responses"][0][0]["reasoning_content"] == "reasoning"
@@ -422,7 +246,6 @@ def test_completion_response_normalizes_every_content_shape(message, finish_reas
     assert completion.artifact()["provider_metadata"] == {"id": "completion-1"}
 
 
-@pytest.mark.parametrize("pipeline", ["lm_eval_native", "evalchemy_native"])
 @pytest.mark.parametrize("policy", [CompletionContentPolicy.COMBINE, CompletionContentPolicy.FINAL_ONLY])
 @pytest.mark.parametrize(
     ("message", "finish_reason", "expected", "classification"),
@@ -450,19 +273,13 @@ def test_completion_response_normalizes_every_content_shape(message, finish_reas
     ],
 )
 def test_reasoning_responses_are_scored_and_audited_in_every_task_path(
-    pipeline, policy, message, finish_reason, expected, classification
+    policy, message, finish_reason, expected, classification
 ):
     response = {"id": "completion-1", "usage": {"completion_tokens": 4}}
     choice = {"index": 0, "finish_reason": finish_reason, "message": message}
     generated = _adapter(policy).parse_generations({**response, "choices": [choice]})[0]
 
-    if pipeline == "lm_eval_native":
-        samples = [{"resps": [[generated]], "metrics": ["accuracy"], "accuracy": 1.0}]
-    else:
-        example = {"problem": "1 + 1", "answer": "2", "model_output": generated}
-        record_sample_metrics(example, accuracy=1.0)
-        samples = _NativeBenchmark().to_samples({"examples": [example]}, {})
-    record = json.loads(json.dumps(canonicalize_samples(pipeline, samples)[0]))
+    record = json.loads(json.dumps(_scored_record(generated)))
 
     expected_scorer_text = expected if policy == CompletionContentPolicy.COMBINE else message.get("content") or ""
     assert str(generated) == expected_scorer_text
@@ -472,73 +289,36 @@ def test_reasoning_responses_are_scored_and_audited_in_every_task_path(
     assert record["completion_responses"][0][0]["content_policy"] == policy
 
 
-def _sync_adapter(max_retries: int = 2) -> LocalCompletionsAPI:
-    return LocalCompletionsAPI(
-        model="stub",
-        base_url="http://127.0.0.1:1/v1/completions",
-        tokenizer_backend="none",
-        tokenized_requests=False,
-        max_retries=max_retries,
-    )
 
 
-def _failing_post(error: Exception):
-    """Build a ``requests.post`` stub whose endpoint always fails, plus its attempt log."""
-    attempts = []
-
-    def post(*_args, **_kwargs):
-        attempts.append(1)
-        raise error
-
-    return attempts, post
 
 
-def test_sync_transport_exhaustion_yields_classified_empty_generations(monkeypatch):
-    attempts, post = _failing_post(requests.exceptions.HTTPError("500 Server Error"))
-    monkeypatch.setattr("lm_eval.models.api_models.requests.post", post)
-
-    with capture_endpoint_failures() as capture:
-        payload = _sync_adapter(max_retries=2).model_call(
-            messages=["Question 1", "Question 2"], generate=True, gen_kwargs={}
-        )
-
-    assert len(attempts) == 2  # the upstream attempt-count retry policy still runs
-    assert payload[TRANSPORT_FAILURE_MARKER] == "model_transport"
-    assert [choice["text"].failure_category for choice in payload["choices"]] == [
-        "model_transport",
-        "model_transport",
-    ]
-    assert capture.counts == {FailureCategory.MODEL_TRANSPORT: 2}
 
 
-def _transport_failure_payload(prompts: int = 2) -> dict:
-    """The synthetic payload the sync guard returns for an exhausted request."""
-    return {
-        TRANSPORT_FAILURE_MARKER: "model_transport",
-        "choices": [{"index": index, "text": FailedGeneration("model_transport")} for index in range(prompts)],
-    }
 
 
-def test_sync_transport_exhaustion_parses_to_empty_scorer_text():
-    generated = LocalCompletionsAPI.parse_generations(_transport_failure_payload())
-
-    assert [text.failure_category for text in generated] == ["model_transport", "model_transport"]
-    assert [str(text) for text in generated] == ["", ""]
 
 
-def test_chat_parse_passes_transport_failure_marker_through():
-    with capture_endpoint_failures() as capture:
-        generated = _adapter().parse_generations([_transport_failure_payload()])
-
-    # The marker path must not double-count the failures as malformed responses.
-    assert capture.counts == {}
-    assert [text.failure_category for text in generated] == ["model_transport", "model_transport"]
 
 
-def test_sync_loglikelihood_keeps_upstream_fail_fast(monkeypatch):
-    attempts, post = _failing_post(requests.exceptions.HTTPError("500 Server Error"))
-    monkeypatch.setattr("lm_eval.models.api_models.requests.post", post)
 
-    with pytest.raises(requests.exceptions.HTTPError):
-        _sync_adapter().model_call(messages=["Question 1"], generate=False)
-    assert len(attempts) == 1
+
+def _scored_record(output):
+    from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
+    from eval.execution.engine import CollectSamples, Evaluator
+
+    class Backend:
+        async def execute(self, request):
+            return output
+
+    async def grade(spec, outputs):
+        return Grade({"accuracy": 1.0})
+
+    spec = EvalSpec("task", SourceRef("fixture"), "item", 0,
+                    (ModelRequest(RequestKind.GENERATE, "question"),), GraderSpec("fixture"))
+    sink = CollectSamples()
+    async def run():
+        async for completed in Evaluator(Backend(), grade, sink, workers=1).run([spec]):
+            assert completed.error is None
+    asyncio.run(run())
+    return sink.samples["task"][0]

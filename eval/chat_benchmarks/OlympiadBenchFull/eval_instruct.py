@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
+from eval.contracts.eval_spec import SourceRef
 
 DEFAULT_DATASET = "lmms-lab/OlympiadBench"
 DEFAULT_DATASET_REVISION = "c24a1391397fcfe50afaea9210d2c29066494b69"
@@ -30,8 +31,6 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
         num_samples: int = 1,
         pass_at_k: Optional[Any] = None,
         annotator_model: Optional[str] = None,
-        judge_api_key: Optional[str] = None,
-        judge_base_url: Optional[str] = None,
     ):
         super().__init__(
             data_file=None,
@@ -47,8 +46,6 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
             pass_at_k=pass_at_k,
             n_repeat=1,
             annotator_model=annotator_model,
-            judge_api_key=judge_api_key,
-            judge_base_url=judge_base_url,
         )
 
     def load_questions(self) -> List[Dict[str, Any]]:
@@ -65,3 +62,4 @@ class OlympiadBenchFullBenchmark(OlympiadBenchBenchmark):
             questions = questions[:2]
             self.logger.info("Debug mode enabled. Using only %s questions.", len(questions))
         return questions
+    SOURCE = SourceRef(DEFAULT_DATASET, DEFAULT_SPLIT, DEFAULT_DATASET_REVISION)

@@ -1,24 +1,11 @@
-import asyncio
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import SourceRef
 import json
 import logging
 import os
-from dataclasses import asdict
 from typing import Any, Dict, List, Optional  # noqa: F401
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.failures import FailureCategory
-from eval.contracts.sample_results import record_sample_metrics
-from eval.contracts.task_outcome import TaskFailure
-from eval.graders.answer_equivalence import (
-    EquivalenceJudgment,
-    EquivalenceRequest,
-    JudgeConfig,
-    JudgeLabel,
-    judge_equivalence,
-)
-from eval.robust_api import record_endpoint_failure
 from eval.task import BaseBenchmark
 
 # Document-grounded prompt: the question is unanswerable without the supporting
@@ -50,14 +37,14 @@ class FinanceBenchBenchmark(BaseBenchmark):
     Grading is LLM-as-judge (SimpleQA-style correct / incorrect / not_attempted) rather
     than exact match, because financial answers frequently differ from the gold only in
     formatting or unit surface form (e.g. "$1,577M" vs "$1577.00"). The shared
-    answer-equivalence judge uses ``JUDGE_API_KEY`` and optional ``JUDGE_BASE_URL``
-    credentials that are separate from the candidate endpoint's ``OPENAI_API_KEY``.
+    answer-equivalence judge is configured by the shared runtime.
 
     Link: https://github.com/patronus-ai/financebench
     """
 
     METRICS = ("accuracy",)
     PRIMARY_METRIC = "accuracy"
+    SOURCE = SourceRef("PatronusAI/financebench", "test")
     REQUIRES_JUDGE = True
 
     def __init__(
@@ -69,8 +56,6 @@ class FinanceBenchBenchmark(BaseBenchmark):
         seed: List[int] = [0, 1234, 1234, 1234],
         max_tokens: int = 4096,
         annotator_model: Optional[str] = None,
-        judge_api_key: Optional[str] = None,
-        judge_base_url: Optional[str] = None,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
     ):
@@ -87,9 +72,6 @@ class FinanceBenchBenchmark(BaseBenchmark):
             annotator_model: Override the judge model. The CLI's ``auto`` sentinel is
                 treated as unset, then falls back to ``$JUDGE_MODEL`` and finally
                 ``gpt-4o-mini`` (the evalchemy-standard cheap judge).
-            judge_api_key: Judge credential. Falls back to ``$JUDGE_API_KEY``.
-            judge_base_url: OpenAI-compatible judge endpoint. Falls back to
-                ``$JUDGE_BASE_URL`` and then the OpenAI API.
             logger: Optional logger instance.
             system_instruction: Optional system instruction for the model.
         """
@@ -98,163 +80,11 @@ class FinanceBenchBenchmark(BaseBenchmark):
         self.debug = debug
         self.seed = seed
         self.max_new_tokens = max_tokens
-        self.judge_config = JudgeConfig.resolve(
-            judge_model=annotator_model,
-            api_key=judge_api_key,
-            base_url=judge_base_url,
-        )
-        self.judge_model = self.judge_config.model
+        self.judge_model = annotator_model
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate answers using the provided model.
 
-        Args:
-            model: Language model.
 
-        Returns:
-            Dictionary containing the examples enriched with ``model_output``, or None
-            for non-primary ranks.
-        """
-        examples = self.limit_samples(self.load_questions())
 
-        all_instances = []
-        for idx, example in enumerate(examples):
-            content = PROMPT.format(
-                question=example["question"],
-                evidence_text=example["evidence_text"],
-            )
-            messages = [{"role": "user", "content": content}]
-            templated_messages = self._prepare_messages(messages, model)
-
-            all_instances.append(
-                Instance(
-                    "generate_until",
-                    example,
-                    (
-                        templated_messages,
-                        {
-                            "do_sample": False,
-                            "max_new_tokens": self.max_new_tokens,
-                            # Deterministic decoding -- FinanceBench is factual Q&A, so a
-                            # single greedy answer is the right evaluation signal.
-                            "temperature": 0,
-                            "seed": self.seed,
-                        },
-                    ),
-                    idx,
-                )
-            )
-
-        self.logger.info("Generating responses for FinanceBench...")
-        outputs = self.compute(model, all_instances)
-
-        # Return None early for non-primary ranks.
-        if model.rank != 0:
-            return None
-
-        for example, output in zip(examples, outputs):
-            example["model_output"] = output
-
-        return {"examples": examples, "judge_model": self.judge_model}
-
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        examples = results["examples"]
-        total = len(examples)
-        judge_model = results.get("judge_model", self.judge_model)
-        judge_config = JudgeConfig(
-            model=judge_model,
-            base_url=self.judge_config.base_url,
-            api_key=self.judge_config.api_key,
-        )
-
-        self.logger.info(
-            f"Judging {total} FinanceBench responses with {judge_model}..."
-        )
-        judgments = asyncio.run(
-            judge_equivalence(
-                [
-                    EquivalenceRequest(
-                        question=example["question"],
-                        reference_answers=(str(example["answer"]),),
-                        candidate_answer=example.get("model_output", "") or "",
-                    )
-                    for example in examples
-                ],
-                judge_config,
-            )
-        )
-
-        for index, (example, judgment) in enumerate(zip(examples, judgments, strict=True)):
-            if isinstance(judgment, BaseException):
-                if not isinstance(judgment, Exception):
-                    raise judgment
-                record_endpoint_failure(FailureCategory.GRADER_INFRASTRUCTURE)
-                example["judge_label"] = None
-                example["judge_raw"] = None
-                example["failure_category"] = FailureCategory.GRADER_INFRASTRUCTURE.value
-                example["judge_error"] = asdict(
-                    TaskFailure(
-                        category=FailureCategory.GRADER_INFRASTRUCTURE,
-                        message=str(judgment)[:512] or type(judgment).__name__,
-                        exception_type=type(judgment).__name__,
-                    )
-                )
-                record_sample_metrics(example, judge_failed=True)
-                self.logger.warning("FinanceBench judge failed for trial %d: %s", index, judgment)
-                continue
-
-            assert isinstance(judgment, EquivalenceJudgment)
-            label = judgment.label
-            example["judge_label"] = label.value
-            example["judge_raw"] = judgment.raw
-            record_sample_metrics(
-                example,
-                accuracy=label == JudgeLabel.CORRECT,
-                not_attempted=label == JudgeLabel.NOT_ATTEMPTED,
-                judge_failed=False,
-            )
-        return results
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        examples = results["examples"]
-        all_examples = [*examples, *results.get("excluded_examples", [])]
-        total = len(all_examples)
-        judge_model = results.get("judge_model", self.judge_model)
-        num_correct = sum(example["judge_label"] == JudgeLabel.CORRECT.value for example in examples)
-        num_incorrect = sum(example["judge_label"] == JudgeLabel.INCORRECT.value for example in examples)
-        num_not_attempted = sum(example["judge_label"] == JudgeLabel.NOT_ATTEMPTED.value for example in examples)
-        num_judge_failed = sum(example["judge_label"] is None for example in all_examples)
-        num_judged = sum(example["judge_label"] is not None for example in examples)
-        return {
-                **results,
-                "num_total": total,
-                "num_judged": num_judged,
-                "scored_count": num_judged,
-                "num_judge_failed": num_judge_failed,
-                "num_correct": num_correct,
-                "num_incorrect": num_incorrect,
-                "num_not_attempted": num_not_attempted,
-                "accuracy": num_correct / num_judged if num_judged else None,
-                "judge_coverage": num_judged / total if total else 0.0,
-                "judge_model": judge_model,
-            }
-
-    def to_sample_group(self, namespace: str, examples: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        samples = super().to_sample_group(namespace, examples)
-        for sample, example in zip(samples, examples, strict=True):
-            sample["judge_label"] = example["judge_label"]
-            sample["judge_raw"] = example["judge_raw"]
-            if "failure_category" in example:
-                sample["failure_category"] = example["failure_category"]
-                sample["judge_error"] = example["judge_error"]
-        return samples
-
-    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        doc = super()._sample_doc(example)
-        for key in ("judge_label", "judge_raw", "failure_category", "judge_error"):
-            doc.pop(key, None)
-        return doc
 
     def load_questions(self) -> List[Dict[str, Any]]:
         """Load FinanceBench questions from the local data file.
@@ -276,3 +106,12 @@ class FinanceBenchBenchmark(BaseBenchmark):
 
         self.logger.info(f"Loaded {len(questions)} questions from {self.data_file}")
         return questions
+
+    def iter_specs(self, options):
+        return text_specs(
+            self.load_questions(), options,
+            prompt=lambda row: PROMPT.format(question=row["question"], evidence_text=row["evidence_text"]),
+            target=lambda row: row["answer"], grader="equivalence_judge",
+            reference=lambda row: {"question": row["question"], "answers": [str(row["answer"])]},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
+        )

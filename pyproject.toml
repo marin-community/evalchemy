@@ -53,7 +53,7 @@ dependencies = [
     "sentencepiece",
     "protobuf",
 
-    # Imported at module load on the core eval path (curator_lm / precomputed_hf_lm /
+    # Imported at module load on the core eval path (curator_lm and
     # upload_to_hf_lm register their models at import; database/utils is imported by
     # eval_tracker; task.py imports numpy).
     "datasets",
@@ -78,6 +78,9 @@ dependencies = [
     "sqlalchemy",
     "python-dotenv",
     "s3fs",
+    # Native memory-limited graders must start without importing the CLI or
+    # inheriting a persistent grading worker's address space.
+    "loky>=3.7.0",
     "marin-finestore>=0.2.113.dev35019671596",
     "marin-rigging>=0.2.67.dev30673006835",
 ]
@@ -271,6 +274,7 @@ allow-direct-references = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+pythonpath = ["."]
 
 # Marin coding standards (https://github.com/marin-community/marin-style), run via
 # `infra/pre-commit.py`. Evalchemy is a fork of mlfoundations/evalchemy, so this is
@@ -302,6 +306,9 @@ include = [
     "eval/lm_eval_tasks/**",
     "eval/graders/**",
     "eval/contracts/**",
+    "eval/runtime/**",
+    "eval/execution/**",
+    "eval/sources/**",
     "tests/e2e/**",
     "tests/drop/**",
     "tests/graders/**",

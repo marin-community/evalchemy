@@ -1,18 +1,16 @@
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
 """OpenAI MRCR benchmark using the corrected, revision-pinned dataset."""
 
 import json
 import logging
 import os
 from collections import defaultdict
-from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional, Union
 
 import tiktoken
 from datasets import load_dataset
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
 
-from eval.contracts.sample_results import record_sample_metrics
 from eval.limits import (
     ContextWindowExceededError,
     encoded_token_count,
@@ -73,14 +71,6 @@ def official_token_count(example: Dict[str, Any]) -> int:
     )
 
 
-def score_response(response: str, answer: str, nonce: str) -> tuple[float, float]:
-    """Return the official nonce-gated similarity and a prefix-hit indicator."""
-    response = str(response)
-    if not response.startswith(nonce):
-        return 0.0, 0.0
-    response_body = response.removeprefix(nonce)
-    answer_body = str(answer).removeprefix(nonce)
-    return float(SequenceMatcher(None, response_body, answer_body).ratio()), 1.0
 
 
 def _interleave_cells(
@@ -136,7 +126,6 @@ class MRCRBenchmark(BaseBenchmark):
 
     def _collect_cells(
         self,
-        model: LM,
         desired_cells: List[tuple[int, int]],
     ) -> Dict[tuple[int, int], List[SelectedExample]]:
         cells: Dict[tuple[int, int], List[SelectedExample]] = defaultdict(list)
@@ -154,13 +143,13 @@ class MRCRBenchmark(BaseBenchmark):
 
             example = dict(source)
             messages = parse_prompt(str(example["prompt"]))
-            payload = self._prepare_messages(messages, model)
+            payload = messages
             example["mrcr_bin_upper"] = upper
             cells[cell].append((example, payload))
         return cells
 
-    def _selected_examples(self, model: LM) -> List[SelectedExample]:
-        context_length = require_context_length(self._evaluation_max_length, task_name="MRCR")
+    def _selected_examples(self, options) -> List[SelectedExample]:
+        context_length = require_context_length(options.context_length, task_name="MRCR")
         eligible_bins = tuple(upper for upper in MRCR_BIN_UPPER_BOUNDS if upper <= context_length)
         desired_cells = [(upper, needles) for upper in eligible_bins for needles in self.n_needles]
         if not desired_cells:
@@ -169,10 +158,10 @@ class MRCRBenchmark(BaseBenchmark):
                 required_tokens=MRCR_BIN_UPPER_BOUNDS[0],
             )
 
-        limit = self.evaluation_limit
+        limit = options.limit
         if self.debug:
             limit = min(limit, 2) if limit is not None else 2
-        cells = self._collect_cells(model, desired_cells)
+        cells = self._collect_cells(desired_cells)
         missing_cells = [cell for cell in desired_cells if not cells[cell]]
         if missing_cells:
             raise ValueError(f"pinned MRCR dataset has no examples for requested cells: {missing_cells}")
@@ -185,66 +174,19 @@ class MRCRBenchmark(BaseBenchmark):
         )
         return ordered
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        selected = self._selected_examples(model)
-        instances = [
-            Instance(
-                "generate_until",
-                example,
-                (
-                    payload,
-                    {
-                        "do_sample": False,
-                        "max_new_tokens": self.max_new_tokens,
-                        "temperature": 0.0,
-                        "seed": self.seed,
-                    },
-                ),
-                index,
-            )
-            for index, (example, payload) in enumerate(selected)
-        ]
-        outputs = self.compute(model, instances)
-        if model.rank != 0:
-            return None
 
-        examples = [example for example, _ in selected]
-        for example, output in zip(examples, outputs):
-            score, prefix_hit = score_response(
-                output,
-                str(example["answer"]),
-                str(example["random_string_to_prepend"]),
-            )
-            example["model_output"] = output
-            example["model_answer"] = output
-            example["score"] = score
-            example["prefix_hit"] = prefix_hit
-        return {"examples": examples}
 
-    def grade_response(self, example: Dict[str, Any]) -> None:
-        record_sample_metrics(example, accuracy=float(example["score"]), prefix_hit=float(example["prefix_hit"]))
 
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Aggregate graded MRCR examples and their context/needle breakdowns."""
-        examples = results["examples"]
-        if not examples:
-            raise ValueError("MRCR cannot aggregate an empty result set")
-        metrics: Dict[str, Any] = {
-            "num_total": len(examples),
-            "mrcr_accuracy": sum(example["sample_metrics"]["accuracy"] for example in examples) / len(examples),
-            "prefix_hit_rate": sum(example["sample_metrics"]["prefix_hit"] for example in examples) / len(examples),
-            "examples": examples,
-        }
-        cells: Dict[tuple[int, int], List[float]] = defaultdict(list)
-        for example in examples:
-            cells[(int(example["mrcr_bin_upper"]), int(example["n_needles"]))].append(example["sample_metrics"]["accuracy"])
-        for (upper, needles), scores in sorted(cells.items()):
-            metric = f"mrcr_{upper}_{needles}needle"
-            metrics[metric] = sum(scores) / len(scores)
-            metrics[f"{metric}_count"] = len(scores)
-        return metrics
+    SOURCE = SourceRef(DATASET_NAME, split="train", revision=DATASET_REVISION)
+    METRICS = ("mrcr_accuracy",)
+    PRIMARY_METRIC = "mrcr_accuracy"
+    REDUCER = ReducerSpec(trial_metric=None, accuracy="mrcr_accuracy")
 
-    def _sample_doc(self, example: Dict[str, Any]) -> Dict[str, Any]:
-        source = super()._sample_doc(example)
-        source.pop("prefix_hit", None)
-        return source
+    def iter_specs(self, options):
+        rows = (row for row, _ in self._selected_examples(options))
+        return text_specs(
+            rows, options, prompt=lambda row: parse_prompt(str(row["prompt"])), target=lambda row: row["answer"],
+            grader="nonce_similarity", reference=lambda row: {"nonce": row["random_string_to_prepend"]},
+            generation_kwargs={"do_sample": False, "temperature": 0, "max_gen_toks": self.max_new_tokens},
+            tags=lambda row: {"cell": f"{row['mrcr_bin_upper']}_{row['n_needles']}needle"},
+        )

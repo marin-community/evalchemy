@@ -1,29 +1,16 @@
-from typing import Dict, List, Any, Optional
-from contextlib import nullcontext
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec
+from eval.contracts.eval_spec import SourceRef
+from alpaca_eval import constants
+from typing import Optional
 import logging
 import datasets
-from tqdm import tqdm
-import pandas as pd
 
-from lm_eval.api.instance import Instance
-from lm_eval.api.model import LM
-from alpaca_eval import utils as alpaca_utils
-from alpaca_eval.annotators import PairwiseAnnotator
-from alpaca_eval.constants import ALPACAEVAL_REFERENCE_OUTPUTS, DEFAULT_ANNOTATOR_CONFIG, IS_ALPACA_EVAL_2
-from alpaca_eval.metrics import get_winrate
-from alpaca_eval.metrics.glm_winrate import get_length_controlled_winrate, load_gamed_data
-from eval.contracts.sample_results import record_sample_metrics
+from alpaca_eval.constants import DEFAULT_ANNOTATOR_CONFIG
+from eval.graders.alpaca import annotation_config
 from eval.task import BaseBenchmark
 
 
-def _no_grad():
-    try:
-        import torch
-    except ModuleNotFoundError as exc:
-        if exc.name != "torch":
-            raise
-        return nullcontext()
-    return torch.no_grad()
 
 
 class AlpacaBenchmark(BaseBenchmark):
@@ -31,7 +18,10 @@ class AlpacaBenchmark(BaseBenchmark):
     Alpaca benchmark for evaluating language model responses on instruction following.
     """
 
-    REQUIRES_OPENAI_ANNOTATOR = True
+    REQUIRES_JUDGE = True
+    SOURCE = SourceRef("tatsu-lab/alpaca_eval", "eval", "alpaca_eval")
+    METRICS = ("win_rate", "standard_error", "n_total", "avg_length", "discrete_win_rate", "length_controlled_winrate", "lc_standard_error")
+    PRIMARY_METRIC = "length_controlled_winrate"
 
     ANNOTATOR_CONFIG_MAP = {
         "gpt-4o-mini-2024-07-18": "weighted_alpaca_eval_gpt-4o-mini-2024-07-18",
@@ -76,6 +66,7 @@ class AlpacaBenchmark(BaseBenchmark):
         self.do_sample = do_sample
         self.debug = debug
         self.annotator_conf = self.ANNOTATOR_CONFIG_MAP[annotator_model]
+        self.judge_model = annotation_config(self.annotator_conf)[1]["completions_kwargs"]["model_name"]
 
     def load_dataset(self) -> datasets.Dataset:
         """Load the evaluation dataset."""
@@ -93,138 +84,17 @@ class AlpacaBenchmark(BaseBenchmark):
             self.logger.error(f"Error loading dataset: {str(e)}")
             raise
 
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate completions for instructions using the provided model.
 
-        Args:
-            model: Language model instance
 
-        Returns:
-            Dictionary containing model outputs and identifier
-        """
-        try:
-            eval_set = self.load_dataset()
 
-            all_instances = []
-            for idx, example in enumerate(eval_set):
-                try:
-                    instruction = example["instruction"]
-                    formatted_instruction = self._prepare_messages([{"role": "user", "content": instruction}], model)
+    REDUCER = ReducerSpec(trial_metric=None, name="alpaca")
 
-                    all_instances.append(
-                        Instance(
-                            "generate_until",
-                            example,
-                            (
-                                formatted_instruction,
-                                {
-                                    "max_new_tokens": self.max_tokens,
-                                    "do_sample": self.do_sample,
-                                    "temperature": self.temperature,
-                                },
-                            ),
-                            idx,
-                        )
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error preparing instance {idx}: {str(e)}")
-                    continue
-
-            with _no_grad():
-                self.logger.info("Generating responses for Alpaca Eval...")
-                outputs = self.compute(model, all_instances)
-
-            if model.rank != 0:
-                return None
-
-            model_outputs = []
-            for idx, (example, output) in enumerate(zip(eval_set, outputs)):
-                try:
-                    instance = {
-                        "instruction": example["instruction"],
-                        "dataset": example["dataset"],
-                        "datasplit": self.split,
-                        "generator": model.model_identifier,
-                        "output": output,
-                    }
-                    model_outputs.append(instance)
-                except Exception as e:
-                    self.logger.error(f"Error processing output {idx}: {str(e)}")
-                    continue
-
-            self.logger.info(f"Generated {len(model_outputs)} responses")
-
-            return {"examples": model_outputs, "model_outputs": model_outputs, "model_identifier": model.model_identifier}
-
-        except Exception as e:
-            self.logger.error(f"Error in generate_responses: {str(e)}")
-            raise
-
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        model_outputs = results["model_outputs"]
-        if not model_outputs:
-            raise ValueError("No model outputs to evaluate")
-        reference_outputs = alpaca_utils.load_or_convert_to_dataframe(ALPACAEVAL_REFERENCE_OUTPUTS)
-        annotations = PairwiseAnnotator(annotators_config=self.annotator_conf).annotate_head2head(
-            outputs_1=reference_outputs,
-            outputs_2=pd.DataFrame(model_outputs),
+    def iter_specs(self, options):
+        references = {row["instruction"]: row for row in constants.ALPACAEVAL_REFERENCE_OUTPUTS()}
+        return text_specs(
+            self.load_dataset(), options, prompt=lambda row: row["instruction"],
+            target=lambda row: references[row["instruction"]]["output"], grader="alpaca",
+            reference=lambda row: {"config": self.annotator_conf,
+                                   "baseline": references[row["instruction"]]["generator"]},
+            generation_kwargs={"temperature": self.temperature, "do_sample": self.do_sample, "max_gen_toks": self.max_tokens},
         )
-        by_output = {(row["instruction"], row["output_2"]): row for row in annotations}
-        for example in model_outputs:
-            annotation = by_output[(example["instruction"], example["output"])]
-            example["annotation"] = annotation
-            preference = float(annotation["preference"])
-            record_sample_metrics(example, win_rate=(1.5 if preference == 0 else preference) - 1)
-        return {
-            **results,
-            "glm_reference": load_gamed_data().to_dict(orient="records") if IS_ALPACA_EVAL_2 else [],
-        }
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        examples = results["examples"]
-        annotations = [example["annotation"] for example in examples]
-        metrics = (
-            get_length_controlled_winrate(
-                annotations,
-                df_gamed=pd.DataFrame(results["glm_reference"]),
-                save_weights_dir=None,
-                is_add_glm_preference_inplace=False,
-            )
-            if IS_ALPACA_EVAL_2 else get_winrate(annotations)
-        )
-        return {
-            **metrics,
-            "mode": "community",
-            "avg_length": int(sum(len(example["output"]) for example in examples) / len(examples)),
-            "num_examples": len(examples),
-            "completion_rate": len(examples) / len(results["model_outputs"]),
-        }
-
-    def run_benchmark(self, model: LM) -> Dict[str, float]:
-        """
-        Run the complete Alpaca benchmark evaluation pipeline.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics, or None for non-primary ranks
-        """
-        self.logger.info("Starting Alpaca benchmark evaluation")
-        try:
-            generation_results = self.generate_responses(model)
-
-            # If not rank 0, return None early
-            if generation_results is None:
-                return None
-
-            evaluation_results = self.evaluate_responses(generation_results)
-            evaluation_results.update(
-                {"benchmark_version": "alpaca_eval", "temperature": self.temperature, "max_tokens": self.max_tokens}
-            )
-            return evaluation_results
-
-        except Exception as e:
-            self.logger.error(f"Error running benchmark: {str(e)}")
-            return {"error": str(e)}

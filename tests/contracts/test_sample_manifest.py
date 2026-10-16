@@ -1,95 +1,47 @@
-# Copyright The Marin Authors
-# SPDX-License-Identifier: Apache-2.0
-"""Behavioral coverage for benchmark-independent sample identity and coverage."""
+"""Identity and streaming-checkpoint behavior at the source execution boundary."""
 
-from types import SimpleNamespace
+import asyncio
 
 import pytest
 
-from eval.contracts.sample_manifest import SampleCoverageError, SampleIdentityError, SampleManifest, SampleRequest
-from eval.contracts.finestore_resume import FineStoreResumeManager
-from eval.resume import RunFingerprint
-from eval.sample_logging import canonicalize_samples
-from eval.task import BaseBenchmark
+from eval.contracts.sample_manifest import SampleIdentityError, SampleManifest, SampleRequest
+from eval.runtime.checkpoints import CheckpointRow, ResumeStream, completed_operation, input_digest
+from eval.runtime.resources import SerialIO
 
 
-class _Benchmark(BaseBenchmark):
-    def generate_responses(self, model):
-        raise NotImplementedError
-
-    def grade_responses(self, results):
-        return results
-
-    def aggregate_results(self, results):
-        raise NotImplementedError
+@pytest.fixture
+def serial_io():
+    owner = SerialIO()
+    try:
+        yield owner
+    finally:
+        owner.close()
 
 
-class _Model:
-    rank = 0
-    world_size = 1
+class _Checkpoints:
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+        self.written = []
+        self.closed = False
 
-    def __init__(self, outputs):
-        self.outputs = outputs
-        self.calls = 0
+    def records(self):
+        yield from self.rows
 
-    def generate_until(self, requests):
-        self.calls += 1
-        return list(self.outputs)
+    def record(self, row):
+        self.written.append(row)
 
-
-class _QueuedModel(_Model):
-    def generate_until(self, requests):
-        self.calls += 1
-        return [f"answer-{request.idx}-{request.repeat_idx}" for request in requests]
-
-
-def _resume_manager(root, fingerprint):
-    return FineStoreResumeManager(str(root), "run", "_", fingerprint)
-
-
-def _instance(source_id, *, repeat=None):
-    instance = SimpleNamespace(
-        idx=source_id,
-        args=("prompt", {}),
-        request_type="generate_until",
-        task_name=None,
-    )
-    if repeat is not None:
-        instance.repeat_idx = repeat
-    return instance
+    def finalize(self):
+        self.closed = True
 
 
 @pytest.mark.parametrize("source_id", ["sample_0", 7, {"split": "test", "id": [3, "a"]}])
 def test_source_id_types_round_trip_without_integer_coercion(source_id):
     manifest = SampleManifest("CruxEval")
+    [entry] = manifest.plan_batch([SampleRequest(source_id=source_id, ordinal=0)])
+    manifest.mark_generated([entry], ["answer"])
 
-    entries = manifest.plan_batch([SampleRequest(source_id=source_id, ordinal=0)])
-    manifest.mark_generated(entries, ["answer"])
-    manifest.mark_scored(manifest.generated_sample_count)
-
-    assert entries[0].source_id == source_id
-    assert manifest.expected_sample_count == 1
+    assert entry.source_id == source_id
     assert manifest.generated_sample_count == 1
-    assert manifest.scored_sample_count == 1
-
-
-@pytest.mark.parametrize("source_id", [None, float("nan"), object()])
-def test_invalid_source_identity_fails_before_generation(source_id):
-    model = _Model(["unused"])
-
-    with pytest.raises(SampleIdentityError):
-        _Benchmark().compute(model, [_instance(source_id)])
-
-    assert model.calls == 0
-
-
-def test_duplicate_source_identity_fails_before_generation():
-    model = _Model(["unused", "unused"])
-
-    with pytest.raises(SampleIdentityError, match="duplicate"):
-        _Benchmark().compute(model, [_instance("same"), _instance("same")])
-
-    assert model.calls == 0
 
 
 def test_source_identity_cannot_move_to_a_different_ordinal():
@@ -100,163 +52,39 @@ def test_source_identity_cannot_move_to_a_different_ordinal():
         manifest.plan_batch([SampleRequest(source_id="stable", ordinal=1)])
 
 
-def test_short_model_response_is_a_coverage_failure():
-    model = _Model(["only-one"])
+def test_stream_refuses_changed_admitted_item_before_model_execution():
+    identity = {"source_id": "old", "ordinal": 0}
+    store = _Checkpoints([CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "x", "output": "saved"})])
+    stream = ResumeStream(store)
 
-    with pytest.raises(SampleCoverageError, match="returned 1 outputs for 2"):
-        _Benchmark().compute(model, [_instance("a"), _instance("b")])
-
-
-def test_namespaces_distinguish_facets_of_the_same_source_dataset():
-    benchmark = _Benchmark()
-    model = _Model(["answer"])
-
-    benchmark.compute(model, [_instance("sample_0")], sample_namespace="input")
-    benchmark.compute(model, [_instance("sample_0")], sample_namespace="output")
-
-    assert benchmark.sample_manifest.expected_sample_count == 2
+    with pytest.raises(ValueError, match="checkpoint source changed"):
+        stream.admit(0, {"source_id": "new", "ordinal": 0})
 
 
-@pytest.mark.parametrize("source_id", ["sample_0", {"split": "test", "id": [3, "a"]}])
-def test_resume_uses_the_shared_opaque_identity(tmp_path, source_id):
-    fingerprint = RunFingerprint.from_run_inputs(
-        model_repo="model",
-        task_name="_",
-        task_data_digest="sha256:data",
-    )
-    first = _Benchmark()
-    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
-    assert first.compute(_Model(["saved"]), [_instance(source_id)]) == ["saved"]
+def test_stream_refuses_changed_operation_input_without_execution(serial_io):
+    store = _Checkpoints()
+    journal = ResumeStream(store).admit(0, {"source_id": "stable"})
+    journal.rows[input_digest({"phase": "generate"})] = {"input_digest": input_digest({"prompt": "old"}), "output": "saved"}
+    called = False
 
-    resumed_model = _Model([])
-    resumed = _Benchmark()
-    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
+    async def execute():
+        nonlocal called
+        called = True
+        return "new"
 
-    assert resumed.compute(resumed_model, [_instance(source_id)]) == ["saved"]
-    assert resumed_model.calls == 0
+    with pytest.raises(ValueError, match="checkpoint input changed"):
+        asyncio.run(completed_operation(journal, {"phase": "generate"}, {"prompt": "new"}, execute, io=serial_io, successful=lambda _: True))
+    assert called is False
 
 
-def test_resume_rejects_changed_identity_before_generation(tmp_path):
-    fingerprint = RunFingerprint.from_run_inputs(
-        model_repo="model",
-        task_name="_",
-        task_data_digest="sha256:data",
-    )
-    first = _Benchmark()
-    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
-    first.compute(_Model(["saved"]), [_instance("old-id")])
+def test_stream_records_only_successful_completed_operations(serial_io):
+    store = _Checkpoints()
+    stream = ResumeStream(store)
+    journal = stream.admit(0, {"source_id": "stable"})
 
-    resumed = _Benchmark()
-    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
-    model = _Model(["unused"])
+    async def execute():
+        return "answer"
 
-    with pytest.raises(SampleIdentityError, match="absent from the current request batch"):
-        resumed.compute(model, [_instance("changed-id")])
-
-    assert model.calls == 0
-
-
-def test_sample_logging_uses_manifest_identity_and_coordinates():
-    manifest = SampleManifest("task")
-    entries = manifest.plan_batch([SampleRequest(source_id="source", ordinal=0, shard=1, repeat=2)])
-    manifest.mark_generated(entries, ["answer"])
-
-    records = canonicalize_samples("task", [{"resps": ["answer"], "metrics": ["accuracy"], "accuracy": 1.0}], manifest)
-
-    assert records[0]["sample_id"] == entries[0].sample_id
-    assert records[0]["source_id"] == "source"
-    assert records[0]["sample_ordinal"] == 0
-    assert records[0]["sample_shard"] == 1
-    assert records[0]["sample_repeat"] == 2
-
-
-def test_sample_logging_preserves_every_repeated_manifest_unit():
-    manifest = SampleManifest("task")
-    entries = manifest.plan_batch(
-        [
-            SampleRequest(source_id=source_id, ordinal=source_id, repeat=repeat)
-            for repeat in range(3)
-            for source_id in range(2)
-        ]
-    )
-    manifest.mark_generated(entries, [f"answer-{index}" for index in range(6)])
-    samples = [
-        {"doc_id": source_id, "resps": [["answer"]], "metrics": ["accuracy"], "accuracy": 1.0}
-        for repeat in range(3)
-        for source_id in range(2)
-    ]
-
-    records = canonicalize_samples("task", samples, manifest)
-
-    assert [(record["source_id"], record["sample_repeat"]) for record in records] == [
-        (source_id, repeat) for repeat in range(3) for source_id in range(2)
-    ]
-
-
-def test_sample_logging_coalesces_complete_lm_eval_filter_cohorts():
-    manifest = SampleManifest("gsm8k")
-    entries = manifest.plan_batch([SampleRequest(source_id=str(doc_id), ordinal=doc_id) for doc_id in range(2)])
-    manifest.mark_generated(entries, ["answer-0", "answer-1"])
-    samples = [
-        {
-            "doc_id": doc_id,
-            "filter": filter_name,
-            "filtered_resps": [filter_name],
-            "metrics": ["score"],
-            "score": doc_id,
-        }
-        for filter_name in ("strict", "flexible")
-        for doc_id in range(2)
-    ]
-
-    records = canonicalize_samples("gsm8k", samples, manifest)
-
-    assert [
-        (
-            record["source_id"],
-            record["filter"],
-            [
-                (variant["filter"], variant["filtered_resps"], variant["metrics"])
-                for variant in record["filter_variants"]
-            ],
-        )
-        for record in records
-    ] == [
-        ("0", "strict", [("strict", ["strict"], {"score": 0}), ("flexible", ["flexible"], {"score": 0})]),
-        ("1", "strict", [("strict", ["strict"], {"score": 1}), ("flexible", ["flexible"], {"score": 1})]),
-    ]
-
-    with pytest.raises(SampleCoverageError, match="received 3 records"):
-        canonicalize_samples("gsm8k", samples[:-1], manifest)
-
-
-def test_passk_restores_are_included_in_manifest_coverage(tmp_path):
-    fingerprint = RunFingerprint.from_run_inputs(
-        model_repo="model",
-        task_name="_",
-        task_data_digest="sha256:data",
-    )
-
-    def build_instances(sample_idx, seed):
-        del seed
-        instances = [_instance("a"), _instance("b")]
-        for instance in instances:
-            instance.repeat_idx = sample_idx
-        return instances
-
-    first = _Benchmark(num_samples=2)
-    first.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
-    expected = first.generate_n_samples_batched(
-        _QueuedModel([]),
-        build_instances,
-        batch_size=1,
-    )
-
-    resumed = _Benchmark(num_samples=2)
-    resumed.attach_resume_manager(_resume_manager(tmp_path, fingerprint))
-    resumed_model = _QueuedModel([])
-
-    assert resumed.generate_n_samples_batched(resumed_model, build_instances, batch_size=1) == expected
-    resumed.sample_manifest.validate_generated()
-    assert resumed.sample_manifest.generated_sample_count == 2
-    assert resumed_model.calls == 0
+    assert asyncio.run(completed_operation(journal, {"phase": "generate"}, {"prompt": "q"}, execute, io=serial_io, successful=lambda _: True)) == "answer"
+    assert store.written[0].position == 0
+    assert store.written[0].payload["output"] == "answer"

@@ -5,12 +5,13 @@
 import json
 import multiprocessing
 import os
+import subprocess
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from eval.task import TaskManager
 
 
 def _record_worker_process(task_id, sample, _language, _timeout, _tmp_dir, completion_id):
@@ -103,19 +104,19 @@ def test_spawned_worker_can_launch_functional_correctness_sandbox(tmp_path, modu
     assert result["passed"], result["result"]
 
 
-@pytest.mark.parametrize(
-    ("benchmark_name", "is_mbpp"),
-    [
-        ("HumanEvalPlus", False),
-        ("MBPPPlus", True),
-    ],
-)
-def test_task_manager_grader_is_importable_in_spawned_worker(tmp_path, benchmark_name, is_mbpp):
-    manager = TaskManager(task_list=[benchmark_name])
-    benchmark = manager.get_benchmark(benchmark_name)
-    check_correctness = benchmark.grade_responses.__globals__["grade_functional_correctness"].__globals__[
-        "check_correctness"
+@pytest.mark.skipif(sys.platform != "linux", reason="Native address-space limits are enforced on Linux")
+def test_shared_grader_pool_preserves_native_memory_budget_after_cli_and_source_imports(tmp_path):
+    output = tmp_path / "native-grades.json"
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.contracts.code_grader_pool_control", str(output)],
+        cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=90,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text()) == [
+        ["lcb_initial_True", 1.0], ["lcb_initial_False", 0.0],
+        ["humaneval_42", 1.0], ["humaneval_41", 0.0],
+        ["livebench_amps_42", 100.0], ["livebench_amps_41", 0.0],
+        ["lcb_after_imports_stdin_True", 1.0], ["lcb_after_imports_stdin_False", 0.0],
+        ["lcb_after_imports_functional_True", 1.0], ["lcb_after_imports_functional_False", 0.0],
+        ["livebench_coding_True", 100.0], ["livebench_coding_False", 0.0],
     ]
-    result = _run_check_in_spawned_worker(check_correctness, tmp_path, is_mbpp, _PLAIN_TEST_CODE)
-
-    assert result["passed"], result["result"]

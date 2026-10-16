@@ -11,13 +11,13 @@ from eval.contracts.failures import FailureCategory
 from eval.contracts.sample_results import RESERVED_RECORD_FIELDS
 
 _PRIMARY_METRIC_PRIORITY = ("exact_match", "accuracy", "acc_norm", "acc", "pass@1")
+_OPERATIONAL_METRICS = frozenset({"judge_failed"})
 _FILTER_PRIORITY = ("flexible-extract",)
 _INFRASTRUCTURE_ERROR_MARKER = "[EVALCHEMY_INFRASTRUCTURE_ERROR]"
-_INFRASTRUCTURE_FAILURE_CATEGORIES = frozenset(
+_GENERATION_FAILURE_CATEGORIES = frozenset(
     {
         FailureCategory.AGENT_TIMEOUT.value,
         FailureCategory.MODEL_TRANSPORT.value,
-        FailureCategory.GRADER_INFRASTRUCTURE.value,
     }
 )
 # Everything a sample record carries that is not one of its metrics. Sample identity
@@ -31,7 +31,11 @@ def _base_metric(name: str) -> str:
 
 
 def _primary_metric(metrics: Mapping[str, float]) -> tuple[str, float] | None:
-    candidates = {name: value for name, value in metrics.items() if not _base_metric(name).endswith("_stderr")}
+    candidates = {
+        name: value
+        for name, value in metrics.items()
+        if not _base_metric(name).endswith("_stderr") and _base_metric(name) not in _OPERATIONAL_METRICS
+    }
     if not candidates:
         return None
     for preferred in _PRIMARY_METRIC_PRIORITY:
@@ -94,11 +98,16 @@ def _resolve_target_choice(target, choices: list[Choice]) -> int | None:
     return None
 
 
-def _parse_chat_messages(text: str) -> list[Message] | None:
-    try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
+def _parse_chat_messages(value: object) -> list[Message] | None:
+    if isinstance(value, tuple) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    else:
+        parsed = value
     if not isinstance(parsed, list) or not parsed:
         return None
     messages = []
@@ -121,9 +130,17 @@ def _sample_metrics(raw: Mapping[str, object]) -> dict[str, float]:
     }
 
 
-def _grading(metrics: dict[str, float], extraction_filter: str | None) -> Grading | None:
+def _grading(metrics: dict[str, float], extraction_filter: str | None, raw: Mapping[str, object]) -> Grading | None:
+    detail = json.dumps(
+        {key: raw[key] for key in (
+            "failure_category", "judge_error", "judge_label", "judge_raw", "report_outcome", "report_status", "report",
+        ) if key in raw},
+        ensure_ascii=False,
+    )
     picked = _primary_metric(metrics)
     if picked is None:
+        if any(_base_metric(name) in _OPERATIONAL_METRICS for name in metrics):
+            return Grading(method="lm-eval:judge_failed", filter=extraction_filter, detail=detail)
         return None
     name, value = picked
     metric_filter = extraction_filter or (name.split(",", 1)[1] if "," in name else None)
@@ -133,35 +150,31 @@ def _grading(metrics: dict[str, float], extraction_filter: str | None) -> Gradin
         filter=metric_filter,
         score=value,
         passed=value >= 1.0,
+        detail=detail,
     )
-
-
-def is_infrastructure_failure(raw: Mapping[str, object]) -> bool:
-    """Whether a sample records an infrastructure failure excluded from scoring."""
-    category = raw.get("failure_category")
-    return isinstance(category, str) and category in _INFRASTRUCTURE_FAILURE_CATEGORIES
 
 
 def _generation_fields(arguments: object, responses: object, raw: Mapping[str, object]) -> dict[str, object]:
     prompt = ""
+    messages = None
     if isinstance(arguments, list) and arguments:
-        first = arguments[0]
-        candidate = first[0] if isinstance(first, list) and first else first
+        first = arguments[-1]
+        candidate = first[0] if isinstance(first, (list, tuple)) and first else first
+        messages = _parse_chat_messages(candidate)
         if isinstance(candidate, str):
             prompt = candidate
     output = ""
     if isinstance(responses, list) and responses:
-        first = responses[0]
+        first = responses[-1]
         if isinstance(first, list) and first and isinstance(first[0], str):
             output = first[0]
         elif isinstance(first, str):
             output = first
     filtered = raw.get("filtered_resps")
     if isinstance(filtered, list) and filtered:
-        filtered = filtered[0]
-    messages = _parse_chat_messages(prompt)
+        filtered = filtered[-1]
     failure_category = raw.get("failure_category")
-    if is_infrastructure_failure(raw):
+    if isinstance(failure_category, str) and failure_category in _GENERATION_FAILURE_CATEGORIES:
         output = f"{_INFRASTRUCTURE_ERROR_MARKER} {failure_category}"
         filtered = output
     return {
@@ -176,12 +189,12 @@ def _multiple_choice_fields(arguments: list, responses: list, doc: object, targe
     labels = _choice_labels(doc, len(arguments))
     choices = []
     for index, entry in enumerate(arguments):
-        text = entry[1] if isinstance(entry, list) and len(entry) > 1 and isinstance(entry[1], str) else ""
+        text = entry[1] if isinstance(entry, (list, tuple)) and len(entry) > 1 and isinstance(entry[1], str) else ""
         pair = _loglikelihood_pair(responses[index])
         loglikelihood, is_greedy = pair if pair is not None else (None, None)
         choices.append(Choice(label=labels[index], text=text, loglikelihood=loglikelihood, is_greedy=is_greedy))
     scored = [(choice.loglikelihood, index) for index, choice in enumerate(choices) if choice.loglikelihood is not None]
-    context = arguments[0][0] if isinstance(arguments[0], list) and isinstance(arguments[0][0], str) else ""
+    context = arguments[0][0] if isinstance(arguments[0], (list, tuple)) and isinstance(arguments[0][0], str) else ""
     return {
         "prompt_text": context,
         "choices": choices,
@@ -198,10 +211,10 @@ def sample_from_lm_eval(task: str, raw: Mapping[str, object]) -> EvalSample:
     target = raw.get("target")
     metrics = _sample_metrics(raw)
     extraction_filter = raw.get("filter")
-    grading = _grading(metrics, extraction_filter if isinstance(extraction_filter, str) else None)
+    grading = _grading(metrics, extraction_filter if isinstance(extraction_filter, str) else None, raw)
     common = {
         "task": task,
-        "doc_id": str(raw.get("doc_id")),
+        "doc_id": str(raw.get("sample_id", raw.get("doc_id"))),
         "metrics": metrics,
         "correct": grading.passed if grading is not None else None,
         "grading": grading,

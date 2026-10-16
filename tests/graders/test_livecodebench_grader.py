@@ -35,7 +35,7 @@ if str(REPO) not in sys.path:
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from eval.contracts.grading import GraderExecutionMode  # noqa: E402
+from eval.runtime.resources import ExecutionMode  # noqa: E402
 from eval.graders import livecodebench  # noqa: E402
 from lcb_test_support import living_children  # noqa: E402
 
@@ -71,7 +71,7 @@ def test_module_does_not_import_a_vendored_benchmark_module():
 
 
 def test_grader_declares_process_isolated_execution():
-    assert livecodebench.GRADER_EXECUTION_MODE is GraderExecutionMode.PROCESS_ISOLATED
+    assert livecodebench.GRADER_EXECUTION_MODE is ExecutionMode.PROCESS_ISOLATED
 
 
 def test_memory_cap_is_wired_by_default():
@@ -123,6 +123,50 @@ def test_passing_functional_candidate_scores_all_pass():
     assert result["timed_out"] is False
 
 
+@pytest.mark.parametrize(
+    ("completion", "expected_accuracy"),
+    [
+        ("```python\ndef add(a, b):\n    return a + b\n```", 1.0),
+        ("```python\ndef add(a, b):\n    return a + b\n```\n```python\n\n```", 0.0),
+    ],
+)
+def test_live_code_scores_an_empty_final_code_block_as_incorrect(completion, expected_accuracy):
+    from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+    from eval.graders.programs import live_code
+
+    spec = EvalSpec(
+        task="LiveCodeBench", source=SourceRef("fixture"), source_id="functional", ordinal=0,
+        requests=(), grader=GraderSpec("live_code"),
+        doc={"test": [{"input": [1, 2], "output": 3, "testtype": "functional"}]},
+    )
+
+    assert live_code(spec, [completion]).metrics == {"accuracy": expected_accuracy}
+
+
+@pytest.mark.parametrize("comparison", ["exact", "stdout_normalized"])
+@pytest.mark.parametrize(
+    ("completion", "expected_accuracy"),
+    [
+        ('if __name__ == "__main__":\n    print(input())', 1.0),
+        ('if __name__ == "__main__":\n    print(float(input()))', 0.0),
+        ("if __name__ == '__main__':\n    print(input())", 0.0),
+    ],
+)
+def test_competition_programs_preserve_original_main_guard(comparison, completion, expected_accuracy):
+    from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+    from eval.graders.programs import program
+
+    spec = EvalSpec(
+        task="competition", source=SourceRef("fixture"), source_id="echo", ordinal=0,
+        requests=(), grader=GraderSpec("program", reference={
+            "tests": [{"input": "2", "output": "2"}], "stdin": True,
+            "timeout": 1, "comparison": comparison,
+        }),
+    )
+
+    assert program(spec, [f"```python\n{completion}\n```"]).metrics == {"accuracy": expected_accuracy}
+
+
 def test_failing_candidate_scores_failed_and_short_circuits():
     """Stop-on-failure: a wrong answer stops the run without running the later test."""
     result = livecodebench.run(
@@ -147,6 +191,22 @@ def test_collect_all_runs_remaining_tests_after_a_failure():
     assert [t["outcome"] for t in result["outcomes"]] == ["failed", "passed"]
 
 
+@pytest.mark.parametrize("count,completion,expected_passed", [
+    (4096, "def identity(value):\n    return value\n", True),
+    (16, "def identity(value):\n    raise ValueError('x' * 8192)\n", False),
+])
+def test_all_test_verdicts_survive_pipe_backpressure(count, completion, expected_passed):
+    result = livecodebench.run(
+        [{"input": [index], "output": index} for index in range(count)],
+        completion, fn_name="identity", collect_all=True, deadline=3,
+    )
+
+    assert result["passed"] is expected_passed
+    assert result["timed_out"] is False
+    assert len(result["outcomes"]) == count
+    assert result["num_passed"] == (count if expected_passed else 0)
+
+
 def test_stdin_mode_feeds_input_and_compares_stdout():
     result = livecodebench.run(
         [{"input": "1 2\n", "output": "3\n"}],
@@ -154,6 +214,13 @@ def test_stdin_mode_feeds_input_and_compares_stdout():
         stdin_mode=True,
     )
     assert result["passed"] is True
+
+
+def test_stdout_normalized_comparison_preserves_codeforces_line_handling():
+    tests = [{"input": "", "output": "1 2"}]
+    completion = "print(1)\nprint(2)\n"
+    assert livecodebench.run(tests, completion, stdin_mode=True, comparison="stdout_normalized")["passed"] is True
+    assert livecodebench.run(tests, completion, stdin_mode=True, comparison="exact")["passed"] is False
 
 
 def test_fn_name_overrides_inferred_name():

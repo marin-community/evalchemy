@@ -1,93 +1,33 @@
-# Copyright The Marin Authors
-# SPDX-License-Identifier: Apache-2.0
-"""Registry-wide coverage for the shared benchmark lifecycle schema."""
+"""All sources use the data-only interface and the same execution boundary."""
 
-import ast
 from pathlib import Path
 
 import pytest
 
-from eval.contracts.conformance import (
-    build_task_contract_registry,
-    discover_task_contracts,
-    validate_custom_benchmark_class,
-)
+from eval.contracts.conformance import build_task_contract_registry, discover_task_contracts, validate_custom_benchmark_class
 from eval.contracts.task_outcome import TaskRoute
+from eval.sources import SOURCES
 from eval.task import BaseBenchmark
 
 
-def test_every_registered_custom_and_lm_eval_name_has_a_complete_contract():
-    custom_root = Path("eval/chat_benchmarks")
-    custom_names = {path.parent.name for path in custom_root.glob("*/eval_instruct.py")}
-    contracts = discover_task_contracts(custom_root, Path("eval/lm_eval_tasks"))
-
-    assert custom_names == {contract.task_name for contract in contracts if contract.route is TaskRoute.CUSTOM}
+def test_every_registered_name_has_one_complete_contract():
+    root = Path("eval/chat_benchmarks")
+    custom_names = {path.parent.name for path in root.glob("*/eval_instruct.py")}
+    contracts = discover_task_contracts(root, Path("eval/lm_eval_tasks"))
+    assert custom_names == set(SOURCES) == {contract.task_name for contract in contracts if contract.route is TaskRoute.CUSTOM}
     assert any(contract.route is TaskRoute.LM_EVAL for contract in contracts)
 
 
-def test_every_custom_benchmark_uses_a_shared_generation_boundary():
-    root = Path("eval/chat_benchmarks")
-    for path in root.glob("*/eval_instruct.py"):
-        tree = ast.parse(path.read_text())
-        # Some variants inherit generation unchanged from another benchmark.
-        if not any(isinstance(node, ast.FunctionDef) and node.name == "generate_responses" for node in ast.walk(tree)):
-            continue
-        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
-        assert any(
-            isinstance(call, ast.Attribute)
-            and call.attr in {"compute", "generate_seeded_repeats"}
-            and isinstance(call.value, ast.Name)
-            and call.value.id == "self"
-            for call in calls
-        ), path
-        assert not any(
-            isinstance(call, ast.Attribute)
-            and call.attr in {"generate_until", "loglikelihood", "loglikelihood_rolling"}
-            and isinstance(call.value, ast.Name)
-            and call.value.id == "model"
-            for call in calls
-        ), path
+def test_source_resource_declarations_are_validated():
+    class Source(BaseBenchmark):
+        def iter_specs(self, options):
+            return iter(())
 
-
-def test_custom_class_audit_rejects_untyped_resources_and_execution_modes():
-    class Benchmark(BaseBenchmark):
-        def generate_responses(self, model):
-            return {}
-
-        def grade_responses(self, results):
-            return results
-
-        def aggregate_results(self, results):
-            return {"score": 1.0}
-
-    Benchmark.RESOURCE_REQUIREMENTS = []
+    Source.RESOURCE_REQUIREMENTS = []
     with pytest.raises(TypeError, match="must be a tuple"):
-        validate_custom_benchmark_class(Benchmark, BaseBenchmark)
-
-    Benchmark.RESOURCE_REQUIREMENTS = ()
-    Benchmark.GRADER_EXECUTION_MODE = "background_magic"
-    with pytest.raises(ValueError, match="background_magic"):
-        validate_custom_benchmark_class(Benchmark, BaseBenchmark)
+        validate_custom_benchmark_class(Source, BaseBenchmark)
 
 
-def test_custom_class_audit_rejects_overriding_the_shared_inference_guard():
-    class Benchmark(BaseBenchmark):
-        def generate_responses(self, model):
-            return {}
-
-        def grade_responses(self, results):
-            return results
-
-        def aggregate_results(self, results):
-            return {"score": 1.0}
-
-        def compute(self, model, inputs):
-            return model.generate_until(inputs)
-
-    with pytest.raises(TypeError, match="must not override BaseBenchmark.compute"):
-        validate_custom_benchmark_class(Benchmark, BaseBenchmark)
-
-
-def test_a_task_cannot_ambiguously_belong_to_both_routes():
+def test_task_cannot_belong_to_both_registries():
     with pytest.raises(ValueError, match="both .* and lm-eval"):
         build_task_contract_registry(["collision"], ["collision"])

@@ -1,8 +1,7 @@
-import os
-import signal
 import subprocess
 from typing import List
 from .generic_eval import main as gmain
+from eval.runtime.program_process import program_session_active, stop_program_subprocess
 
 
 def testing_mail(x, y, z):
@@ -17,16 +16,18 @@ def run_without_exn(args: List[str]):
     zero. If that isn't enough, you may want to tweak the status based on the
     captured stderr and stdout.
     """
-    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=not program_session_active())
     try:
         stdout, stderr = p.communicate(timeout=5)
         exit_code = p.returncode
         status = "OK" if exit_code == 0 else "Exception"
     except subprocess.TimeoutExpired as exc:
-        stdout, stderr = p.stdout.read(), p.stderr.read()
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        stop_program_subprocess(p)
+        stdout, stderr = exc.output, exc.stderr
         exit_code = -1
         status = "Timeout"
+    finally:
+        stop_program_subprocess(p)
 
     if stdout is None:
         stdout = b""

@@ -11,7 +11,7 @@ logging.basicConfig(stream=sys.stdout, level=logging.WARNING)
 
 logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
-    from livebench.model.models import Model
+    from eval.chat_benchmarks.LiveBench.livebench.model.models import Model
 
 # API setting constants
 API_MAX_RETRY = 3
@@ -39,7 +39,7 @@ def retry_log(retry_state):
     retry_error_callback=retry_fail,
 )
 def chat_completion_openai(model: "Model", conv, temperature, max_tokens, api_dict=None) -> tuple[str, int]:
-    from livebench.model.models import OpenAIModel
+    from eval.chat_benchmarks.LiveBench.livebench.model.models import OpenAIModel
     from openai import OpenAI, NOT_GIVEN
 
     if api_dict is not None:

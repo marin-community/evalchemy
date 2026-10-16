@@ -1,5 +1,5 @@
 import re
-from livebench.process_results.util import last_boxed_only_string, remove_boxed
+from eval.chat_benchmarks.LiveBench.livebench.process_results.util import last_boxed_only_string, remove_boxed
 
 
 def group_words(words):

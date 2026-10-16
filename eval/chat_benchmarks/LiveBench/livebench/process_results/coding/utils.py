@@ -9,8 +9,8 @@ import base64
 import re
 from enum import Enum
 
-from livebench.lcb_runner.utils.extraction_utils import extract_code
-from livebench.lcb_runner.evaluation.compute_code_generation_metrics import codegen_metrics
+from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.utils.extraction_utils import extract_code
+from eval.chat_benchmarks.LiveBench.livebench.lcb_runner.evaluation.compute_code_generation_metrics import codegen_metrics
 
 # from LiveCodebench, modified
 

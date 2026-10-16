@@ -41,7 +41,8 @@ import threading
 import time
 import types
 
-from eval.contracts.grading import GraderExecutionMode
+from eval.runtime.bounded_process import bounded_process
+from eval.runtime.resources import ExecutionMode
 
 try:
     import resource  # POSIX-only; the memory cap degrades where it is absent (see apply_memory_cap)
@@ -63,8 +64,7 @@ DEFAULT_DEADLINE = 30.0
 # SIGKILL'd process reaps immediately, so this only matters for the (rare) failed kill.
 _JOIN_GRACE = 1.0
 
-# A per-test detail string is candidate-controlled and the pipe holds ~64 KiB before send()
-# would block; cap it so a verbose failure cannot wedge the child.
+# Bound candidate-controlled diagnostics while the parent drains test events.
 _MAX_DETAIL_CHARS = 8192
 
 PASSED = "passed"
@@ -178,8 +178,12 @@ def _resolve_call_target(ns, fn_name):
     raise RuntimeError("no call target inferred from candidate")
 
 
-def _score(value, expected):
+def _score(value, expected, comparison="coerced"):
     """Compare a candidate output to its expected value, tolerating int/str/float and list/tuple."""
+    if comparison == "exact":
+        return value == expected
+    if comparison == "stdout_normalized":
+        return _normalize_stdout(value) == _normalize_stdout(expected)
     if value == expected:
         return True
     try:
@@ -191,6 +195,11 @@ def _score(value, expected):
     except (TypeError, ValueError):
         pass
     return False
+
+
+def _normalize_stdout(value):
+    """Match CodeForces' published stdout comparison before exact equality."""
+    return str(value).strip().replace("\n", " ").replace("\r", "")
 
 
 def _run_stdin(completion, test_input):
@@ -210,7 +219,7 @@ def _run_call(target, test_input):
     return target(test_input)
 
 
-def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all, connection, cap):
+def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all, connection, cap, comparison):
     """Child side: run the candidate's tests one bounded test at a time over ``connection``."""
     scratch = tempfile.mkdtemp(prefix="lcb-grader-")
     os.chdir(scratch)
@@ -230,10 +239,10 @@ def _run_tests(tests, completion, fn_name, stdin_mode, test_timeout, collect_all
                 try:
                     if stdin_mode:
                         output = _run_stdin(completion, input_value)
-                        status = PASSED if _score(output, expected) else FAILED
+                        status = PASSED if _score(output, expected, comparison) else FAILED
                     else:
                         output = _run_call(target, input_value)
-                        status = PASSED if _score(output, expected) else FAILED
+                        status = PASSED if _score(output, expected, comparison) else FAILED
                 except TimeoutException:
                     status = TIMED_OUT
                     detail = "per-test alarm expired"
@@ -258,6 +267,7 @@ def run(
     deadline=DEFAULT_DEADLINE,
     collect_all=False,
     maximum_memory_bytes=DEFAULT_MAX_MEMORY_BYTES,
+    comparison="coerced",
 ) -> dict:
     """Run a candidate program against a normalized LCB test list, bounded.
 
@@ -270,6 +280,7 @@ def run(
         deadline: Wall-clock bound for the whole run, independent of the test count.
         collect_all: On a failure, run the remaining tests; otherwise stop at the first.
         maximum_memory_bytes: The memory cap applied to the child; best-effort per platform.
+        comparison: ``exact`` preserves strict-output benchmarks; ``coerced`` uses the LCB comparison.
 
     Returns:
         A dict with ``passed``, ``num_passed``, ``num_tests``, ``timed_out``,
@@ -282,7 +293,7 @@ def run(
         deadline = DEFAULT_DEADLINE
 
     receiver, sender = multiprocessing.Pipe(duplex=False)
-    process = multiprocessing.Process(
+    process = bounded_process(
         target=_run_tests,
         args=(
             tests,
@@ -293,6 +304,7 @@ def run(
             collect_all,
             sender,
             maximum_memory_bytes,
+            comparison,
         ),
     )
     process.start()
@@ -314,30 +326,35 @@ def run(
     watchdog.daemon = True
     watchdog.start()
 
-    process.join(timeout=deadline + _JOIN_GRACE)
-    watchdog.cancel()
-    if process.is_alive():
-        terminate(pid)
-        process.join(timeout=_JOIN_GRACE)
-
     outcomes: list[dict] = []
     done = False
-    deadline_end = time.monotonic() + _JOIN_GRACE
-    while time.monotonic() < deadline_end:
-        if receiver.poll(0.02):
-            try:
-                message = receiver.recv()
-            except (EOFError, OSError, ConnectionResetError):
-                break  # child died mid-write: partial frame; bounded, no hang
-            if message[0] == "test":
-                _, index, status, detail = message
-                outcomes.append({"index": index, "outcome": status, "detail": detail})
-            elif message[0] == "done":
-                done = True
+    deadline_end = time.monotonic() + deadline + _JOIN_GRACE
+    try:
+        # A child may produce more events than fit in the pipe. Drain while it
+        # runs so reporting successful tests cannot itself trigger the watchdog.
+        while time.monotonic() < deadline_end:
+            if receiver.poll(0.02):
+                try:
+                    message = receiver.recv()
+                except (EOFError, OSError, ConnectionResetError):
+                    break  # child died mid-write: partial frame; bounded, no hang
+                if message[0] == "test":
+                    _, index, status, detail = message
+                    outcomes.append({"index": index, "outcome": status, "detail": detail})
+                elif message[0] == "done":
+                    done = True
+                    break
+            elif not process.is_alive():
                 break
-        elif process.poll():
-            break
-    receiver.close()
+    finally:
+        watchdog.cancel()
+        if not done and process.is_alive():
+            terminate(pid)
+        process.join(timeout=_JOIN_GRACE)
+        if process.is_alive():
+            terminate(pid)
+            process.join(timeout=_JOIN_GRACE)
+        receiver.close()
 
     timed_out = (not done) or any(o["outcome"] == TIMED_OUT for o in outcomes)
     num_passed = sum(1 for o in outcomes if o["outcome"] == PASSED)
@@ -363,7 +380,8 @@ def _infer_call_target_from_completion(completion):
 
     Mirrors the logic the vendored stacks used before this route existed.
     """
-    return completion.split("(")[0].split()[-1]
+    prefix = completion.split("(")[0].split()
+    return prefix[-1] if prefix else None
 
 
 def run_lcb_tests(problem, completion, timeout, is_extracted=False):
@@ -390,6 +408,8 @@ def run_lcb_tests(problem, completion, timeout, is_extracted=False):
     is_stdin = tests[0].get("testtype") != "functional"
     normalized = [{"input": tc.get("input"), "output": tc.get("output")} for tc in tests]
     fn_name = None if is_stdin else _infer_call_target_from_completion(completion)
+    if not is_stdin and fn_name is None:
+        return [(False, "No callable name in completion", "", 0.0) for _ in tests]
     result = run(
         normalized,
         completion,
@@ -420,4 +440,4 @@ def grade(tests, completion, **kwargs) -> float:
 # The grader declares its own isolation so a driver that dispatches it (``eval.contracts.grading``)
 # runs it outside the threaded pool, as ``execute_grading_jobs(PROCESS_ISOLATED)`` does for the
 # Plus-style graders. The RL reward path that calls ``run`` directly is already process-isolated.
-GRADER_EXECUTION_MODE = GraderExecutionMode.PROCESS_ISOLATED
+GRADER_EXECUTION_MODE = ExecutionMode.PROCESS_ISOLATED

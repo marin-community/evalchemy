@@ -1,35 +1,14 @@
-from typing import Dict, List, Any, Optional
+from eval.sources.common import text_specs
+from eval.contracts.eval_spec import ReducerSpec, SourceRef
+from .mix_eval.prompts.evaluation_prompts import construct_prompt_freeform, construct_prompt_multichoice
+from typing import Optional
 import logging
 import os
 import json
-import time
-import warnings
-from argparse import Namespace
-from tqdm import tqdm
 
-from lm_eval.api.model import LM
 
 from eval.constants import AUTO_ANNOTATOR_MODEL
-from lm_eval.api.instance import Instance
 from eval.task import BaseBenchmark
-
-from mix_eval.utils.dataset import get_eval_dataset
-from mix_eval.utils.metric_utils import (
-    eval_freeform_model,
-    eval_freeform_rule,
-    eval_multi_choice,
-    parse_freeform_response_rule,
-    parse_multi_choice_response_model,
-    parse_multi_choice_response_rule,
-)
-from eval.contracts.sample_results import record_sample_metrics
-from mix_eval.utils.common_utils import cache_status, read_status, dict_equal
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["MODEL_PARSER_API"] = os.getenv("OPENAI_API_KEY")
-
-warnings.simplefilter("ignore", category=DeprecationWarning)
-warnings.simplefilter("ignore", category=FutureWarning)
 
 
 class MixEvalBenchmark(BaseBenchmark):
@@ -37,19 +16,18 @@ class MixEvalBenchmark(BaseBenchmark):
     MixEval benchmark for evaluating language model responses on various tasks.
     """
 
-    REQUIRES_OPENAI_ANNOTATOR = True
+    REQUIRES_JUDGE = True
+    SOURCE = SourceRef("MixEval", "test", "2024-06-01")
+    METRICS = ("overall",)
+    PRIMARY_METRIC = "overall"
+    REDUCER = ReducerSpec(name="rounded_split_mean", trial_metric=None)
 
     def __init__(
         self,
-        output_dir: str = "eval/chat_benchmarks/MixEval/results/",
         benchmark: str = "mixeval",
         version: str = "2024-06-01",
-        batch_size: int = 8,
-        max_gpu_memory: str = "60GB",
         data_path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mix_eval", "data"),
-        api_parallel_num: int = 32,
         annotator_model: str = "gpt-4o-mini-2024-07-18",
-        verbose: bool = False,
         debug: bool = False,
         logger: Optional[logging.Logger] = None,
         system_instruction: Optional[str] = None,
@@ -58,302 +36,39 @@ class MixEvalBenchmark(BaseBenchmark):
         Initialize MixEval benchmark.
 
         Args:
-            output_dir: Directory to save results
             benchmark: Benchmark name
             version: Benchmark version
-            batch_size: Batch size for evaluation
-            max_gpu_memory: Maximum GPU memory to use
             data_path: Path to evaluation data
-            api_parallel_num: Number of parallel API calls
-            annotator_model: Model to use for multichoice judging and freeform judging
-            verbose: Whether to print verbose output
+            annotator_model: Model selected for the judge requests
             debug: If set, only evaluate on 2 examples
             logger: Optional logger instance
             system_instruction: Optional system instruction for the model
         """
         super().__init__(logger=logger, system_instruction=system_instruction)
-        os.makedirs(output_dir, exist_ok=True)
         if annotator_model == AUTO_ANNOTATOR_MODEL:
             annotator_model = "gpt-3.5-turbo-0125"
-        self.multichoice_judge = annotator_model
-        self.freeform_judge = annotator_model
-        self.args = self._get_args(
-            {
-                "output_dir": output_dir,
-                "benchmark": benchmark,
-                "version": version,
-                "batch_size": batch_size,
-                "max_gpu_memory": max_gpu_memory,
-                "data_path": data_path,
-                "api_parallel_num": api_parallel_num,
-                "multichoice_judge": self.multichoice_judge,
-                "freeform_judge": self.freeform_judge,
-                "debug": debug,
-                "verbose": verbose,
-            }
-        )
+        self.judge_model = annotator_model
+        self.benchmark = benchmark
+        self.version = version
+        self.data_path = data_path
+        self.debug = debug
 
-    def _get_args(self, params: Dict[str, Any]) -> Namespace:
-        """
-        Get default arguments and update with provided parameters.
-
-        Args:
-            params: Dictionary of parameter values
-
-        Returns:
-            Namespace object with all arguments
-        """
-        default_args = {
-            "model_name": None,
-            "model_path": None,
-            "model_systemprompt": None,
-            "inference_only": False,
-            "free_form_parser": "model",
-            "multi_choice_parser": "model",
-            "api_base_url": None,
-            "extract_base_model_response": False,
-            "compute_score_from_judged_file": False,
-        }
-        default_args.update(params)
-        return Namespace(**default_args)
-
-    def generate_responses(self, model: LM) -> Dict[str, Any]:
-        """
-        Generate responses using distributed processing, but only for generation.
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation results for each split
-        """
-        splits = ["close_freeform", "close_multichoice"]
-        out_dict = {}
-
-        self.logger.info("Generating responses for MixEval...")
-        for split in splits:
-            self.args.split = split
-            all_results = self._eval_split(model, split)
-            if model.rank == 0:
-                response_file = self._get_response_file()
-                with open(response_file, "w") as f:
-                    for result in all_results:
-                        f.write(json.dumps(result) + "\n")
-            out_dict[split] = all_results
-
-        # Only return results on rank 0
-        if model.world_size > 1 and model.rank != 0:
-            return None
-        return out_dict
-
-    def _eval_split(self, model: LM, split: str) -> List[Dict[str, Any]]:
-        """
-        Evaluate the model on a specific data split.
-
-        Args:
-            model: Language model instance
-            split: Data split to evaluate on
-
-        Returns:
-            List of evaluation results for the specified split
-        """
-        self.args.split = split
-        self.args.model_name = self._get_model_name(model)
-        response_file = self._get_response_file()
-
-        eval_dataset = get_eval_dataset(self.args)
-
-        if self.args.debug:
-            eval_dataset.raw_inputs = eval_dataset.raw_inputs[:2]
-            self.logger.info(f"Debug mode: using 2 examples")
-
-        all_prompts = [inp["formated_input"] for inp in eval_dataset.raw_inputs]
-        all_instances = []
-
-        for idx, instruction in enumerate(all_prompts):
-            formatted_instruction = self._prepare_messages([{"role": "user", "content": instruction}], model)
-
-            all_instances.append(
-                Instance(
-                    "generate_until",
-                    instruction,
-                    (
-                        formatted_instruction,
-                        {
-                            "temperature": 1.0,
-                        },
-                    ),
-                    idx,
-                )
-            )
-        all_responses = self.compute(model, all_instances, sample_namespace=split)
-
-        for idx in list(range(len(eval_dataset.raw_inputs))):
-            eval_dataset.raw_inputs[idx]["response"] = all_responses[idx]
-
-        if model.rank == 0:
-            with open(response_file, "w") as f:
-                for item in eval_dataset.raw_inputs:
-                    json_line = json.dumps(item)
-                    f.write(json_line + "\n")
-        return eval_dataset.raw_inputs
-
-    def sample_groups(self, generation_result: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-        return {split: generation_result[split] for split in ("close_freeform", "close_multichoice") if split in generation_result}
-
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        for split, examples in self.sample_groups(results).items():
-            judge_inputs = [{**example, "grading_ordinal": index} for index, example in enumerate(examples)]
-            if split == "close_freeform" and self.args.free_form_parser == "model":
-                judgments = eval_freeform_model(self.args, judge_inputs)
-            elif split == "close_multichoice" and self.args.multi_choice_parser == "model":
-                judgments = parse_multi_choice_response_model(self.args, judge_inputs)
-            else:
-                judgments = []
-                for example in judge_inputs:
-                    if split == "close_freeform":
-                        parsed = parse_freeform_response_rule(self.args, example["response"])
-                        passed = eval_freeform_rule(example["target"], parsed)
-                    else:
-                        choices = [chr(ord("A") + i) for i in range(len(example["options"]))]
-                        parsed = parse_multi_choice_response_rule(
-                            self.args, example["response"], choices, dict(zip(choices, example["options"]))
-                        )
-                        passed = eval_multi_choice(choices[example["target"][0]], parsed)
-                    judgments.append({**example, "parsed_result": parsed, "eval_result": passed})
-            by_ordinal = {judgment["grading_ordinal"]: judgment for judgment in judgments}
-            if len(judgments) != len(examples) or set(by_ordinal) != set(range(len(examples))):
-                raise ValueError("MixEval judge returned incomplete or duplicate grading identities")
-            for index, example in enumerate(examples):
-                judgment = by_ordinal[index]
-                if "eval_result" in judgment:
-                    score = float(bool(judgment["eval_result"]))
-                elif split == "close_freeform":
-                    score = float(judgment["judge_score"])
-                else:
-                    target = chr(ord("A") + judgment["target"][0])
-                    score = float(eval_multi_choice(target, judgment["judge_option"]))
-                example["judge_answer"] = {key: value for key, value in judgment.items() if key != "grading_ordinal"}
-                record_sample_metrics(example, accuracy=score)
-        return results
-
-    def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        groups = self.sample_groups(results)
-        splits = {}
-        for split, examples in groups.items():
-            scores = {"overall": [example["sample_metrics"]["accuracy"] for example in examples]}
-            for example in examples:
-                scores.setdefault(example["benchmark_name"], []).append(example["sample_metrics"]["accuracy"])
-            splits[split] = {name: (round(sum(values) / len(values), 3), len(values)) for name, values in scores.items() if values}
-        names = {name for scores in splits.values() for name in scores}
-        metrics = {
-            name: sum(scores.get(name, (0, 0))[0] * scores.get(name, (0, 0))[1] for scores in splits.values())
-            / sum(scores.get(name, (0, 0))[1] for scores in splits.values())
-            for name in names
-        }
-        return {
-            self._get_judge_model_name(): {"metrics": metrics},
-            "samples": {
-                "model_answers": groups,
-                "judge_answers": {
-                    split: [example["judge_answer"] for example in examples] for split, examples in groups.items()
+    def iter_specs(self, options):
+        folder = "mixeval-hard" if self.benchmark == "mixeval_hard" else "mixeval"
+        for split, filename, formatter in [("freeform", "free-form.json", construct_prompt_freeform),
+                                           ("multichoice", "multiple-choice.json", construct_prompt_multichoice)]:
+            path = os.path.join(self.data_path, f"mixeval-{self.version}", folder, filename)
+            with open(path) as data:
+                rows = [{**row, "id": identity} for identity, row in json.load(data).items()]
+            if self.debug:
+                rows = rows[:2]
+            yield from text_specs(
+                rows, options, namespace=split, prompt=formatter, target=lambda row: row["target"],
+                grader="mixeval", reference=lambda row: {"kind": split},
+                generation_kwargs={"temperature": 1.0, "do_sample": True},
+                seed_repeats=False,
+                tags=lambda row: {
+                    "split": split,
+                    "benchmark_split": f"{row['benchmark_name']}|{split}",
                 },
-            },
-        }
-
-    def run_benchmark(self, model: LM) -> Dict[str, Any]:
-        """
-        Run benchmark with distributed generation but centralized evaluation
-
-        Args:
-            model: Language model instance
-
-        Returns:
-            Dictionary containing evaluation metrics and samples
-        """
-        self.logger.info("Starting MixEval benchmark evaluation")
-        generation_results = self.generate_responses(model)
-
-        # Only evaluate on rank 0
-        if model.world_size > 1 and model.rank != 0:
-            return None
-
-        evaluation_results = self.evaluate_responses(generation_results)
-        evaluation_results.update(
-            {
-                "benchmark_version": f"{self.args.benchmark}-{self.args.version}",
-                "batch_size": self.args.batch_size,
-                "max_gpu_memory": self.args.max_gpu_memory,
-            }
-        )
-        return evaluation_results
-
-    def _get_model_name(self, model: LM) -> str:
-        if "model_identifier" in model.__dict__:
-            return (
-                model.model_identifier.split("=")[1]
-                .split(",")[0]
-                .split("__")[-1]
-                .replace("-", "_")
-                .lower()
-                .replace(".", "")
             )
-        else:
-            return model.model.__class__.__name__
-
-    def _get_response_file(self) -> str:
-        response_file = os.path.join(
-            self.args.output_dir,
-            self.args.model_name,
-            self.args.benchmark,
-            self.args.version,
-            f"{self.args.model_name}_{self.args.split}.jsonl",
-        )
-        os.makedirs(os.path.dirname(response_file), exist_ok=True)
-        return response_file
-
-    def _check_resume(self, response_file: str) -> Dict[str, Any]:
-        resume_info = {"resume": False, "time_elapsed": 0, "status": None}
-        if os.path.exists(response_file):
-            status = read_status(self.args)
-            if self._args_match(status["args"]):
-                if status["status"]["status"] == "complete":
-                    self.logger.info(
-                        f"The evaluation for {self.args.model_name}'s {self.args.split} split is already complete. Skipping."
-                    )
-                    resume_info["resume"] = True
-                    resume_info["status"] = status["status"]
-                else:
-                    resume_info["resume"] = True
-                    resume_info["time_elapsed"] = status["status"]["time_elapsed"]
-                    resume_info["status"] = status["status"]
-                    self.logger.info(f"Resuming from last run: \n{status}")
-        return resume_info
-
-    def _args_match(self, cached_args: Dict[str, Any]) -> bool:
-        not_gen_args = [
-            "freeform_judge",
-            "multichoice_judge",
-            "max_gpu_memory",
-            "api_parallel_num",
-            "max_tasks",
-            "batch_size",
-            "api_parallel_num",
-        ]
-        subdict_status = {k: v for k, v in cached_args.items() if k not in not_gen_args}
-        subdict_args = {k: v for k, v in self.args.__dict__.items() if k not in not_gen_args}
-        return dict_equal(subdict_status, subdict_args)
-
-    def _update_status(self, batch_id: int, time_elapsed: float, status: str):
-        cache_status(self.args, {"batch_id": batch_id, "time_elapsed": time_elapsed, "status": status})
-
-    def _load_results(self, response_file: str) -> List[Dict[str, Any]]:
-        with open(response_file, "r") as f:
-            return [json.loads(line) for line in f]
-
-    def _get_judge_model_name(self) -> str:
-        return (
-            self.args.multichoice_judge
-            if self.args.multichoice_judge == self.args.freeform_judge
-            else f"mc{self.args.multichoice_judge}_ff{self.args.freeform_judge}"
-        )

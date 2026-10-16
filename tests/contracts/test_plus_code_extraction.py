@@ -1,9 +1,35 @@
 """Executable Python extracted from the Plus code benchmarks."""
 
+import asyncio
 import pytest
 
 from eval.chat_benchmarks.HumanEvalPlus.utils.utils import extract_generation_code
-from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+from eval.graders.program_suites import program_suite
+from eval.graders.specs import GRADERS
+from eval.execution.grading import Graders
+
+
+@pytest.mark.parametrize("suite", ["HumanEval", "MBPP"])
+@pytest.mark.parametrize("answer,score", [(42, 1.0), (41, 0.0)])
+def test_fork_suites_execute_through_shared_grading(suite, answer, score):
+    problem = {
+        "task_id": "python/0", "prompt": "def answer():\n",
+        "test": ["assert answer() == 42"] if suite == "MBPP" else "assert answer() == 42",
+    }
+    spec = EvalSpec(
+        task=suite, source=SourceRef("fixture"), source_id="0", ordinal=0, requests=(),
+        grader=GraderSpec("program_suite", {
+            "suite": suite, "language": "python", "problem": problem,
+            "timeout": 1.0, "mbpp": suite == "MBPP",
+        }), doc=problem,
+    )
+    graders = Graders(GRADERS, workers=2)
+    try:
+        result = asyncio.run(graders(spec, [f"```python\ndef answer():\n    return {answer}\n``` "]))
+    finally:
+        graders.close()
+    assert result.metrics["accuracy"] == score
 
 
 @pytest.mark.parametrize(
@@ -28,10 +54,23 @@ from eval.chat_benchmarks.MBPPPlus.eval_instruct import MBPPPlusBenchmark
     ],
 )
 def test_mbppplus_indented_answers_execute(completion, function, args, expected):
-    namespace = {}
-    exec(MBPPPlusBenchmark().extract_code(completion), namespace)
+    arguments = ", ".join(repr(value) for value in args)
+    problem = {
+        "task_id": "MBPP/test",
+        "prompt": f"def {function}(*args):\n",
+        "test": f"assert {function}({arguments}) == {expected!r}",
+    }
+    spec = EvalSpec(
+        task="MBPPPlus",
+        source=SourceRef("fixture"),
+        source_id="test",
+        ordinal=0,
+        requests=(),
+        grader=GraderSpec("program_suite", {"suite": "MBPPPlus", "language": "python", "problem": problem, "timeout": 3.0}),
+        doc=problem,
+    )
 
-    assert namespace[function](*args) == expected
+    assert program_suite(spec, [completion]).metrics["accuracy"] == 1.0
 
 
 @pytest.mark.parametrize(

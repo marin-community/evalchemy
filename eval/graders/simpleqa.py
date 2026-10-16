@@ -7,15 +7,8 @@ reference implementation. The full license is shipped with the benchmark.
 """
 
 from dataclasses import dataclass
-from typing import Sequence
 
-from eval.graders.answer_equivalence import (
-    DEFAULT_NUM_WORKERS,
-    EquivalenceJudgment,
-    JudgeConfig,
-    JudgeLabel,
-    judge_prompts,
-)
+from eval.graders.answer_equivalence import JudgeLabel
 
 SIMPLEQA_GRADER_TEMPLATE = """Your job is to look at a question, a gold target, and a predicted answer, and then assign a grade of either ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"].
 First, I will give examples of each grade, and then you will grade a new example.
@@ -104,40 +97,17 @@ _GRADE_LABELS = {
 
 
 @dataclass(frozen=True)
-class SimpleQARequest:
-    """One SimpleQA answer for the canonical classifier."""
+class SimpleQAJudgment:
+    """Parsed SimpleQA label and original judge response."""
 
-    question: str
-    target: str
-    predicted_answer: str
+    label: JudgeLabel
+    raw: str
 
 
-def _parse_simpleqa_judgment(raw: str) -> EquivalenceJudgment:
+def _parse_simpleqa_judgment(raw: str) -> SimpleQAJudgment:
     grade = raw.strip().upper()
     try:
         label = _GRADE_LABELS[grade]
     except KeyError as exc:
         raise ValueError(f"unrecognized SimpleQA judgment: {raw!r}") from exc
-    return EquivalenceJudgment(label, raw)
-
-
-async def judge_simpleqa(
-    requests: Sequence[SimpleQARequest],
-    config: JudgeConfig,
-    num_workers: int = DEFAULT_NUM_WORKERS,
-) -> list[EquivalenceJudgment | BaseException]:
-    """Grade SimpleQA answers concurrently with the canonical classifier."""
-    prompts = [
-        SIMPLEQA_GRADER_TEMPLATE.format(
-            question=request.question,
-            target=request.target,
-            predicted_answer=request.predicted_answer,
-        )
-        for request in requests
-    ]
-    return await judge_prompts(
-        prompts,
-        config,
-        _parse_simpleqa_judgment,
-        num_workers=num_workers,
-    )
+    return SimpleQAJudgment(label, raw)

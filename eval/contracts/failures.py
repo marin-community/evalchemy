@@ -41,6 +41,10 @@ class ModelRequestValidationError(ValueError):
     """Raised before generation when a representative request is malformed."""
 
 
+class MalformedJudgeResponse(ValueError):
+    """A completed judgment failed its declared semantic response format."""
+
+
 @lru_cache(maxsize=1)
 def transport_error_types() -> tuple[type[BaseException], ...]:
     """Exception types an HTTP client raises when the endpoint itself failed.

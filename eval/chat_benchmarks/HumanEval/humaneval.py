@@ -10,7 +10,7 @@ import datetime
 import subprocess
 import torch.distributed as dist
 from attrdict import AttrDict
-from human_eval.evaluation import evaluate_functional_correctness
+from eval.chat_benchmarks.HumanEval.human_eval.evaluation import evaluate_functional_correctness
 from transformers import AutoTokenizer
 from utils.dataset import HumanEvalDataset
 from utils.utils import cleanup_code

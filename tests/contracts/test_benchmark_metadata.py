@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 from eval.contracts.benchmark_metadata import (
@@ -11,6 +12,9 @@ from eval.contracts.benchmark_metadata import (
 )
 from eval.contracts.task_outcome import TaskRoute
 from eval.task import BaseBenchmark
+from eval.task import TaskManager
+from eval.execution.driver import run_evaluations, source_plans
+from eval.execution.run_spec import RunSpec
 
 
 class _ChatBenchmark(BaseBenchmark):
@@ -20,13 +24,10 @@ class _ChatBenchmark(BaseBenchmark):
     def benchmark_size(self) -> int:
         return 120
 
-    def generate_responses(self, model):
+    def iter_specs(self, options):
         raise NotImplementedError
 
-    def grade_responses(self, results):
-        return results
-
-    def aggregate_results(self, results):
+    def evaluate_responses(self, results):
         raise NotImplementedError
 
 
@@ -84,9 +85,43 @@ def test_chat_metadata_tracks_native_pass_at_k_configuration():
     assert description.metric_kind is MetricKind.BINARY
 
 
+def test_planner_resolves_metadata_and_trials_from_the_same_run_settings():
+    manager = TaskManager(task_list=["MATH500"])
+    benchmark = manager.get_benchmark("MATH500")
+    targets = [row["answer"] for row in benchmark.load_questions()]
+
+    class Model:
+        world_size = 1
+
+        def tok_encode(self, text):
+            return list(text.encode())
+
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"]
+
+        def generate_until(self, requests):
+            return [rf"\boxed{{{targets[request.metadata[1]]}}}" if request.repeat_idx == 0 else "" for request in requests]
+
+    model = Model()
+    run = RunSpec(limit=10, num_samples=8, pass_at_k=(1, 8))
+    [plan] = source_plans(["MATH500"], {"MATH500": TaskRoute.CUSTOM}, manager, None, run, model)
+    specs = list(plan.sources[0])
+
+    assert plan.expected_examples == 10
+    assert len(specs) == 80
+    assert len({spec.source_id for spec in specs}) == 10
+    assert {spec.trial for spec in specs} == set(range(8))
+    plan.sources = (specs,)
+    result = asyncio.run(run_evaluations(model, [plan], workers=8, supports_request_seed=True))
+    assert result["task_outcomes"]["MATH500"]["status"] == "succeeded"
+    assert result["results"]["MATH500"] == {"pass@1": 0.125, "pass@8": 1.0}
+    assert benchmark.evaluation_limit is None
+    assert benchmark.benchmark_metrics() == ("accuracy",)
+
+
 def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():
     chat = _ChatBenchmark()
-    chat.set_evaluation_limits(limit=20)
+    chat.evaluation_limit = 20
     custom_manager = SimpleNamespace(get_benchmark=lambda name: chat)
     lm_eval_manager = SimpleNamespace(
         load_task_or_group=lambda names: {"group": {"leaf": _LMEvalTask()}},
@@ -122,6 +157,9 @@ def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():
             ],
             "n_benchmark": 120,
             "n_attempted": 20,
+            "source": {"dataset": "local", "split": "test", "revision": None},
+            "reducers": [{"name": "mean", "accuracy": "accuracy", "stderr": "accuracy_stderr", "repeat_ddof": 0, "groups": {}, "group_suffix": "", "group_weights": {}, "trial_metric": "accuracy", "selected_trial": None}],
+            "prompt_length": None, "requires_judge": False,
         },
         {
             "schema_version": 1,

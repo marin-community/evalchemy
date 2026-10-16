@@ -14,7 +14,6 @@ import importlib.util
 import pathlib
 import sys
 import time
-import types
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
@@ -22,7 +21,6 @@ if str(REPO) not in sys.path:
 if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from eval.contracts.grading import GraderExecutionMode  # noqa: E402
 from lcb_test_support import living_children  # noqa: E402
 
 VARIANTS = [
@@ -85,15 +83,3 @@ def test_lcb_run_scores_a_wrong_candidate_failed():
     problem = {"test": [{"testtype": "functional", "input": [1, 2], "output": 999}]}
     result = module.lcb_run(problem, "def add(a, b):\n    return a + b\n", 6, True)
     assert not all(row[0] for row in result)
-
-
-def test_route_declares_sandboxed_execution_mode():
-    """LCB self-manages its per-example process fan-out (like MBPPPlus / HumanEvalPlus), so
-    it declares SANDBOXED and must not run inside the driver's thread pool."""
-    sys.modules.setdefault("fire", types.ModuleType("fire"))
-    from eval.task import TaskManager
-
-    for name, _path in VARIANTS:
-        manager = TaskManager(task_list=[name])
-        benchmark = manager.get_benchmark(name)
-        assert benchmark.GRADER_EXECUTION_MODE is GraderExecutionMode.SANDBOXED

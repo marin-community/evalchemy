@@ -4,6 +4,7 @@ import gzip
 import io
 import json
 import multiprocessing
+from eval.runtime.program_process import run_program_process, start_program_session
 import os
 import platform
 import random
@@ -41,6 +42,7 @@ def check_correctness(
     """
 
     def unsafe_execute(tmp_dir):
+        start_program_session()
         random_id = random.randint(1, 100000)
         if "python" in language_type.lower():
             with create_tempdir():
@@ -575,10 +577,7 @@ def check_correctness(
     result = manager.list()
 
     p = context.Process(target=unsafe_execute, args=(tmp_dir,))
-    p.start()
-    p.join(timeout=timeout + 1)
-    if p.is_alive():
-        p.kill()
+    run_program_process(p, timeout=timeout + 1)
 
     if not result:
         result.append("timed out")

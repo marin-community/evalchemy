@@ -229,9 +229,9 @@ Through LM-Eval-Harness, we support all HuggingFace models and are currently add
 To choose a model, simply set 'pretrained=<name of hf model>' where the model name can either be a HuggingFace model name or a path to a local model. 
 
 
-### HPC Distributed Evaluation
+### HPC Distributed Inference
 
-For even faster evaluation, use full data parallelism and launch a vLLM process for each GPU. 
+Generate benchmark responses with full data parallelism and a vLLM process for each GPU.
 
 We have made also made this easy to do at scale across multiple nodes on HPC (High-Performance Computing) clusters:
 
@@ -244,7 +244,9 @@ Key features:
 - Dramatically reduce wall clock time for large benchmarks
 - Offline mode support for environments without internet access on GPU nodes
 - Automatic cluster detection and configuration
-- Efficient result collection and scoring
+- Generated response collection and upload
+
+These launchers finish after uploading generated responses. Run scored evaluations through the main evaluation CLI.
 
 Refer to the [distributed README](eval/distributed/README.md) for more details. 
 

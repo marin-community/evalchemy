@@ -30,8 +30,8 @@ uv sync --extra database            # + the psycopg2 driver for --use_database
 
 The base install is torch-free by design: it evaluates a *served* OpenAI-compatible
 endpoint (`--model local-completions` or `curator`) and grades the result, so it needs no
-local inference engine and installs on a CPU box. `eval/task.py` execs only the benchmarks
-named in `--tasks`, so the math/code core set — AIME24/25, AMC23, MATH500, HMMT,
+local inference engine and installs on a CPU box. `eval/task.py` imports only the sources
+named in `--tasks` from an explicit registry, so the math/code core set — AIME24/25, AMC23, MATH500, HMMT,
 GPQADiamond, LiveCodeBench, MMLUPro — imports with no extras.
 
 Each benchmark dir under `eval/chat_benchmarks` has its **own** extra (the PEP-685
@@ -138,7 +138,8 @@ This repo is a fork of [mlfoundations/evalchemy](https://github.com/mlfoundation
 and still tracks upstream. Most of `eval/` is upstream code.
 
 **Marin owns** `eval/serve_eval/`, `eval/regression/`, `eval/lm_eval_tasks/`,
-`eval/graders/`, `eval/contracts/`, `tests/e2e/`, `tests/drop/`, `tests/graders/`,
+`eval/graders/`, `eval/contracts/`, `eval/runtime/`, `eval/execution/`, `eval/sources/`,
+`tests/e2e/`, `tests/drop/`, `tests/graders/`,
 `tests/contracts/`,
 `tests/uncheatable_eval/`, `scripts/ci/`,
 `scripts/benchmarks/`, `packages/evalchemy-config/`, `infra/`, and the Marin workflows.

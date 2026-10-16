@@ -1,77 +1,49 @@
 import pytest
 
-from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
-from eval.chat_benchmarks.AIME25.eval_instruct import AIME25Benchmark
-from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText
+from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
+from eval.graders.math_specs import answer_number, boxed_math, jee
+from lm_eval.tasks.hendrycks_math.utils import is_equiv, last_boxed_only_string, remove_boxed
 
 
-@pytest.mark.parametrize(
-    ("benchmark_type", "answer_field"),
-    [(AIME24Benchmark, "expected_answer"), (AIME25Benchmark, "answer")],
-)
-def test_aime_equivalent_integer_forms_score_correctly(benchmark_type, answer_field):
-    benchmark = benchmark_type()
-    example = {answer_field: "25", "model_answers": [r"\frac{50}{2}"] * benchmark.n_repeat}
+@pytest.mark.parametrize("answer", ["25", r"\frac{50}{2}"])
+def test_boxed_math_accepts_equivalent_final_answers(answer):
+    spec = EvalSpec(task="AIME24", source=SourceRef("local"), source_id="1", ordinal=0, requests=(), grader=GraderSpec("boxed_math"), target="25")
 
-    result = benchmark.evaluate_responses({"examples": [example]})
-
-    assert result["accuracy_avg"] == 1.0
-    assert example["sample_metrics"]["accuracy"] == 1.0
+    assert boxed_math(spec, [rf"Work. \boxed{{{answer}}}"]).metrics["accuracy"] == 1.0
 
 
-@pytest.mark.parametrize("benchmark_type", [AIME24Benchmark, AIME25Benchmark])
-def test_aime_boxed_answer_comes_from_final_content(benchmark_type):
-    response = CompletionResponse(
-        content=r"\boxed{25}",
-        reasoning_content=r"The instruction quotes \boxed Answer: 17.",
-        finish_reason="stop",
-        usage=None,
-        provider_metadata={},
-        raw_choice={},
-    )
-    output = CompletionText(
-        response.normalized_content(CompletionContentPolicy.COMBINE),
-        response,
-        CompletionContentPolicy.COMBINE,
+def test_boxed_math_rejects_an_unboxed_answer():
+    spec = EvalSpec(task="AIME24", source=SourceRef("local"), source_id="1", ordinal=0, requests=(), grader=GraderSpec("boxed_math"), target="25")
+
+    assert boxed_math(spec, ["The answer is 25"]).metrics["accuracy"] == 0.0
+
+
+@pytest.mark.parametrize("answer", ["25", r"\frac{50}{2}"])
+def test_amc_boxed_math_uses_legacy_hendrycks_extraction_and_comparator(answer):
+    response = rf"Work. \boxed{{{answer}}}"
+    spec = EvalSpec(
+        task="AMC23", source=SourceRef("local"), source_id="1", ordinal=0, requests=(),
+        grader=GraderSpec("boxed_math", {"extractor": "hendrycks_math", "comparator": "hendrycks_math"}), target="25",
     )
 
-    assert benchmark_type.extract_answer(None, output) == "25"
-    assert benchmark_type.extract_answer(None, r"<|end_think|>\boxed{25}") == "25"
+    assert boxed_math(spec, [response]).metrics["accuracy"] == float(is_equiv("25", remove_boxed(last_boxed_only_string(response))))
 
 
-@pytest.mark.parametrize("benchmark_type", [AIME24Benchmark, AIME25Benchmark])
-def test_aime_reasoning_only_response_has_no_scoreable_answer(benchmark_type):
-    response = CompletionResponse(
-        content=None,
-        reasoning_content=r"I considered \boxed{25} but have not finished.",
-        finish_reason="length",
-        usage=None,
-        provider_metadata={},
-        raw_choice={},
-    )
-    output = CompletionText(
-        response.normalized_content(CompletionContentPolicy.COMBINE),
-        response,
-        CompletionContentPolicy.COMBINE,
+@pytest.mark.parametrize("answer", ["25", "025"])
+def test_aiw_number_grader_uses_legacy_hendrycks_comparator(answer):
+    response = f"Answer: {answer}"
+    spec = EvalSpec(
+        task="AIW", source=SourceRef("local"), source_id="1", ordinal=0, requests=(),
+        grader=GraderSpec("answer_number", {"comparator": "hendrycks_math"}), target="25",
     )
 
-    assert benchmark_type.extract_answer(None, output) == ""
+    assert answer_number(spec, [response]).metrics["accuracy"] == float(is_equiv("25", answer))
 
 
-@pytest.mark.parametrize("benchmark_type", [AIME24Benchmark, AIME25Benchmark])
-def test_aime_completed_reasoning_only_response_is_scoreable(benchmark_type):
-    response = CompletionResponse(
-        content=None,
-        reasoning_content=r"I finished the solution. \boxed{25}",
-        finish_reason="stop",
-        usage=None,
-        provider_metadata={},
-        raw_choice={},
+@pytest.mark.parametrize("response", [r"\boxed{1}<|im_end|>\boxed{2}", r"\boxed{2}</think>Done."])
+def test_jee_retains_last_box_from_complete_response(response):
+    spec = EvalSpec(
+        task="JEEBench", source=SourceRef("fixture"), source_id="1", ordinal=0, requests=(),
+        grader=GraderSpec("jee", {"type": "Integer"}), target="2",
     )
-    output = CompletionText(
-        response.normalized_content(CompletionContentPolicy.COMBINE),
-        response,
-        CompletionContentPolicy.COMBINE,
-    )
-
-    assert benchmark_type.extract_answer(None, output) == "25"
+    assert jee(spec, [response]).metrics["accuracy"] == 1.0
