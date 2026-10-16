@@ -6,7 +6,7 @@ import asyncio
 import multiprocessing
 import os
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from enum import StrEnum
 from typing import Any, TypeVar
 
@@ -18,6 +18,34 @@ class ExecutionMode(StrEnum):
     THREAD_SAFE = "thread_safe"
     PROCESS_ISOLATED = "process_isolated"
     SANDBOXED = "sandboxed"
+
+
+class SerialIO:
+    """Serialize blocking storage calls and join an active write on cancellation."""
+
+    def __init__(self):
+        self.admission = asyncio.Lock()
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="evalchemy-io")
+
+    async def call(self, function: Callable[..., Result], *args: Any) -> Result:
+        async with self.admission:
+            future = asyncio.get_running_loop().run_in_executor(self.executor, function, *args)
+            cancelled = None
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError as error:
+                    # A cancelled asyncio waiter cannot cancel a running storage
+                    # write. Keep admission until it finishes, even if shutdown
+                    # delivers another cancellation while we are joining it.
+                    cancelled = error
+            result = future.result()
+            if cancelled is not None:
+                raise cancelled
+            return result
+
+    def close(self) -> None:
+        self.executor.shutdown(wait=True, cancel_futures=True)
 
 
 def initialize_grader_worker() -> None:

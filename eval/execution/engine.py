@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
-from contextlib import ExitStack
+from contextlib import AsyncExitStack
 from typing import Any, Protocol
 
 from eval.completion_response import CompletionClassification, CompletionText, FailedGeneration
@@ -15,6 +15,7 @@ from eval.contracts.sample_manifest import SampleEntry, SampleManifest, SampleRe
 from eval.contracts.sample_results import validate_sample_metrics
 from eval.runtime.checkpoints import Checkpoints, ItemJournal, ResumeStream, completed_operation
 from eval.runtime.pool import Completed, ExecutionPool
+from eval.runtime.resources import SerialIO
 from eval.sample_logging import canonicalize_sample
 
 
@@ -92,6 +93,7 @@ class Evaluator:
         self.predict_only = predict_only
         self.sink = sink
         self.pool = ExecutionPool(workers)
+        self.io = SerialIO()
         self.checkpoints = {task: ResumeStream(store) for task, store in (checkpoints or {}).items()}
         self.manifests: dict[str, SampleManifest] = {}
         self.failures: dict[str, Counter[str]] = defaultdict(Counter)
@@ -102,6 +104,7 @@ class Evaluator:
         try:
             output = await completed_operation(
                 checkpoint, unit, asdict(replace(request, metadata={})), lambda: backend.execute(request),
+                io=self.io,
                 successful=lambda value: not isinstance(value, FailedGeneration) and not (
                     isinstance(value, CompletionText) and value.response.classification is CompletionClassification.EMPTY
                 ),
@@ -121,7 +124,7 @@ class Evaluator:
             self.failures[spec.task][category] += 1
             if allow_failed_response:
                 return output
-            self.sink.write_sample(spec.task, canonicalize_sample(spec.task, {
+            await self.io.call(self.sink.write_sample, spec.task, canonicalize_sample(spec.task, {
                 "doc_id": spec.ordinal, "doc": spec.doc, "target": spec.target,
                 "arguments": [(request.prompt, dict(request.generation))],
                 "resps": [[output]], "filtered_resps": [output],
@@ -218,7 +221,7 @@ class Evaluator:
             record = canonicalize_sample(spec.task, raw, spec.ordinal, entry)
             if not self.predict_only:
                 validate_sample_metrics(spec.task, [record])
-            self.sink.write_sample(spec.task, record)
+            await self.io.call(self.sink.write_sample, spec.task, record)
         except Exception as error:
             raise ItemFailure(FailurePhase.SERIALIZATION, error) from error
         return ItemResult(spec, tuple(outputs), grade, record)
@@ -229,8 +232,9 @@ class Evaluator:
             async for result in stream:
                 yield Completed(result.position, result.job.spec, result.result, result.error)
         finally:
-            with ExitStack() as cleanup:
-                cleanup.callback(self.sink.finish_task)
+            async with AsyncExitStack() as cleanup:
+                cleanup.callback(self.io.close)
+                cleanup.push_async_callback(self.io.call, self.sink.finish_task)
                 for store in self.checkpoints.values():
-                    cleanup.callback(store.close)
+                    cleanup.push_async_callback(self.io.call, store.close)
                 await stream.aclose()

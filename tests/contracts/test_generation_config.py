@@ -37,6 +37,7 @@ from eval.execution.grading import Graders
 from eval.graders.specs import GRADERS
 from eval.serve_eval.providers import ServedModel
 from eval.serve_eval.run import LOCAL_CHAT_COMPLETIONS, LOCAL_COMPLETIONS, build_model_args
+from tests.contracts.source_harness import MemoryCheckpoints
 
 
 class _Endpoint(BaseHTTPRequestHandler):
@@ -165,6 +166,59 @@ def test_model_request_progresses_while_humaneval_sandbox_waits(endpoint, answer
             return result
 
     assert asyncio.run(run()).metrics["accuracy"] == expected
+
+
+def test_model_request_progresses_during_checkpoint_commit_and_cancellation_joins_the_write(endpoint):
+    started = threading.Event()
+    release = threading.Event()
+
+    class Storage(MemoryCheckpoints):
+        def record(self, row):
+            started.set()
+            # A deadlock guard, not a performance threshold: only the test's
+            # separate HTTP response releases this simulated storage commit.
+            if not release.wait(timeout=5):
+                raise TimeoutError("model response could not progress during checkpoint commit")
+            super().record(row)
+
+    class SavedOnly:
+        async def execute(self, request):
+            raise AssertionError("the committed response must replay without inference")
+
+    store = Storage()
+    spec = EvalSpec(
+        task="checkpoint", source=SourceRef("fixture"), source_id="one", ordinal=0,
+        requests=(ModelRequest(RequestKind.GENERATE, [{"role": "user", "content": "Stored question"}]),),
+        grader=GraderSpec("unused"),
+    )
+
+    async def run():
+        async with LMBackend(_model(endpoint, LocalChatCompletion)) as backend:
+            engine = Evaluator(backend, None, CollectSamples(), workers=1, checkpoints={"checkpoint": store}, predict_only=True)
+            stream = engine.run([spec])
+            pending = asyncio.create_task(anext(stream))
+            try:
+                assert await asyncio.to_thread(started.wait, 5)
+                pending.cancel()
+                response = await backend.execute(ModelRequest(RequestKind.GENERATE, [{"role": "user", "content": "Other question"}]))
+                assert response == "\\boxed{42}"
+                pending.cancel()
+                assert not pending.done()
+            finally:
+                release.set()
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        await pending
+                finally:
+                    await stream.aclose()
+        assert store.closed
+        sink = CollectSamples()
+        restored = Evaluator(SavedOnly(), None, sink, workers=1, checkpoints={"checkpoint": store}, predict_only=True)
+        [completed] = [result async for result in restored.run([spec])]
+        assert completed.error is None
+        assert sink.samples["checkpoint"][0]["filtered_resps"] == ["\\boxed{42}"]
+
+    asyncio.run(run())
 
 
 def test_endpoint_admission_exceeds_aiohttp_default_connection_limit():

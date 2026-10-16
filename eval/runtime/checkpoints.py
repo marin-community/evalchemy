@@ -8,6 +8,8 @@ from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
 
+from eval.runtime.resources import SerialIO
+
 Result = TypeVar("Result")
 
 
@@ -95,6 +97,7 @@ async def completed_operation(
     inputs: Any,
     execute: Callable[[], Awaitable[Result]],
     *,
+    io: SerialIO,
     successful: Callable[[Result], bool],
 ) -> Result:
     """Reuse matching successful work; failed attempts remain eligible on restart."""
@@ -107,5 +110,5 @@ async def completed_operation(
             return previous["output"]
     result = await execute()
     if store is not None and successful(result):
-        store.record(unit, {"input_digest": digest, "output": result})
+        await io.call(store.record, unit, {"input_digest": digest, "output": result})
     return result
