@@ -10,8 +10,8 @@ from eval.task import BaseBenchmark
 
 class IFEvalBenchmark(BaseBenchmark):
     SOURCE = SourceRef("google/IFEval", "input_data")
-    METRICS = ("prompt_level_strict", "instruction_level_strict", "prompt_level_loose", "instruction_level_loose")
-    PRIMARY_METRIC = "prompt_level_strict"
+    METRICS = ("prompt-level", "instruction-level", "prompt_level_strict", "instruction_level_strict", "prompt_level_loose", "instruction_level_loose")
+    PRIMARY_METRIC = "prompt-level"
     def __init__(
         self,
         data_dir: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"),

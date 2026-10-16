@@ -52,6 +52,8 @@ class SourceMetrics:
         count = len(self.examples)
         if self.policy.name == "rounded_split_mean":
             return {"results": {task: self._rounded_split_metrics()}}
+        if self.policy.name == "last_trial" and self.pass_at_k is None:
+            return {"results": {task: self._last_trial_metrics()}}
         if self.pass_at_k is not None:
             metrics = self.pass_at_k.finish()
         elif "accuracy" in metrics:
@@ -132,6 +134,27 @@ class SourceMetrics:
 
             metrics = get_length_controlled_winrate(self.annotations, save_weights_dir=None)
         return {"results": {task: metrics}}
+
+    def _last_trial_metrics(self) -> dict:
+        # Some source protocols overwrite earlier trial answers before computing
+        # their reported statistics. Select by trial index, independent of when
+        # concurrent requests finish, while retaining every scored sample.
+        last_trial = max(self.trials)
+        accuracy = self.trials[last_trial].finish()["accuracy"]
+        metrics = {
+            self.policy.accuracy: accuracy,
+            "overall_variance": accuracy * (1 - accuracy),
+            "num_trials": len(self.trials),
+            "num_examples": len(self.examples),
+        }
+        for (tag, group), trials in self.group_trials.items():
+            if tag not in self.policy.groups:
+                continue
+            score = trials[last_trial].finish()["accuracy"]
+            metrics.setdefault(self.policy.groups[tag], {})[group] = {
+                "accuracy": score, "variance": score * (1 - score),
+            }
+        return metrics
 
     def _rounded_split_metrics(self) -> dict[str, float]:
         grouped: dict[str, dict[str, tuple[float, float]]] = defaultdict(dict)

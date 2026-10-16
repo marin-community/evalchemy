@@ -12,6 +12,7 @@ from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.JEEBench.eval_instruct import JEEBenchBenchmark
 from eval.contracts.eval_spec import SourceRef
 from eval.sources.common import SourceOptions
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 def _options(task):
@@ -32,6 +33,29 @@ def test_aiw_selects_target_ids_before_expanding_trials(tmp_path):
     assert specs[0].target == "42"
     assert specs[0].requests[0].generation["temperature"] == 1.0
     assert [spec.requests[0].generation["seed"] for spec in specs] == [7, 8]
+
+
+def test_aiw_reports_final_trial_statistics_and_retains_every_scored_trial(tmp_path):
+    data = tmp_path / "aiw.json"
+    data.write_text(json.dumps([
+        {"id": 577, "prompt": "first", "right_answer": 42},
+        {"id": 580, "prompt": "second", "right_answer": 42},
+    ]))
+    answers = {577: (42, 42, 0), 580: (0, 42, 42)}
+    endpoint = FixedEndpoint(lambda request: f"Answer: {answers[request.metadata['source_id']][request.metadata['trial']]}")
+
+    metrics, samples = evaluate_source(AIWBenchmark(data_file=data, n_trials=3), _options("AIW"), endpoint)
+
+    # The original source overwrites model_answer on each trial, then reports
+    # statistics over that final answer. Earlier successes must not enter its
+    # headline score, although every generated trial remains an auditable sample.
+    assert metrics == {
+        "num_trials": 3, "num_examples": 2,
+        "per_id_stats": {"577": {"accuracy": 0.0, "variance": 0.0}, "580": {"accuracy": 1.0, "variance": 0.0}},
+        "overall_accuracy": 0.5, "overall_variance": 0.25,
+    }
+    assert len(samples) == 6
+    assert sum(sample["accuracy"] for sample in samples) == 4
 
 
 def test_aime24_keeps_legacy_per_trial_sampling_seeds(tmp_path):

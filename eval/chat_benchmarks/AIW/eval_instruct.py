@@ -12,9 +12,9 @@ from eval.task import BaseBenchmark
 
 class AIWBenchmark(BaseBenchmark):
     SOURCE = SourceRef("AIW", "local")
-    METRICS = ("accuracy_avg",)
-    PRIMARY_METRIC = "accuracy_avg"
-    REDUCER = ReducerSpec(accuracy="accuracy_avg", stderr="accuracy_std_err")
+    METRICS = ("overall_accuracy", "overall_variance")
+    PRIMARY_METRIC = "overall_accuracy"
+    REDUCER = ReducerSpec(name="last_trial", accuracy="overall_accuracy", groups={"id": "per_id_stats"})
     """
     AIW Benchmark for evaluating the math reasoning of LLMs.
     """
