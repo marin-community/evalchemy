@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from contextlib import closing
 from collections.abc import Generator
 from dataclasses import dataclass, field
@@ -49,16 +48,19 @@ def _path_component(value: str) -> str:
 class FineStoreResumeManager:
     """Stream committed operations in admission order and buffer only new writes."""
 
-    root: str
+    store: DataStore
     source_prefix: str
     task_name: str
     fingerprint: RunFingerprint
     mode: ResumeMode = "auto"
     world_size: int = 1
     rank: int = 0
-    _store: DataStore | None = field(default=None, init=False, repr=False)
     _decision: str | None = field(default=None, init=False, repr=False)
     _pending_count: int = field(default=0, init=False, repr=False)
+
+    @property
+    def root(self) -> str:
+        return self.store.root
 
     @property
     def _namespace(self) -> str:
@@ -77,9 +79,8 @@ class FineStoreResumeManager:
         if stored is None:
             if read_finestore_output(self.root, self.source_prefix) is not None:
                 raise ResumeRefused(f"FineStore result exists without a resume fingerprint for {self._namespace}")
-            store = self._open_store()
             document = {**self.fingerprint.to_json(), "world_size": self.world_size, "operation_protocol": OPERATION_PROTOCOL}
-            with store.transaction() as transaction:
+            with self.store.transaction() as transaction:
                 transaction.write_object(self._fingerprint_blob, json.dumps(document, sort_keys=True).encode())
             self._decision = "fresh"
             return self._decision
@@ -99,16 +100,11 @@ class FineStoreResumeManager:
         self._decision = "resume"
         return self._decision
 
-    def _open_store(self) -> DataStore:
-        if self._store is None:
-            self._store = DataStore.open(self.root, writer_id=f"evalchemy-resume-{uuid.uuid4().hex}")
-            self._store.table(
-                RESUME_TABLE,
-                primary_key=(_NAMESPACE, _POSITION, _OPERATION),
-                schema=_RESUME_SCHEMA,
-                on_conflict=OnConflict.ERROR,
-            )
-        return self._store
+    def _table(self):
+        return self.store.table(
+            RESUME_TABLE, primary_key=(_NAMESPACE, _POSITION, _OPERATION),
+            schema=_RESUME_SCHEMA, on_conflict=OnConflict.ERROR,
+        )
 
     def records(self) -> Generator[CheckpointRow, None, None]:
         """Read one ordered snapshot; decoding stays bounded by admitted items."""
@@ -132,8 +128,7 @@ class FineStoreResumeManager:
     def record(self, row: CheckpointRow) -> None:
         if self._decision is None:
             self.decide()
-        store = self._open_store()
-        table = store.table(RESUME_TABLE, primary_key=(_NAMESPACE, _POSITION, _OPERATION), schema=_RESUME_SCHEMA)
+        table = self._table()
         table.append(
             {
                 _NAMESPACE: prefix_join(self._namespace, f"rank{self.rank}"),
@@ -145,11 +140,9 @@ class FineStoreResumeManager:
         )
         self._pending_count += 1
         if self._pending_count >= _FLUSH_EVERY:
-            store.flush_table(table)
+            self.store.flush_table(table)
             self._pending_count = 0
 
     def finalize(self) -> None:
-        if self._store is not None:
-            self._store.close()
-            self._store = None
-            self._pending_count = 0
+        self.store.flush_table(self._table())
+        self._pending_count = 0

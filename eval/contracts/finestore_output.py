@@ -90,6 +90,11 @@ class FineStoreOutput:
         for sample in samples_from_lm_eval(normalized_task, dict(record)):
             self._samples.append(sample_to_archive_row(sample, trial_id=trial_id))
 
+    @property
+    def store(self) -> DataStore:
+        """Share this archive's writer; this output context owns its lifetime."""
+        return self._store
+
     def finish_task(self) -> None:
         """Make the task's staged samples readable before starting another task."""
         self._store.flush()

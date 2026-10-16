@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
+from finestore.store import DataStore
 from sympy import Integer
 
 from eval.contracts.finestore_output import FineStoreOutput, completed_finestore_output, read_finestore_output
@@ -282,44 +283,47 @@ def test_finestore_output_keeps_repeated_task_configurations_distinct(tmp_path: 
 def test_finestore_resume_restores_committed_units(tmp_path: Path):
     root = str(tmp_path / "archive")
     fingerprint = RunFingerprint(inputs={"task_name": "gsm8k", "model_repo": "test-model"})
-    first = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
-    assert first.decide() == "fresh"
-    identity = {"source_id": "0"}
-    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
-    first.finalize()
+    with DataStore.open(root) as store:
+        first = FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint)
+        assert first.decide() == "fresh"
+        identity = {"source_id": "0"}
+        first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
+        first.finalize()
 
-    changed = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", RunFingerprint(inputs={"task_name": "other"}))
-    with pytest.raises(ResumeRefused):
-        changed.decide()
+        changed = FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", RunFingerprint(inputs={"task_name": "other"}))
+        with pytest.raises(ResumeRefused):
+            changed.decide()
 
-    retry = FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint)
-    assert retry.decide() == "resume"
-    restored = ResumeStream(retry).admit(0, identity)
-    assert restored.lookup({"phase": "generate"})["output"] == "42"
-    retry.record(CheckpointRow(1, input_digest({"source_id": "1"}), {"phase": "generate"}, {"input_digest": "input", "output": "43"}))
-    retry.finalize()
+        retry = FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint)
+        assert retry.decide() == "resume"
+        restored = ResumeStream(retry).admit(0, identity)
+        assert restored.lookup({"phase": "generate"})["output"] == "42"
+        retry.record(CheckpointRow(1, input_digest({"source_id": "1"}), {"phase": "generate"}, {"input_digest": "input", "output": "43"}))
+        retry.finalize()
 
-    assert [row.payload["output"] for row in FineStoreResumeManager(root, "gsm8k_0shot", "gsm8k", fingerprint).records()] == ["42", "43"]
+        assert [row.payload["output"] for row in FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint).records()] == ["42", "43"]
 
 def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: Path):
     root = str(tmp_path / "archive")
     fingerprint = RunFingerprint(inputs={"task_name": "gsm8k"})
-    first = FineStoreResumeManager(root, "run", "gsm8k", fingerprint)
-    assert first.decide() == "fresh"
-    first.finalize()
+    with DataStore.open(root) as store:
+        first = FineStoreResumeManager(store, "run", "gsm8k", fingerprint)
+        assert first.decide() == "fresh"
+        first.finalize()
 
-    with pytest.raises(ResumeRefused, match="fingerprint changed"):
-        FineStoreResumeManager(root, "run", "gsm8k", fingerprint, world_size=2).decide()
-    with pytest.raises(ResumeRefused, match="already exists"):
-        FineStoreResumeManager(root, "run", "gsm8k", fingerprint, mode="force-fresh").decide()
+        with pytest.raises(ResumeRefused, match="fingerprint changed"):
+            FineStoreResumeManager(store, "run", "gsm8k", fingerprint, world_size=2).decide()
+        with pytest.raises(ResumeRefused, match="already exists"):
+            FineStoreResumeManager(store, "run", "gsm8k", fingerprint, mode="force-fresh").decide()
 
 
 def test_finestore_resume_refuses_result_without_fingerprint(tmp_path: Path):
     root = str(tmp_path / "archive")
     _write_result(root, "run", {"results": {"gsm8k": {"exact_match": 0.5}}}, {})
 
-    with pytest.raises(ResumeRefused, match="without a resume fingerprint"):
-        FineStoreResumeManager(root, "run", "gsm8k", RunFingerprint(inputs={"task_name": "gsm8k"})).decide()
+    with DataStore.open(root) as store:
+        with pytest.raises(ResumeRefused, match="without a resume fingerprint"):
+            FineStoreResumeManager(store, "run", "gsm8k", RunFingerprint(inputs={"task_name": "gsm8k"})).decide()
 
 
 def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_path: Path):
@@ -338,11 +342,12 @@ def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_pat
     )
     assert read_finestore_output(root, "gsm8k_0shot") == results
     assert ReadView(root).token == committed.token
-    other_task = FineStoreResumeManager(root, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
-    other_task.record(CheckpointRow(0, input_digest({"source_id": "0"}), {"phase": "generate"}, {"input_digest": "input", "output": "A"}))
-    other_task.finalize()
-    assert not ReadView(root).is_sealed()
-    assert completed_finestore_output(root, "gsm8k_0shot")
+    with DataStore.open(root) as store:
+        other_task = FineStoreResumeManager(store, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
+        other_task.record(CheckpointRow(0, input_digest({"source_id": "0"}), {"phase": "generate"}, {"input_digest": "input", "output": "A"}))
+        other_task.finalize()
+        assert not ReadView(root).is_sealed()
+        assert completed_finestore_output(root, "gsm8k_0shot")
 
 
 def _triviaqa_record(doc_id: int) -> dict:
@@ -479,16 +484,17 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
         ["--model", "local-completions", "--tasks", "arc_challenge", "--model_args", "model=served", "--output_path", root]
     )
     model = SimpleNamespace(world_size=1, rank=0, chat_template=lambda _enabled: None)
-    manager = build_resume_wiring(args, model, RunSpec.from_args(args))("arc_challenge")
-    assert manager.decide() == "fresh"
-    manager.finalize()
-    result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
-    _write_result(root, args.finestore_output_prefix, result, {})
+    with DataStore.open(root) as store:
+        manager = build_resume_wiring(args, model, RunSpec.from_args(args), store=store)("arc_challenge")
+        assert manager.decide() == "fresh"
+        manager.finalize()
+        result = {"results": {"arc_challenge": {"acc": 0.5}}, "config": {"tasks": "arc_challenge"}}
+        _write_result(root, args.finestore_output_prefix, result, {})
 
-    setattr(args, changed_field, changed_value)
-    with pytest.raises(ResumeRefused, match=message):
-        build_resume_wiring(args, model, RunSpec.from_args(args))("arc_challenge").decide()
-    assert read_finestore_output(root, args.finestore_output_prefix) == result
+        setattr(args, changed_field, changed_value)
+        with pytest.raises(ResumeRefused, match=message):
+            build_resume_wiring(args, model, RunSpec.from_args(args), store=store)("arc_challenge").decide()
+        assert read_finestore_output(root, args.finestore_output_prefix) == result
 
 
 @pytest.mark.parametrize("installed_layout", [False, True])
@@ -513,14 +519,15 @@ def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path, 
     )
     model = Namespace(world_size=1, rank=0, chat_template=lambda _enabled: None)
     run = RunSpec()
-    factory = build_resume_wiring(args, model, run)
-    first = factory("gsm8k")
-    identity = {"source_id": "0"}
-    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
-    first.finalize()
+    with DataStore.open(root) as store:
+        factory = build_resume_wiring(args, model, run, store=store)
+        first = factory("gsm8k")
+        identity = {"source_id": "0"}
+        first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
+        first.finalize()
 
-    retry = build_resume_wiring(args, model, run)("gsm8k")
-    assert ResumeStream(retry).admit(0, identity).lookup({"phase": "generate"})["output"] == "42"
+        retry = build_resume_wiring(args, model, run, store=store)("gsm8k")
+        assert ResumeStream(retry).admit(0, identity).lookup({"phase": "generate"})["output"] == "42"
 
 
 def test_finestore_cli_refuses_resume_off(tmp_path: Path):
@@ -537,12 +544,13 @@ def test_judge_identity_change_refuses_checkpoint_reuse(tmp_path, change):
     model = SimpleNamespace(chat_template=lambda _enabled: None)
     config = {"model": "judge", "base_url": "https://judge.example/v1", "api_key": "key"}
     run = RunSpec.from_args(args)
-    first = build_resume_wiring(args, model, run, judge_configs={"MTBench": JudgeConfig(**config)})("MTBench")
-    first.decide()
-    first.finalize()
-    changed = JudgeConfig(**{**config, **change})
-    with pytest.raises(ResumeRefused, match="fingerprint changed"):
-        build_resume_wiring(args, model, run, judge_configs={"MTBench": changed})("MTBench").decide()
+    with DataStore.open(args.finestore_output_path) as store:
+        first = build_resume_wiring(args, model, run, judge_configs={"MTBench": JudgeConfig(**config)}, store=store)("MTBench")
+        first.decide()
+        first.finalize()
+        changed = JudgeConfig(**{**config, **change})
+        with pytest.raises(ResumeRefused, match="fingerprint changed"):
+            build_resume_wiring(args, model, run, judge_configs={"MTBench": changed}, store=store)("MTBench").decide()
 
 
 def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):

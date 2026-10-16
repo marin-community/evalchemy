@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from importlib.metadata import distributions
 from pathlib import Path
+from finestore.store import DataStore
 
 from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
 from eval.contracts.finestore_resume import FineStoreResumeManager, OPERATION_PROTOCOL
@@ -21,7 +22,7 @@ MODEL_IDENTITY_FIELDS = {
 }
 
 
-def build_resume_wiring(args, lm, run: RunSpec, *, judge_configs=None):
+def build_resume_wiring(args, lm, run: RunSpec, *, store: DataStore, judge_configs=None):
     model_args = parse_key_value_args(args.model_args or "")
     identity = {name: value for name, value in model_args.items() if name in MODEL_IDENTITY_FIELDS}
     repository = identity.get("pretrained", identity.get("model"))
@@ -44,7 +45,7 @@ def build_resume_wiring(args, lm, run: RunSpec, *, judge_configs=None):
             "include_path": args.include_path,
         })
         return FineStoreResumeManager(
-            root=args.finestore_output_path,
+            store=store,
             source_prefix=getattr(args, "finestore_output_prefix", DEFAULT_SOURCE_PREFIX),
             task_name=task, fingerprint=fingerprint, mode=args.resume_mode,
         )

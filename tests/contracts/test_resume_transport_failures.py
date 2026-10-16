@@ -1,5 +1,7 @@
 """Streaming FineStore checkpoints preserve typed successful model responses."""
 
+from finestore.store import DataStore
+
 from eval.completion_response import CompletionContentPolicy, CompletionResponse, CompletionText
 from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.resume import RunFingerprint
@@ -17,12 +19,13 @@ def test_finestore_stream_round_trips_typed_completion_metadata(tmp_path):
     )
     output = CompletionText("reasoning\n\nfinal", response, CompletionContentPolicy.COMBINE)
     identity = {"source_id": "0"}
-    first = FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())
-    first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "request", "output": output}))
-    first.finalize()
+    with DataStore.open(str(tmp_path)) as store:
+        first = FineStoreResumeManager(store, "run", "task", _fingerprint())
+        first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "request", "output": output}))
+        first.finalize()
 
-    restored = ResumeStream(FineStoreResumeManager(str(tmp_path), "run", "task", _fingerprint())).admit(0, identity)
-    value = restored.lookup({"phase": "generate"})["output"]
+        restored = ResumeStream(FineStoreResumeManager(store, "run", "task", _fingerprint())).admit(0, identity)
+        value = restored.lookup({"phase": "generate"})["output"]
 
-    assert isinstance(value, CompletionText)
-    assert value.artifact() == output.artifact()
+        assert isinstance(value, CompletionText)
+        assert value.artifact() == output.artifact()

@@ -245,9 +245,9 @@ def evaluate(
     if run.seeds[2] is not None:
         utils.set_torch_seed(run.seeds[2])
     plans = source_plans(task_list, task_routes, task_manager, pretrain_task_manager, run, lm)
-    factory = build_resume_wiring(args, lm, run, judge_configs={
+    factory = build_resume_wiring(args, lm, run, store=output_sink.store, judge_configs={
         task: plan.judge_config for plan in plans if plan.judge_config is not None for task in plan.task_names
-    }) if getattr(args, "finestore_output_path", None) else None
+    }) if output_sink is not None and getattr(args, "finestore_output_path", None) else None
     checkpoints = {
         task: factory(task) for plan in plans for task in plan.task_names
     } if factory is not None else {}

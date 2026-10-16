@@ -7,7 +7,7 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
-from eval.contracts.finestore_output import FineStoreOutput
+from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.execution.engine import Evaluator
 from eval.resume.fingerprint import RunFingerprint
@@ -23,8 +23,13 @@ def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tm
         ),
         grader=GraderSpec("fixture"), doc={"question": "first"}, target="second answer",
     )
-    specs = [spec, replace(spec, source_id="opaque/02", ordinal=1, requests=spec.requests[:1])]
+    tasks = ("conversation", "other")
+    specs = [
+        spec, replace(spec, source_id="opaque/02", ordinal=1, requests=spec.requests[:1]),
+        replace(spec, task="other", source_id="opaque/03", requests=spec.requests[:1]),
+    ]
     fingerprint = RunFingerprint(inputs={"fixture": "v1"})
+    expected_result = {"results": {"conversation": {"accuracy": 0.5}, "other": {"accuracy": 0.0}}}
 
     class Backend:
         def __init__(self, interrupted=False):
@@ -41,18 +46,24 @@ def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tm
         return Grade({"accuracy": float(outputs[-1] == spec.target)})
 
     def run(backend):
-        checkpoint = FineStoreResumeManager(root, "run", "conversation", fingerprint)
-        with FineStoreOutput(root, "run", ["conversation"]) as output:
-            engine = Evaluator(backend, grade, output, workers=1, checkpoints={"conversation": checkpoint})
+        with FineStoreOutput(root, "run", tasks) as output:
+            checkpoints = {task: FineStoreResumeManager(output.store, "run", task, fingerprint) for task in tasks}
+            engine = Evaluator(backend, grade, output, workers=1, checkpoints=checkpoints)
 
             async def collect():
                 return [result async for result in engine.run(specs)]
 
-            return asyncio.run(collect())
+            completed = asyncio.run(collect())
+            if all(item.error is None for item in completed):
+                # Checkpoint finalization leaves the shared owner available for
+                # publishing the final result after every source has finished.
+                output.finish(expected_result)
+            return completed
 
     first = run(Backend(interrupted=True))
     assert sum(result.error is not None for result in first) == 1
-    assert ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).num_rows == 1
+    assert ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).num_rows == 2
+    assert read_finestore_output(root, "run") is None
 
     resumed = Backend()
     second = run(resumed)
@@ -63,7 +74,10 @@ def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tm
         {"role": "user", "content": "second"},
     ]]
     rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
-    assert len(rows) == 2
+    assert len(rows) == 3
     conversation = next(sample_from_archive_row(row) for row in rows if sample_from_archive_row(row).output == "second answer")
     assert [message.content for message in conversation.prompt_messages] == ["first", "first answer", "second"]
-    assert len(list(FineStoreResumeManager(root, "run", "conversation", fingerprint).records())) == 3
+    with FineStoreOutput(root, "run", tasks) as output:
+        assert len(list(FineStoreResumeManager(output.store, "run", "conversation", fingerprint).records())) == 3
+        assert len(list(FineStoreResumeManager(output.store, "run", "other", fingerprint).records())) == 1
+    assert read_finestore_output(root, "run") == expected_result
