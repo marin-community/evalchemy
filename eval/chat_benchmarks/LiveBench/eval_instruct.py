@@ -68,13 +68,13 @@ class LiveBenchBenchmark(BaseBenchmark):
     def load_questions(self):
         if self.question_source == "huggingface":
             categories, tasks = get_categories_tasks(self.dataset_name)
-            for category, names in tasks.items():
-                for name in names:
+            for category in sorted(tasks):
+                for name in sorted(tasks[category]):
                     rows = load_questions(categories[category], self.all_release_dates, self.release_date, name)
                     yield from rows[:10] if self.debug else rows
             return
         files = glob.glob(f"{self.data_path}/{self.dataset_name}/**/question.jsonl", recursive=True)
-        for path in files:
+        for path in sorted(files):
             rows = load_questions_jsonl(path, self.all_release_dates, self.release_date)
             yield from rows[:10] if self.debug else rows
 

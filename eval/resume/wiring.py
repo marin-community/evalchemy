@@ -6,6 +6,7 @@ from dataclasses import asdict
 from importlib.metadata import distributions
 from pathlib import Path
 from finestore.store import DataStore
+from packaging.utils import canonicalize_name
 
 from eval.contracts.finestore_output import DEFAULT_SOURCE_PREFIX
 from eval.contracts.finestore_resume import FineStoreResumeManager, OPERATION_PROTOCOL
@@ -22,6 +23,29 @@ MODEL_IDENTITY_FIELDS = {
 }
 
 
+def installed_dependency_versions() -> dict[str, str]:
+    """Record installed versions in import order, excluding wheel-owned vendors."""
+    installed = list(distributions())
+    owned_roots = set()
+    for distribution in installed:
+        root = Path(str(distribution.locate_file(""))).resolve()
+        # Vendored metadata belongs to its enclosing wheel. Importing that
+        # wheel must not add its private copies as installed dependencies.
+        for file in distribution.files or ():
+            if file.name in {"METADATA", "PKG-INFO"} and file.parent.suffix in {".dist-info", ".egg-info"}:
+                nested = Path(str(distribution.locate_file(file))).resolve().parent.parent
+                if nested != root and nested.is_relative_to(root):
+                    owned_roots.add(nested)
+    versions = {}
+    for distribution in installed:
+        if Path(str(distribution.locate_file(""))).resolve() not in owned_roots:
+            name = canonicalize_name(distribution.metadata["Name"])
+            # Independent overlays follow the same first-match precedence as
+            # importlib.metadata.distribution(), rather than last-wins order.
+            versions.setdefault(name, distribution.version)
+    return versions
+
+
 def build_resume_wiring(args, lm, run: RunSpec, *, store: DataStore, judge_configs=None):
     model_args = parse_key_value_args(args.model_args or "")
     identity = {name: value for name, value in model_args.items() if name in MODEL_IDENTITY_FIELDS}
@@ -33,7 +57,7 @@ def build_resume_wiring(args, lm, run: RunSpec, *, store: DataStore, judge_confi
     code = digest_files([*root.rglob("*.py"), *root.rglob("*.yaml")])
     # Wheels have no checkout lockfile. Record the versions actually executing
     # the run in both installed and source environments.
-    dependencies = {distribution.metadata["Name"]: distribution.version for distribution in distributions()}
+    dependencies = installed_dependency_versions()
 
     def factory(task):
         judge = (judge_configs or {}).get(task)
