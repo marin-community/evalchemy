@@ -68,8 +68,12 @@ def mmlu_choice(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
         ) or ""
     text = final_response_text(output)
     answer = None
-    for pattern in (r"answer is \(?([A-J])\)?", r"Answer:\s*([A-J])", r"\b([A-J])\b(?!.*\b[A-J]\b)"):
-        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    for pattern, flags in (
+        (r"answer is \(?([A-J])\)?", re.IGNORECASE),
+        (r"Answer:\s*([A-J])", re.IGNORECASE),
+        (r"\b([A-J])\b(?!.*\b[A-J]\b)", re.DOTALL),
+    ):
+        match = re.search(pattern, text, flags)
         if match:
             answer = match.group(1).upper()
             break

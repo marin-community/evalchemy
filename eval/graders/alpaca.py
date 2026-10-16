@@ -39,7 +39,7 @@ def alpaca(spec, responses):
     frame = annotator._preprocess(frame)
     prompts, frame = annotator._make_prompts(frame)
     settings = dict(annotator.completions_kwargs)
-    settings.pop("model_name", None)
+    settings["model"] = settings.pop("model_name")
     requests = tuple(ModelRequest(RequestKind.GENERATE, utils.prompt_to_chatml(prompt), settings) for prompt in prompts)
     return JudgePlan(requests, GraderSpec("alpaca_preference", {"config": name, "frame": frame.to_dict("records")}))
 

@@ -7,6 +7,7 @@ import logging
 import datasets
 
 from alpaca_eval.constants import DEFAULT_ANNOTATOR_CONFIG
+from eval.graders.alpaca import annotation_config
 from eval.task import BaseBenchmark
 
 
@@ -65,7 +66,7 @@ class AlpacaBenchmark(BaseBenchmark):
         self.do_sample = do_sample
         self.debug = debug
         self.annotator_conf = self.ANNOTATOR_CONFIG_MAP[annotator_model]
-        self.judge_model = annotator_model
+        self.judge_model = annotation_config(self.annotator_conf)[1]["completions_kwargs"]["model_name"]
 
     def load_dataset(self) -> datasets.Dataset:
         """Load the evaluation dataset."""

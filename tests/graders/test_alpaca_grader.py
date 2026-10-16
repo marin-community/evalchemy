@@ -1,18 +1,24 @@
 """Alpaca corpus metrics retain their source indices under concurrent completion."""
 
+import asyncio
 from dataclasses import replace
 import re
 
 import pandas as pd
 import pytest
+from aiohttp import ClientSession, web
 from alpaca_eval import constants, utils
 from alpaca_eval.annotators import SinglePairwiseAnnotator
 from alpaca_eval.metrics import get_length_controlled_winrate, glm_winrate
 
+from eval.chat_benchmarks.alpaca_eval.eval_instruct import AlpacaBenchmark
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ReducerSpec, SourceRef
 from eval.execution.engine import ItemResult
 from eval.execution.metrics import SourceMetrics
+from eval.execution.judge import JudgeBackend
 from eval.graders.alpaca import alpaca, alpaca_preference
+from eval.graders.answer_equivalence import JudgeConfig
+from eval.sources.common import SourceOptions
 
 
 @pytest.fixture
@@ -82,3 +88,62 @@ def test_alpaca_corpus_score_matches_original_indexed_annotations(alpaca_calibra
         metrics.add(result)
 
     assert metrics.finish("alpaca_eval")["results"]["alpaca_eval"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("model", ["auto", "gpt-4", "gpt-4-1106-preview", "gpt-4o-mini-2024-07-18"])
+@pytest.mark.parametrize("rank", [1, 2])
+def test_alpaca_wire_model_and_saved_reply_match_original_annotator(monkeypatch, model, rank):
+    row = {"instruction": "case-17", "output": "reference response", "generator": "reference"}
+    monkeypatch.setattr(constants, "ALPACAEVAL_REFERENCE_OUTPUTS", lambda: [row])
+    source = AlpacaBenchmark(annotator_model=model)
+    monkeypatch.setattr(source, "load_dataset", lambda: [row])
+    spec = next(source.iter_specs(SourceOptions("alpaca_eval", source.SOURCE)))
+    config = next(iter(utils.load_configs(source.annotator_conf, relative_to=constants.EVALUATORS_CONFIG_DIR).values()))
+    choice = {
+        "index": 0, "finish_reason": "stop",
+        "message": {"role": "assistant", "content": repr([
+            {"model": "model_1", "rank": rank}, {"model": "model_2", "rank": 3 - rank},
+        ])},
+        "logprobs": {"content": [{"top_logprobs": [
+            {"token": "m", "logprob": -0.2 if rank == 1 else -1.6},
+            {"token": "M", "logprob": -1.6 if rank == 1 else -0.2},
+        ]}]},
+    }
+    original_requests = []
+
+    def completions(prompts, model_name, **kwargs):
+        original_requests.append({"model": model_name, "messages": utils.prompt_to_chatml(prompts[0]), **kwargs})
+        return {"completions": [choice["message"]["content"]], "completions_all": [choice]}
+
+    original = SinglePairwiseAnnotator(**{**config, "fn_completions": completions})
+    [expected] = original(pd.DataFrame([{
+        "index": 0, "instruction": row["instruction"], "output_1": row["output"], "output_2": "candidate response",
+        "generator_1": "reference", "generator_2": "candidate",
+    }])).to_dict("records")
+    plan = alpaca(spec, ["candidate response"])
+    requests = []
+
+    async def handler(request):
+        requests.append(await request.json())
+        return web.json_response({"choices": [choice]})
+
+    async def run():
+        app = web.Application()
+        app.router.add_post("/v1/chat/completions", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            base_url = f"http://127.0.0.1:{runner.addresses[0][1]}/v1"
+            async with ClientSession() as session:
+                backend = JudgeBackend(JudgeConfig("generic-fallback", base_url, "test-key"), session)
+                return [await backend.execute(request) for request in plan.requests]
+        finally:
+            await runner.cleanup()
+
+    replies = asyncio.run(run())
+    grade = alpaca_preference(replace(spec, grader=plan.grader), replies)
+
+    assert requests == original_requests
+    assert source.judge_model == original_requests[0]["model"]
+    assert grade.metrics["preference"] == pytest.approx(expected["preference"])
