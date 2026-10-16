@@ -9,10 +9,9 @@ import re
 from typing import Any
 
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, JudgePlan
-from eval.completion_response import CompletionClassification, CompletionText
 from eval.graders.answer_equivalence import math_answers_equivalent
 from eval.graders.answer_extraction import extract_final_boxed_answer
-from eval.graders.answer_extraction import final_response_text
+from eval.graders.mmlu import extract_answer as extract_mmlu_answer, grade_response as grade_mmlu_response
 from eval.chat_benchmarks.GPQADiamond.testing_utils import get_multiple_choice_answer
 from eval.lm_eval_tasks.gsm8k.utils import extract_gsm8k_flexible_answer
 from eval.graders.answer_extraction import AnswerExtractionError, extract_boxed_answer, extraction_failure
@@ -60,24 +59,10 @@ def letter_choice(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     return Grade({"accuracy": float(answer == spec.target)}, {"filtered_resps": [answer]})
 
 def mmlu_choice(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
-    output = responses[-1]
-    if isinstance(output, CompletionText):
-        completion = output.response
-        output = completion.content or (
-            completion.reasoning_content if completion.classification is CompletionClassification.REASONING_ONLY else ""
-        ) or ""
-    text = final_response_text(output)
-    answer = None
-    for pattern, flags in (
-        (r"answer is \(?([A-J])\)?", re.IGNORECASE),
-        (r"Answer:\s*([A-J])", re.IGNORECASE),
-        (r"\b([A-J])\b(?!.*\b[A-J]\b)", re.DOTALL),
-    ):
-        match = re.search(pattern, text, flags)
-        if match:
-            answer = match.group(1).upper()
-            break
-    return Grade({"accuracy": float(answer == spec.target)}, {"filtered_resps": [answer]})
+    answer = extract_mmlu_answer(responses[-1])
+    example = {"answer": spec.target, "model_answer": answer}
+    grade_mmlu_response(example)
+    return Grade(example["sample_metrics"], {"filtered_resps": [answer]})
 
 def matharena(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     # Optional grader code is imported only after the HMMT source has loaded it.
