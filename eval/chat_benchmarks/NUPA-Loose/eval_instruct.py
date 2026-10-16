@@ -136,20 +136,18 @@ class NUPALooseBenchmark(BaseBenchmark):
             examples.append(example)
         return {"examples": examples}
 
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        for example in results["examples"]:
-            score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
-            example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
-            example["correct"] = bool(score.exact_match)
-            record_sample_metrics(
-                example,
-                exact_match=score.exact_match,
-                digit_match=score.digit_match,
-                dlength=score.dlength,
-                format_valid_rate=score.format_valid,
-                no_answer_rate=score.no_answer,
-            )
-        return results
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        score = score_prediction(example.get("output"), example["answer"], example["answer_format"])
+        example["model_answer"] = extract_answer(example.get("output"), example["answer_format"])
+        example["correct"] = bool(score.exact_match)
+        record_sample_metrics(
+            example,
+            exact_match=score.exact_match,
+            digit_match=score.digit_match,
+            dlength=score.dlength,
+            format_valid_rate=score.format_valid,
+            no_answer_rate=score.no_answer,
+        )
 
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         scored_examples = results["examples"]

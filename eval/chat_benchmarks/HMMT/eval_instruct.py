@@ -118,16 +118,13 @@ class HMMTBenchmark(BaseBenchmark):
             example["label"] = []
         return {"examples": examples}
 
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Grade responses and retain the per-example verdicts and task context."""
-        for example in results["examples"]:
-            scores = [
-                check_answers(answer, parse_answer(str(example["answer"]))[0])
-                for answer in example["model_answers"]
-            ]
-            example["label"] = scores
-            record_repeated_sample_metrics(example, accuracy=scores)
-        return results
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        scores = [
+            check_answers(answer, parse_answer(str(example["answer"]))[0])
+            for answer in example["model_answers"]
+        ]
+        example["label"] = scores
+        record_repeated_sample_metrics(example, accuracy=scores)
 
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         return {**results, **repeated_accuracy_results(results["examples"])}

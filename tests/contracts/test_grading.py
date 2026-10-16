@@ -18,7 +18,41 @@ from eval.contracts.grading import (
     validate_serialized_artifact_manifests,
 )
 from eval.contracts.aggregation import functional_pass_at_k, repeated_accuracy_results
-from eval.task import TaskManager
+from eval.contracts.custom_streaming import aggregate_responses, score_responses
+from eval.contracts.sample_results import record_sample_metrics
+from eval.task import BaseBenchmark, TaskManager
+
+
+def test_per_example_grading_preserves_sample_groups_and_replay_metrics():
+    class GroupedBenchmark(BaseBenchmark):
+        def generate_responses(self, model):
+            raise AssertionError("grading must not generate responses")
+
+        def sample_groups(self, results):
+            return {name: results[name] for name in ("first", "second")}
+
+        def grade_response(self, example):
+            record_sample_metrics(example, accuracy=example["model_answer"] == example["answer"])
+
+        def aggregate_results(self, results):
+            examples = [example for group in self.sample_groups(results).values() for example in group]
+            return {"accuracy": sum(example["sample_metrics"]["accuracy"] for example in examples) / len(examples)}
+
+    benchmark = GroupedBenchmark()
+    generated = {
+        "first": [{"question": "one", "answer": "A", "model_answer": "A"}],
+        "second": [{"question": "two", "answer": "B", "model_answer": "A"}],
+        "metadata": {"source": "test"},
+    }
+
+    scored = score_responses("grouped", benchmark, generated)
+    restored = json.loads(json.dumps(scored.graded_result))
+    replayed = aggregate_responses("grouped", benchmark, restored)
+
+    assert scored.metrics == replayed.metrics == {"accuracy": 0.5}
+    assert scored.graded_result["metadata"] == {"source": "test"}
+    assert scored.graded_result["first"][0]["sample_metrics"] == {"accuracy": 1.0}
+    assert scored.graded_result["second"][0]["sample_metrics"] == {"accuracy": 0.0}
 
 
 def test_functional_pass_at_k_preserves_completion_counts_in_json_replay():

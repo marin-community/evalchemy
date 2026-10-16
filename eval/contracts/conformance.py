@@ -97,7 +97,12 @@ def validate_custom_benchmark_class(benchmark_class: type, base_class: type) -> 
         if not isinstance(requirement, ResourceRequirement):
             raise TypeError("custom benchmark resource requirements must implement the shared contract")
     if benchmark_class.evaluate_responses is not base_class.evaluate_responses:
-        raise TypeError("custom benchmark must implement grade_responses and aggregate_results, not override evaluate_responses")
+        raise TypeError("custom benchmark must implement grading and aggregation, not override evaluate_responses")
+    if (
+        benchmark_class.grade_responses is base_class.grade_responses
+        and benchmark_class.grade_response is base_class.grade_response
+    ):
+        raise TypeError("custom benchmark must implement grade_response or grade_responses")
     for method_name in ("prepare", "generate_responses", "grade_responses", "aggregate_results", "sample_groups", "to_samples"):
         if not callable(getattr(benchmark_class, method_name, None)):
             raise TypeError(f"custom benchmark is missing lifecycle method: {method_name}")

@@ -228,10 +228,8 @@ class MMLUProBenchmark(BaseBenchmark):
 
         return {"examples": examples}
 
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        for example in results["examples"]:
-            record_sample_metrics(example, accuracy=example["model_answer"] == example["answer"])
-        return results
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        record_sample_metrics(example, accuracy=example["model_answer"] == example["answer"])
 
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, float]:
         examples: List[Dict[str, Any]] = results["examples"]

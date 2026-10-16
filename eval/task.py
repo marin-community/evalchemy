@@ -778,10 +778,16 @@ class BaseBenchmark(ABC):
             return None
         return self.aggregate_results(self.grade_responses(results))
 
-    @abstractmethod
     def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Return task data annotated with grading evidence, preserving each example's sample coordinates."""
-        raise NotImplementedError(f"{self.benchmark_name}: grading is not implemented")
+        """Grade each example in its sample group; override for batch grading."""
+        for examples in self.sample_groups(results).values():
+            for example in examples:
+                self.grade_response(example)
+        return results
+
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        """Annotate one example's completions and record its per-sample metrics."""
+        raise NotImplementedError(f"{self.benchmark_name}: per-example grading is not implemented")
 
     @abstractmethod
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:

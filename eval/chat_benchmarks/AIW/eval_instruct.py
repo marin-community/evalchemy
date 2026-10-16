@@ -136,12 +136,8 @@ class AIWBenchmark(BaseBenchmark):
                 except:
                     return None
 
-    def grade_responses(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        # Every generated example is graded, including the ones the reported
-        # aggregate excludes, so each persisted sample carries its own score.
-        for example in results["examples"]:
-            record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
-        return results
+    def grade_response(self, example: Dict[str, Any]) -> None:
+        record_sample_metrics(example, accuracy=is_equiv(str(example["right_answer"]), example["model_answer"]))
 
     def aggregate_results(self, results: Dict[str, Any]) -> Dict[str, Any]:
         # Filter only the target IDs

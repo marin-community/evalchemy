@@ -17,10 +17,12 @@ response within a scored task remains an empty sample with `failure_category` in
 its sample record. Evalchemy completes the other tasks and leaves the acceptance
 decision to the caller or regression gate.
 
-Custom benchmarks implement `grade_responses(results)` and
-`aggregate_results(graded_results)`. The grader returns per-completion verdicts
-and task context. The reducer uses that evidence without generating responses,
-running tests, or calling a judge. `evaluate_responses` composes these methods.
+Custom benchmarks implement `grade_response(example)` to annotate one example's
+completions and record its metrics. The shared `grade_responses(results)` loop
+visits each sample group; batch graders can override it. Benchmarks also implement
+`aggregate_results(graded_results)`. The reducer uses grading evidence without
+generating responses, running tests, or calling a judge. `evaluate_responses`
+composes grading and reduction.
 Request-level resume restores generations and uses the same grading and reduction
 path. `aggregate_responses` can also replay restored grading evidence directly.
 
