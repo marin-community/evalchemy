@@ -86,7 +86,7 @@ jobs:
         run: >-
           uv run --python 3.12 --extra dev
           --extra humaneval --extra humanevalplus --extra mbpp --extra mbppplus
-          --extra ifeval --extra livebench --extra mrcr --extra nupa-loose --extra nupa5k-loose --extra serve-eval
+          --extra ifeval --extra livebench --extra mrcr --extra nupa-loose --extra nupa5k-loose --extra repobench --extra serve-eval
           python -m pytest tests/contracts/ -q
 
   lean-install:
