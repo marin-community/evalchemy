@@ -3,6 +3,7 @@ from eval.sources.programs import live_code_records
 from eval.sources.common import text_specs
 
 import logging
+from itertools import islice
 import os
 from typing import List, Optional
 
@@ -64,7 +65,7 @@ class LiveCodeBenchBenchmark(BaseBenchmark):
 
         examples = self.load_questions()
         if self.debug:
-            examples = list(examples)[:10]
+            examples = islice(examples, 10)
         return text_specs(
             examples, options, prompt=prompt, target=lambda example: example["test"],
             grader="live_code", generation_kwargs={"do_sample": False, "max_gen_toks": self.max_new_tokens},

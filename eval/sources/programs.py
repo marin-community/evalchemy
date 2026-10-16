@@ -1,12 +1,14 @@
 """Data transformations shared by program-evaluation sources."""
 
 import base64
+from collections.abc import Iterator
+from dataclasses import dataclass
 import json
-import os
 import pickle
+from typing import Any
 import zlib
 
-from datasets import concatenate_datasets
+from datasets import Dataset
 
 
 def difficulty(rating):
@@ -27,17 +29,27 @@ def exact_tests(tests):
     return normalized
 
 
+@dataclass(frozen=True)
+class LiveCodeRecords:
+    """Size-aware source view that decodes private tests only on consumption."""
+
+    rows: Dataset
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        for index in range(4):
+            shard = self.rows.shard(num_shards=4, index=index)
+            for position in range(len(shard)):
+                # Dataset iteration formats batches; indexing keeps even the
+                # compressed private payloads bounded to one source row here.
+                row = shard[position]
+                yield _live_code_record({**row, "private_test_cases": _private_tests(row["private_test_cases"])})
+
+
 def live_code_records(rows):
-    # Mapping in shards avoids Arrow's offset overflow on the decoded private tests.
-    shards = []
-    for index in range(4):
-        shard = rows.shard(num_shards=4, index=index)
-        shard = shard.map(
-            lambda row: {"private_test_cases": _private_tests(row["private_test_cases"])},
-            num_proc=os.cpu_count(),
-        )
-        shards.append(shard.map(_live_code_record, remove_columns=rows.column_names))
-    return concatenate_datasets(shards)
+    return LiveCodeRecords(rows)
 
 
 def _private_tests(encoded_data):
