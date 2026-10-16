@@ -73,7 +73,7 @@ def code_line(spec, responses):
 
     answer = get_first_line_not_comment(str(responses[-1]), language=spec.grader.reference["language"])
     target = str(spec.target)
-    return Grade({"EM": float(answer.split() == target.split()) * 100, "ES": float(fuzz.ratio(answer, target))},
+    return Grade({"EM": float(answer.split() == target.split()) * 100, "ES": float(fuzz.ratio(target, answer))},
                  {"filtered_resps": [answer]})
 
 
