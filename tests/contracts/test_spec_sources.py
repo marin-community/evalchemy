@@ -136,8 +136,13 @@ def test_lm_eval_iterator_matches_native_scoring_with_filters_and_choices(tmp_pa
     assert actual["results"] == baseline["results"]
     assert actual["n-samples"] == baseline["n-samples"]
     record = samples.samples["spec_probe"][0]
-    for name in ("resps", "arguments", "filtered_resps", "target", "doc_hash", "prompt_hash", "target_hash"):
-        assert record[name] == baseline["samples"]["spec_probe"][0][name]
+    original = baseline["samples"]["spec_probe"][0]
+    assert record["resps"] == [[response] for cohort in original["resps"] for response in cohort]
+    assert record["arguments"] == [
+        arguments for arguments, cohort in zip(original["arguments"], original["resps"], strict=True) for _response in cohort
+    ]
+    for name in ("filtered_resps", "target", "doc_hash", "prompt_hash", "target_hash"):
+        assert record[name] == original[name]
     if kind == "generate_until":
         assert {variant["filter"] for variant in record["filter_variants"]} == {"first", "majority"}
 

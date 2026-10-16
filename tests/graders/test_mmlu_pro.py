@@ -14,7 +14,7 @@ def test_mmlu_choice_uses_the_final_answer_marker():
     grade = mmlu_choice(spec, ["Earlier A was plausible. Answer: C"])
 
     assert grade.metrics["accuracy"] == 1.0
-    assert grade.audit["filtered_resps"] == ["C"]
+    assert grade.filtered_resps == ["C"]
 
 
 @pytest.mark.parametrize("response,answer", [
@@ -31,7 +31,7 @@ def test_mmlu_choice_preserves_original_case_sensitive_final_letter(response, an
 
     grade = mmlu_choice(spec, [response])
 
-    assert grade.audit["filtered_resps"] == [answer]
+    assert grade.filtered_resps == [answer]
     assert grade.metrics["accuracy"] == float(answer is not None)
     wrong = EvalSpec(task="MMLUPro", source=SourceRef("local"), source_id="1", ordinal=0,
                      requests=(), grader=GraderSpec("mmlu_choice"), target="J")
@@ -48,7 +48,7 @@ def test_mmlu_choice_preserves_original_reasoning_only_policy(finish_reason, ans
 
     grade = mmlu_choice(spec, [output])
 
-    assert grade.audit["filtered_resps"] == [answer]
+    assert grade.filtered_resps == [answer]
     assert grade.metrics["accuracy"] == float(answer is not None)
     wrong = EvalSpec(task="MMLUPro", source=SourceRef("local"), source_id="1", ordinal=0,
                      requests=(), grader=GraderSpec("mmlu_choice"), target="J")

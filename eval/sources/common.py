@@ -25,6 +25,7 @@ class SourceOptions:
     num_samples: int = 1
     system_instruction: str | None = None
     encode: Callable[[str], list[int]] | None = None
+    model_name: str | None = None
 
 
 def text_specs(
@@ -35,6 +36,7 @@ def text_specs(
     target: Callable[[Mapping[str, Any]], Any],
     grader: str,
     generation_kwargs: Mapping[str, Any] | Callable[[Mapping[str, Any]], Mapping[str, Any]],
+    source_id: Callable[[Mapping[str, Any]], Any] | None = None,
     prompt_format: Literal["chat", "completion"] = "chat",
     repeats: int = 1,
     seed_repeats: bool = True,
@@ -57,10 +59,13 @@ def text_specs(
     selected = islice(records, limit) if limit is not None else records
     count = options.num_samples if options.num_samples > 1 else repeats
     for ordinal, record in enumerate(selected):
-        source_id = next((record[key] for key in ("id", "task_id", "source_index", "index", "key", "question_id", "instance_id", "session_id") if key in record), None)
-        if source_id is None:
-            # Equal rows at different dataset positions are separate examples.
-            source_id = ordinal
+        if source_id is not None:
+            identity = source_id(record)
+        else:
+            identity = next((record[key] for key in ("id", "task_id", "source_index", "index", "key", "question_id", "instance_id", "session_id") if key in record), None)
+            if identity is None:
+                # Equal rows at different dataset positions are separate examples.
+                identity = ordinal
         model_input = prompt(record)
         if prompt_format == "chat":
             if isinstance(model_input, str):
@@ -77,7 +82,7 @@ def text_specs(
             if options.max_tokens is not None:
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(
-                task=options.task, source=options.source, source_id=source_id, ordinal=ordinal,
+                task=options.task, source=options.source, source_id=identity, ordinal=ordinal,
                 trial=trial if count > 1 else None, namespace=namespace,
                 requests=(ModelRequest(RequestKind.GENERATE, model_input, parameters, context_length=options.context_length),),
                 grader=GraderSpec(grader, reference(record)),
@@ -85,10 +90,10 @@ def text_specs(
             )
 
 
-def conversation_specs(records, options, *, turns, prompt_format=None, **kwargs):
+def conversation_specs(records, options, *, turns, prompt_renderer: Literal["fastchat"] | None = None, **kwargs):
     """Expand fixed conversation turns into dependent model requests."""
     for spec in text_specs(records, options, prompt=lambda row: turns(row)[0], **kwargs):
-        first = replace(spec.requests[0], prompt_format=prompt_format)
+        first = replace(spec.requests[0], prompt_format=prompt_renderer)
         requests = [first]
         for index, turn in enumerate(turns(spec.doc)[1:], start=1):
             messages = [{"role": "user", "content": turn}] if isinstance(turn, str) else turn

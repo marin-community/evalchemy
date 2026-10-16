@@ -52,8 +52,9 @@ class RepoBenchmark(BaseBenchmark):
         for language in self.languages:
             for subset in self.subsets:
                 if self.legacy_mode:
-                    rows = construct_trainable_data(load_data(split="test", task="completion", language=language, length="2k", setting=subset), language=language)
-                    prompt = lambda row: row["data"]
+                    rows = construct_trainable_data(load_data(split="test", task="completion", language=language, length="2k", settings=subset), language=language)
+                    use_fim = "star" in (options.model_name or "")
+                    prompt = lambda row: "<fim_prefix>" + row["data"] + "<fim_suffix><fim_middle>" if use_fim else row["data"]
                     target = lambda row: row["label"]
                 else:
                     rows = load_dataset(f"tianyang/repobench_{language}_v1.1", verification_mode="no_checks")[subset]

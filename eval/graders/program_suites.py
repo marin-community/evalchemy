@@ -55,4 +55,4 @@ def program_suite(spec, responses):
             outcome = execution.check_correctness(*args, safe_mode=reference["safe_mode"])
         else:
             outcome = execution.check_correctness(*args)
-    return Grade({"accuracy": float(outcome["passed"])}, {"filtered_resps": [sample["generation"]]})
+    return Grade({"accuracy": float(outcome["passed"])}, filtered_resps=[sample["generation"]])

@@ -1,6 +1,7 @@
 """Durable replay of partial work through the shared item lifecycle."""
 
 import asyncio
+import json
 from dataclasses import replace
 
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
@@ -11,6 +12,65 @@ from eval.contracts.finestore_output import FineStoreOutput, read_finestore_outp
 from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.execution.engine import Evaluator
 from eval.resume.fingerprint import RunFingerprint
+
+
+def test_explicit_grade_output_is_durable_and_audit_cannot_replace_sample_data(tmp_path):
+    root = str(tmp_path / "archive")
+    spec = EvalSpec(
+        task="protocol", source=SourceRef("fixture"), source_id="original/01", ordinal=2,
+        requests=(ModelRequest(RequestKind.GENERATE, "Original question", {"temperature": 0}),),
+        grader=GraderSpec("fixture"), doc={"question": "Original question"}, target="parsed answer",
+        namespace="original", trial=3,
+    )
+
+    class Backend:
+        async def execute(self, request):
+            return "raw answer"
+
+    async def grade(_spec, responses):
+        assert responses == ["raw answer"]
+        return Grade(
+            {"aggregate_score": 0.25},
+            audit={
+                "doc_id": 999, "doc": {"question": "forged"}, "target": "forged",
+                "schema_version": 99, "task_name": "forged", "sample_id": "forged", "source_id": "forged",
+                "sample_ordinal": 999, "sample_namespace": "forged", "sample_repeat": 999,
+                "arguments": [("forged", {})], "resps": [["forged"]], "filtered_resps": ["forged"],
+                "metrics": ["forged"], "accuracy": 0.0, "note": "grader evidence",
+            },
+            sample_metrics={"accuracy": 1.0}, filtered_resps=["parsed answer"],
+        )
+
+    with FineStoreOutput(root, "run", ["protocol"]) as output:
+        engine = Evaluator(Backend(), grade, output, workers=1)
+
+        async def run():
+            return [item async for item in engine.run([spec])]
+
+        [completed] = asyncio.run(run())
+        assert completed.error is None
+        record = completed.result.record
+        assert completed.result.grade.metrics == {"aggregate_score": 0.25}
+        assert record["metrics"] == ["accuracy"]
+        assert record["accuracy"] == 1.0
+        assert (record["doc"], record["target"], record["doc_id"]) == (spec.doc, spec.target, 2)
+        assert (record["task_name"], record["source_id"], record["sample_ordinal"], record["sample_namespace"], record["sample_repeat"]) == ("protocol", "original/01", 2, "original", 3)
+        assert record["sample_id"] != "forged"
+        assert record["arguments"] == [("Original question", {"temperature": 0})]
+        assert record["resps"] == [["raw answer"]]
+        assert record["filtered_resps"] == ["parsed answer"]
+        assert record["note"] == "grader evidence"
+
+    [row] = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+    sample = sample_from_archive_row(row)
+    assert sample.doc_id == record["sample_id"]
+    assert row["trial_id"] == "3"
+    assert json.loads(sample.doc) == spec.doc
+    assert sample.target_text == "parsed answer"
+    assert sample.output == "raw answer"
+    assert sample.extracted == "parsed answer"
+    assert sample.metrics == {"accuracy": 1.0}
+    assert sample.correct is True
 
 
 def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tmp_path):

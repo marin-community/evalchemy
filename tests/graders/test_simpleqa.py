@@ -31,13 +31,10 @@ def test_simpleqa_named_graders_build_a_plan_and_parse_labels(response, metrics)
     assert simpleqa_label(_simpleqa_spec(), [response]).metrics == metrics
 
 
-def test_simpleqa_label_uses_the_final_answer_after_reasoning():
-    grade = simpleqa_label(_simpleqa_spec(), ["I compared the answers. </think>\nA"])
-
-    assert grade.metrics["accuracy"] == 1.0
-
-
-@pytest.mark.parametrize("response", ["A because it is correct", "CORRECT", "", "D"])
+@pytest.mark.parametrize("response", [
+    "A because it is correct", "CORRECT", "", "D",
+    "<think>reasoning</think>\nA", "I compared the answers. </think>\nA",
+])
 def test_simpleqa_label_rejects_noncanonical_responses(response):
     with pytest.raises(ValueError, match="unrecognized SimpleQA judgment"):
         simpleqa_label(_simpleqa_spec(), [response])

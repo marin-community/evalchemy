@@ -14,17 +14,17 @@ from eval.graders.livecodebench import run, run_lcb_tests
 def live_code(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     blocks = re.findall(r"```(?:[a-zA-Z]*)\n(.*?)```", str(responses[-1]), flags=re.DOTALL)
     if not blocks:
-        return Grade({"accuracy": 0.0}, {"filtered_resps": [[]]})
+        return Grade({"accuracy": 0.0}, filtered_resps=[[]])
     code = blocks[-1].split("</code>")[0].replace("```python", "").split("```")[0].replace("<code>", "")
     outcomes = run_lcb_tests(dict(spec.doc), code, float(spec.grader.reference.get("timeout", 6)))
     passed = bool(outcomes) and all(outcome[0] for outcome in outcomes)
-    return Grade({"accuracy": float(passed)}, {"filtered_resps": [blocks]})
+    return Grade({"accuracy": float(passed)}, filtered_resps=[blocks])
 
 def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     """Grade one fenced program against normalized test cases in an owned sandbox."""
     blocks = re.findall(r"```(?:[a-zA-Z]*)\n(.*?)```", str(responses[-1]), flags=re.DOTALL)
     if not blocks:
-        return Grade({"accuracy": 0.0}, {"filtered_resps": [[]]})
+        return Grade({"accuracy": 0.0}, filtered_resps=[[]])
     reference = spec.grader.reference
     tests = reference["tests"]
     timeout = float(reference["timeout"])
@@ -39,7 +39,7 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
         comparison=reference["comparison"],
         maximum_memory_bytes=None,
     )
-    return Grade({"accuracy": float(bool(tests) and result["passed"])}, {"filtered_resps": [blocks]})
+    return Grade({"accuracy": float(bool(tests) and result["passed"])}, filtered_resps=[blocks])
 
 def crux(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     from eval.chat_benchmarks.CruxEval.execution import check_correctness
@@ -57,4 +57,4 @@ def crux(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     doc["test_code"] = f"{doc['code']}\nassert {doc['output']} == {answer}"
     with tempfile.TemporaryDirectory(prefix="evalchemy-crux-") as directory:
         outcome = check_correctness(str(spec.source_id), doc, "python", 10.0, directory, 0)
-    return Grade({"accuracy": float(outcome["passed"])}, {"filtered_resps": [answer]})
+    return Grade({"accuracy": float(outcome["passed"])}, filtered_resps=[answer])

@@ -1,12 +1,42 @@
 """RepoBench retains the original label-first edit-similarity policy."""
 
 from difflib import SequenceMatcher
+from argparse import Namespace
+from types import SimpleNamespace
 
 from fuzzywuzzy import fuzz
 import pytest
 
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, SourceRef
 from eval.graders.structured import code_line
+from eval.chat_benchmarks.RepoBench import eval_instruct as repobench
+from eval.contracts.task_outcome import TaskRoute
+from eval.execution.driver import source_plans
+from eval.execution.run_spec import RunSpec
+
+
+@pytest.mark.parametrize("model_name,wrap_legacy", [("bigcode/starcoder", True), ("Qwen/Qwen3-8B", False)])
+@pytest.mark.parametrize("legacy", [True, False])
+def test_repobench_legacy_fim_prompt_uses_resolved_model_context(monkeypatch, model_name, wrap_legacy, legacy):
+    raw = {"file_path": "example.py", "context": "# context", "import_statement": "import math", "code": "value = math.pi\n", "next_line": "print(value)"}
+    monkeypatch.setattr(repobench, "load_data", lambda *, split, task, language, length, settings: [raw])
+    modern = {**raw, "repo_name": "example", "context": [], "cropped_code": raw["code"]}
+    monkeypatch.setattr(repobench, "load_dataset", lambda *_args, **_kwargs: {"in_file": [modern]})
+    source = repobench.RepoBenchmark(languages=["python"], subsets=["in_file"], legacy_mode=legacy)
+    run = RunSpec.from_args(Namespace(model_args=f"pretrained={model_name}"))
+    model = SimpleNamespace(tok_encode=lambda text: list(text.encode()))
+
+    [plan] = source_plans(["RepoBench"], {"RepoBench": TaskRoute.CUSTOM}, SimpleNamespace(get_benchmark=lambda _task: source), None, run, model)
+    [spec] = plan.sources[0]
+
+    if legacy:
+        prompt = repobench.construct_trainable_data([raw], language="python")[0]["data"]
+        if wrap_legacy:
+            prompt = "<fim_prefix>" + prompt + "<fim_suffix><fim_middle>"
+    else:
+        prompt = repobench.construct_prompt(modern, tokenizer=SimpleNamespace(encode=model.tok_encode), max_token_nums=128, language="python")
+    assert spec.requests[0].prompt == prompt
+    assert spec.target == "print(value)"
 
 
 @pytest.mark.parametrize(

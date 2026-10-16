@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Literal
 
 
 class RequestKind(StrEnum):
@@ -35,7 +35,7 @@ class ModelRequest:
     context_length: int | None = None
     chat_template: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
-    prompt_format: str | None = None
+    prompt_format: Literal["fastchat"] | None = None
 
 
 @dataclass(frozen=True)
@@ -89,12 +89,18 @@ class EvalSpec:
 
 @dataclass(frozen=True)
 class Grade:
-    """Per-item measurements, with optional reducer inputs and audit fields."""
+    """Per-item reducer measurements and explicit sample output.
+
+    Samples use metrics unless sample_metrics selects a primary filter's values.
+    Audit fields carry supplementary evidence, never core sample fields.
+    """
 
     metrics: Mapping[str, Any]
     audit: Mapping[str, Any] = field(default_factory=dict)
     weights: Mapping[str, float] = field(default_factory=dict)
     reducer_inputs: Mapping[str, Any] = field(default_factory=dict)
+    sample_metrics: Mapping[str, Any] | None = None
+    filtered_resps: Sequence[Any] | None = None
 
 
 @dataclass(frozen=True)

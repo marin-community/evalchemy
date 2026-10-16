@@ -9,7 +9,6 @@ reference implementation. The full license is shipped with the benchmark.
 from dataclasses import dataclass
 
 from eval.graders.answer_equivalence import JudgeLabel
-from eval.graders.answer_extraction import final_response_text
 
 SIMPLEQA_GRADER_TEMPLATE = """Your job is to look at a question, a gold target, and a predicted answer, and then assign a grade of either ["CORRECT", "INCORRECT", "NOT_ATTEMPTED"].
 First, I will give examples of each grade, and then you will grade a new example.
@@ -106,7 +105,7 @@ class SimpleQAJudgment:
 
 
 def _parse_simpleqa_judgment(raw: str) -> SimpleQAJudgment:
-    grade = final_response_text(raw).strip().upper()
+    grade = raw.strip().upper()
     try:
         label = _GRADE_LABELS[grade]
     except KeyError as exc:

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from eval.passk import parse_pass_at_k
+from eval.limits import parse_key_value_args
 from eval.robust_api import parse_generation_overrides
 from eval.execution.generation import canonical_generation_kwargs
 
@@ -27,6 +28,7 @@ class RunSpec:
     predict_only: bool = False
     confirm_run_unsafe_code: bool = False
     judge_model: str | None = None
+    model_name: str | None = None
 
     @classmethod
     def from_args(cls, args: Namespace) -> RunSpec:
@@ -35,6 +37,8 @@ class RunSpec:
             for item in fields(cls) if item.name not in {"generation", "seeds", "pass_at_k"}
         }
         generation = canonical_generation_kwargs(parse_generation_overrides(getattr(args, "gen_kwargs", None)))
+        model_args = parse_key_value_args(getattr(args, "model_args", ""))
+        values["model_name"] = model_args.get("pretrained", model_args.get("model", values["model_name"]))
         if values["limit"] is not None and values["limit"] >= 1:
             values["limit"] = int(values["limit"])
         annotator = getattr(args, "annotator_model", None)

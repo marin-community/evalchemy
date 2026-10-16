@@ -18,7 +18,7 @@ def gsm8k_flexible(spec, responses):
     predicted = re.search(r"-?\d+(\.\d+)?", answer.replace("$", "").replace(",", ""))
     target = re.search(r"-?\d+(\.\d+)?", str(spec.target).replace("$", "").replace(",", ""))
     correct = predicted is not None and target is not None and float(predicted.group()) == float(target.group())
-    return Grade({"accuracy": float(correct), "no_answer": float(answer == FALLBACK)}, {"filtered_resps": [answer]})
+    return Grade({"accuracy": float(correct), "no_answer": float(answer == FALLBACK)}, filtered_resps=[answer])
 
 
 _ARITHMETIC_OPERATORS = {
@@ -96,7 +96,7 @@ def json_answer(spec, responses):
         correct = values[0] is not None and values[0] == values[1]
     return Grade({"accuracy": float(correct and not missing) * 100, "no_answer": float(missing) * 100,
                   "reason_lens": len((parsed or {}).get("reasoning", ""))},
-                 {"filtered_resps": [answer]}, {"reason_lens": float(not missing)})
+                 weights={"reason_lens": float(not missing)}, filtered_resps=[answer])
 
 
 def code_line(spec, responses):
@@ -106,7 +106,7 @@ def code_line(spec, responses):
     answer = get_first_line_not_comment(str(responses[-1]), language=spec.grader.reference["language"])
     target = str(spec.target)
     return Grade({"EM": float(answer.split() == target.split()) * 100, "ES": float(fuzz.ratio(target, answer))},
-                 {"filtered_resps": [answer]})
+                 filtered_resps=[answer])
 
 
 def nonce_similarity(spec: EvalSpec, responses: Sequence[Any]) -> Grade:

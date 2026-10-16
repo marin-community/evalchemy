@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 from eval.contracts.benchmark_metadata import (
@@ -11,6 +12,9 @@ from eval.contracts.benchmark_metadata import (
 )
 from eval.contracts.task_outcome import TaskRoute
 from eval.task import BaseBenchmark
+from eval.task import TaskManager
+from eval.execution.driver import run_evaluations, source_plans
+from eval.execution.run_spec import RunSpec
 
 
 class _ChatBenchmark(BaseBenchmark):
@@ -79,6 +83,40 @@ def test_chat_metadata_tracks_native_pass_at_k_configuration():
     assert [metric.name for metric in description.metrics] == ["pass_at_1", "pass_at_8"]
     assert description.primary_metric == "pass_at_1"
     assert description.metric_kind is MetricKind.BINARY
+
+
+def test_planner_resolves_metadata_and_trials_from_the_same_run_settings():
+    manager = TaskManager(task_list=["MATH500"])
+    benchmark = manager.get_benchmark("MATH500")
+    targets = [row["answer"] for row in benchmark.load_questions()]
+
+    class Model:
+        world_size = 1
+
+        def tok_encode(self, text):
+            return list(text.encode())
+
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"]
+
+        def generate_until(self, requests):
+            return [rf"\boxed{{{targets[request.metadata[1]]}}}" if request.repeat_idx == 0 else "" for request in requests]
+
+    model = Model()
+    run = RunSpec(limit=10, num_samples=8, pass_at_k=(1, 8))
+    [plan] = source_plans(["MATH500"], {"MATH500": TaskRoute.CUSTOM}, manager, None, run, model)
+    specs = list(plan.sources[0])
+
+    assert plan.expected_examples == 10
+    assert len(specs) == 80
+    assert len({spec.source_id for spec in specs}) == 10
+    assert {spec.trial for spec in specs} == set(range(8))
+    plan.sources = (specs,)
+    result = asyncio.run(run_evaluations(model, [plan], workers=8, supports_request_seed=True))
+    assert result["task_outcomes"]["MATH500"]["status"] == "succeeded"
+    assert result["results"]["MATH500"] == {"pass@1": 0.125, "pass@8": 1.0}
+    assert benchmark.evaluation_limit is None
+    assert benchmark.benchmark_metrics() == ("accuracy",)
 
 
 def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():

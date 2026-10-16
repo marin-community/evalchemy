@@ -36,7 +36,6 @@ def grade_lm_eval(task: Task, spec: EvalSpec, responses: Sequence[Any]) -> Grade
     counts = spec.grader.reference["repeats"]
     originals = spec.grader.reference["indices"]
     instances = []
-    raw_responses = []
     offset = 0
     for index, repeats in zip(originals, counts, strict=True):
         request = spec.requests[offset]
@@ -47,7 +46,6 @@ def grade_lm_eval(task: Task, spec: EvalSpec, responses: Sequence[Any]) -> Grade
             args = (request.prompt,)
         instance = Instance(request.kind.value, spec.doc, args, index, metadata=(spec.task, spec.source_id, repeats))
         original_responses = list(responses[offset:offset + repeats])
-        raw_responses.append(original_responses)
         instance.resps.extend(str(value) if isinstance(value, str) else value for value in original_responses)
         instances.append(instance)
         offset += repeats
@@ -70,12 +68,7 @@ def grade_lm_eval(task: Task, spec: EvalSpec, responses: Sequence[Any]) -> Grade
         variants.append({"filter": name, "filtered_resps": filtered, "metrics": metrics})
     primary = variants[0]
     audit = {
-        "resps": raw_responses,
-        "arguments": [instance.args for instance in instances],
-        "filtered_resps": primary["filtered_resps"],
         "filter": primary["filter"],
-        "metrics": list(primary["metrics"]),
-        **primary["metrics"],
         "doc_hash": hash_string(json.dumps(spec.doc, indent=2, default=handle_non_serializable, ensure_ascii=False)),
         "prompt_hash": hash_string(instances[0].arguments[0] if isinstance(instances[0].arguments[0], str)
                                    else json.dumps(instances[0].arguments[0], sort_keys=True)),
@@ -84,7 +77,8 @@ def grade_lm_eval(task: Task, spec: EvalSpec, responses: Sequence[Any]) -> Grade
     if len(variants) > 1:
         audit["filter_variants"] = variants
     audit["reducer_inputs"] = reducer_inputs
-    return Grade(all_metrics, audit, reducer_inputs=reducer_inputs)
+    return Grade(all_metrics, audit, reducer_inputs=reducer_inputs,
+                 sample_metrics=primary["metrics"], filtered_resps=primary["filtered_resps"])
 
 
 @dataclass

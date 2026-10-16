@@ -22,7 +22,7 @@ from eval.graders.structured import nonce_similarity
 def exact_match(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
     answer = str(responses[-1]).strip()
     expected = str(spec.target).strip()
-    return Grade({"accuracy": float(answer == expected)}, {"filtered_resps": [answer]})
+    return Grade({"accuracy": float(answer == expected)}, filtered_resps=[answer])
 
 
 GRADERS = {

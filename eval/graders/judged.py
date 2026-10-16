@@ -160,11 +160,11 @@ def equivalence_label(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
             "judge_failed": 0.0,
         },
         {
-            "filtered_resps": [spec.grader.reference["answer"]],
             "method": "llm_judge",
             "judge_label": label.value,
             "judge_raw": raw,
         },
+        filtered_resps=[spec.grader.reference["answer"]],
     )
 
 

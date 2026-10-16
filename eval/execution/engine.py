@@ -9,7 +9,7 @@ from contextlib import AsyncExitStack
 from typing import Any, Protocol
 
 from eval.completion_response import CompletionClassification, CompletionText, FailedGeneration
-from eval.contracts.eval_spec import EvalSpec, Grade, JudgePlan, ModelRequest
+from eval.contracts.eval_spec import EvalSpec, Grade, JudgePlan, ModelRequest, RequestKind
 from eval.contracts.failures import FailureCategory, FailurePhase, MalformedJudgeResponse, classify_task_exception
 from eval.contracts.sample_manifest import SampleEntry, SampleManifest, SampleRequest
 from eval.contracts.sample_results import validate_sample_metrics
@@ -201,6 +201,7 @@ class Evaluator:
         manifest = self.manifests[spec.task]
         outputs: list[Any] = []
         rendered_prompts: list[Any] = []
+        arguments: list[tuple] = []
         for index, original in enumerate(spec.requests):
             request = replace(original, metadata={"task": spec.task, "source_id": spec.source_id,
                                                   "ordinal": spec.ordinal, "trial": spec.trial})
@@ -214,6 +215,12 @@ class Evaluator:
                 prefix.append({"role": "assistant", "content": str(outputs[previous])})
                 request = replace(request, prompt=prefix + list(original.prompt))
             rendered_prompts.append(request.prompt)
+            if request.kind is RequestKind.LIKELIHOOD:
+                arguments.append((request.prompt, request.continuation))
+            elif request.kind is RequestKind.ROLLING_LIKELIHOOD:
+                arguments.append((request.prompt,))
+            else:
+                arguments.append((request.prompt, dict(request.generation)))
             unit = {"phase": "generate", "request_index": index}
             output = await self.operation(admitted, unit, request, self.model, FailurePhase.GENERATION)
             outputs.append(output)
@@ -221,19 +228,17 @@ class Evaluator:
         grade = Grade({}) if self.predict_only else await self.score(spec, outputs)
         if isinstance(grade, JudgePlan):
             grade = await self.judge(admitted, grade)
-        metrics = grade.metrics
-        if "metrics" in grade.audit:
-            metrics = {name: grade.audit[name] for name in grade.audit["metrics"]}
+        metrics = grade.metrics if grade.sample_metrics is None else grade.sample_metrics
         raw = {
+            **grade.audit,
             "doc_id": spec.ordinal,
             "doc": spec.doc,
             "target": spec.target,
-            "arguments": [(prompt, dict(request.generation)) for prompt, request in zip(rendered_prompts, spec.requests, strict=True)],
+            "arguments": arguments,
             "resps": [[output] for output in outputs],
-            "filtered_resps": list(outputs),
+            "filtered_resps": list(outputs) if grade.filtered_resps is None else list(grade.filtered_resps),
             "metrics": list(metrics),
             **metrics,
-            **grade.audit,
         }
         try:
             record = canonicalize_sample(spec.task, raw, spec.ordinal, entry)

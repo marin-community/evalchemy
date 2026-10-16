@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable, Iterator
+from copy import copy
 from dataclasses import dataclass, field, replace
 from contextlib import aclosing
 import logging
@@ -77,7 +78,10 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
     for task in tasks:
         route = TaskRoute(routes[task])
         if route is TaskRoute.CUSTOM:
-            benchmark = custom.get_benchmark(task)
+            benchmark = copy(custom.get_benchmark(task))
+            benchmark.evaluation_limit = run.limit
+            benchmark.num_samples = run.num_samples
+            benchmark.pass_at_k = run.pass_at_k
             description = benchmark.describe(task)
             if description is None:
                 raise ValueError(f"source {task} must declare its metrics")
@@ -86,7 +90,7 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
                 task, source, run.limit, run.max_length,
                 run.max_tokens if run.max_tokens is not None else benchmark._evaluation_max_tokens,
                 run.generation, run.seeds[0], run.num_samples, run.system_instruction,
-                prompt_encoder(model),
+                prompt_encoder(model), model_name=run.model_name,
             )
             reducer = SourceMetrics(
                 repeated=False, pass_at_k=run.pass_at_k if run.num_samples > 1 else (),

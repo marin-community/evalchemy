@@ -44,3 +44,22 @@ def test_simpleqa_uses_candidate_and_judge_endpoints_for_the_limited_source(benc
     assert samples[0]["judge_label"] == "correct"
     assert candidate.requests[0].prompt == [{"role": "user", "content": samples[0]["doc"]["question"]}]
     assert "Predicted answer: candidate answer" in judge.requests[0].prompt
+
+
+def test_simpleqa_reasoning_wrapped_label_is_an_unavailable_judgment(tmp_path):
+    data = tmp_path / "simpleqa.csv"
+    data.write_text("problem,answer,metadata\nCapital of France?,Paris,{}\nCapital of Spain?,Madrid,{}\n")
+    judge = FixedEndpoint(lambda _request: "A" if len(judge.requests) == 1 else "<think>reasoning</think>\nA")
+
+    metrics, samples = evaluate_source(
+        SimpleQABenchmark(data_file=str(data)), SourceOptions("SimpleQA", SourceRef("fixture")),
+        FixedEndpoint("candidate"), judges={"SimpleQA": judge},
+    )
+
+    assert metrics["accuracy"] == 1.0
+    assert metrics["num_judged"] == 1
+    assert metrics["num_judge_failed"] == 1
+    assert metrics["judge_coverage"] == 0.5
+    failed = next(sample for sample in samples if sample["judge_failed"])
+    assert failed["failure_category"] == "grader_infrastructure"
+    assert "accuracy" not in failed
