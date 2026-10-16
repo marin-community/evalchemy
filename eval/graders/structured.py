@@ -52,7 +52,9 @@ def json_answer(spec, responses):
     kind = spec.grader.reference["kind"]
     if kind == "grid":
         parsed = extract_last_complete_json(text)
-        predicted = (parsed or {}).get("solution") or {}
+        predicted = (parsed or {}).get("solution")
+        answered = predicted is not None
+        predicted = predicted or {}
         solution = spec.target
         cells = [(f"House {index + 1}", column, row[column_index]) for index, row in enumerate(solution["rows"])
                  for column_index, column in enumerate(solution["header"]) if column_index]
@@ -64,8 +66,8 @@ def json_answer(spec, responses):
             if isinstance(value, str) and value.lower().strip() == truth.lower().strip():
                 correct += 1
         metrics = {"accuracy": float(correct == len(cells)) * 100, "cell_acc": correct / len(cells) * 100,
-                   "no_answer": float(not predicted) * 100, "reason_lens": len((parsed or {}).get("reasoning", ""))}
-        return Grade(metrics, weights={"cell_acc": len(cells), "reason_lens": float(bool(predicted))})
+                   "no_answer": float(not answered) * 100, "reason_lens": len((parsed or {}).get("reasoning", ""))}
+        return Grade(metrics, weights={"cell_acc": len(cells), "reason_lens": float(answered)})
     parsed = extract_first_complete_json(text)
     if parsed is None or "answer" not in parsed:
         parsed = extract_values_from_json(text, allow_no_quotes=True)

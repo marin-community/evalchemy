@@ -36,6 +36,7 @@ if not hasattr(utils, "eval_logger"):
 
     utils.eval_logger = _eval_logger
 from lm_eval.api.model import LM
+from lm_eval.models.api_models import TemplateAPI
 from lm_eval.loggers import EvaluationTracker, WandbLogger
 from lm_eval.loggers.utils import add_env_info, add_tokenizer_info, get_git_commit_hash
 from lm_eval.tasks import TaskManager as PretrainTaskManager
@@ -238,6 +239,7 @@ def evaluate(
 ) -> Dict[str, Dict]:
     """Normalize every source into EvalSpec items and execute one shared flow."""
     run = RunSpec.from_args(args)
+    robust_api.configure_generation_overrides(lm, run.generation)
     if run.seeds[0] is not None:
         random.seed(run.seeds[0])
     if run.seeds[1] is not None:
@@ -253,9 +255,15 @@ def evaluate(
     } if factory is not None else {}
     model_options = parse_key_value_args(getattr(args, "model_args", ""))
     workers = int(model_options.get("num_concurrent", 1))
+    local_batches = {}
+    if not isinstance(lm, TemplateAPI):
+        local_batches = {task: size for plan, size in zip(plans, batch_sizes_list, strict=True) for task in plan.task_names}
+        workers = max(workers, *(int(size) if size != "auto" else (getattr(args, "max_batch_size", None) or 64)
+                                 for size in batch_sizes_list))
     results = asyncio.run(run_evaluations(lm, plans, workers=workers, sink=output_sink, checkpoints=checkpoints,
                                          predict_only=run.predict_only or isinstance(lm, UploadInstancesToHF), seeds=run.seeds,
-                                         supports_request_seed=args.model in ("vllm", "upload_to_hf") or isinstance(lm, UploadInstancesToHF)))
+                                         supports_request_seed=args.model in ("vllm", "upload_to_hf") or isinstance(lm, UploadInstancesToHF),
+                                         batch_sizes=local_batches, batch_size_attribute="batch_size_per_gpu" if args.model == "hf" else "batch_size"))
     results["task_preparations"] = getattr(args, "task_preparations", {})
     _attach_benchmark_metadata(results, args)
     return results

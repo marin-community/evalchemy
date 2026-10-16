@@ -51,6 +51,14 @@ def openai_model_requires_fixed_generation(model: object) -> bool:
     return isinstance(model, str) and bool(_OPENAI_FIXED_GENERATION_MODEL.match(model))
 
 
+def configure_generation_overrides(model: object, overrides: dict) -> None:
+    """Give local endpoints the caller's settings, including an empty set."""
+    from lm_eval.models.openai_completions import LocalCompletionsAPI, OpenAIChatCompletion, OpenAICompletionsAPI
+
+    if isinstance(model, LocalCompletionsAPI) and not isinstance(model, (OpenAICompletionsAPI, OpenAIChatCompletion)):
+        model._evalchemy_generation_overrides = dict(overrides)
+
+
 def parse_generation_overrides(value: str | dict | None) -> dict:
     """Parse caller settings and make temperature decisive for local decoders."""
     from lm_eval.utils import simple_parse_args_string
@@ -164,7 +172,26 @@ def apply_openai_payload_controls() -> bool:
         payload[token_key] = min(payload.get(token_key, context_output_cap), context_output_cap)
         return payload
 
+    def _caller_generation_payload(self, payload):
+        overrides = getattr(self, "_evalchemy_generation_overrides", None)
+        if overrides is None:
+            return payload
+        # Source and adapter defaults must not override the serving model's
+        # sampling policy. Explicit caller controls still cross the wire.
+        for key in ("temperature", "seed"):
+            payload.pop(key, None)
+        for key, value in overrides.items():
+            if key == "max_gen_toks":
+                token_key = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+                payload[token_key] = value
+            elif key not in ("do_sample", "until"):
+                payload[key] = value
+        if overrides.get("do_sample") is False and "temperature" not in overrides:
+            payload["temperature"] = 0
+        return payload
+
     def _finalize_generation_payload(self, payload, context_output_cap):
+        payload = _caller_generation_payload(self, payload)
         return _apply_context_output_cap(payload, context_output_cap)
 
     def _generation_kwargs_and_context_cap(gen_kwargs):

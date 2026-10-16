@@ -120,7 +120,7 @@ def test_describe_benchmarks_hides_task_route_and_preserves_full_counts():
             "n_benchmark": 120,
             "n_attempted": 20,
             "source": {"dataset": "local", "split": "test", "revision": None},
-            "reducers": [{"name": "mean", "accuracy": "accuracy", "stderr": "accuracy_stderr", "repeat_ddof": 0, "groups": {}, "group_suffix": "", "group_weights": {}, "trial_metric": "accuracy"}],
+            "reducers": [{"name": "mean", "accuracy": "accuracy", "stderr": "accuracy_stderr", "repeat_ddof": 0, "groups": {}, "group_suffix": "", "group_weights": {}, "trial_metric": "accuracy", "selected_trial": None}],
             "prompt_length": None, "requires_judge": False,
         },
         {

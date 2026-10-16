@@ -346,6 +346,49 @@ class _PlainLM(LM):
         raise AssertionError("generation task requested rolling loglikelihood")
 
 
+@pytest.mark.parametrize("model_kind,batch_attribute", [("hf", "batch_size_per_gpu"), ("vllm", "batch_size")])
+@pytest.mark.parametrize("batch_sizes", [[2, 3], ["auto", 3]])
+def test_driver_preserves_per_task_local_batches(tmp_path, model_kind, batch_attribute, batch_sizes):
+    class BatchedModel(_PlainLM):
+        def __init__(self):
+            super().__init__()
+            self.batches = []
+            setattr(self, batch_attribute, 1)
+
+        def tok_encode(self, text):
+            return list(text.encode())
+
+        def apply_chat_template(self, messages, **_kwargs):
+            return messages[0]["content"]
+
+        def generate_until(self, requests):
+            task = requests[0].metadata[0]
+            assert all(request.metadata[0] == task for request in requests)
+            size = getattr(self, batch_attribute)
+            self.batches.append((task, size, len(requests)))
+            return super().generate_until(requests)
+
+    sources = {}
+    for task in ("first", "second"):
+        data = tmp_path / f"{task}.jsonl"
+        data.write_text("".join(json.dumps({"id": index, "problem": f"{task} {index}", "answer": "42"}) + "\n" for index in range(6)))
+        sources[task] = MATH500Benchmark(data_file=str(data))
+    model = BatchedModel()
+    args = Namespace(model=model_kind, model_args="", seed=[0, 0, 0, 0], max_batch_size=4)
+
+    result = evaluate(
+        model, SimpleNamespace(get_benchmark=sources.__getitem__), None,
+        list(sources), {task: "Evalchemy chat benchmark" for task in sources}, batch_sizes, args=args,
+    )
+
+    assert all(outcome["status"] == "succeeded" for outcome in result["task_outcomes"].values())
+    assert max(count for _, _, count in model.batches) > 1
+    for task, size in zip(sources, batch_sizes, strict=True):
+        batches = [(configured, count) for name, configured, count in model.batches if name == task]
+        assert sum(count for _, count in batches) == 6
+        assert all(configured == size for configured, _ in batches)
+
+
 @pytest.mark.parametrize(
     "checkpoint",
     ["moonshotai/Kimi-Linear-48B-A3B-Instruct", "google/gemma-4-26B-A4B-it"],
@@ -707,7 +750,10 @@ def test_unified_driver_persists_mixed_sources_through_one_endpoint(endpoint, tm
 
 
 @pytest.mark.parametrize("model_class", [LocalChatCompletion, LocalCompletionsAPI])
-@pytest.mark.parametrize("overrides", [{}, {"temperature": 0.85, "seed": 27, "top_p": 0.91}, {"max_gen_toks": 16000}])
+@pytest.mark.parametrize("overrides", [
+    {}, {"temperature": 0.0, "seed": 1234}, {"temperature": 0.85, "seed": 27, "top_p": 0.91},
+    {"max_gen_toks": 16000}, {"do_sample": False}, {"do_sample": True},
+])
 def test_native_source_preserves_defaults_and_applies_caller_settings(endpoint, tmp_path, model_class, overrides):
     dataset = tmp_path / "questions.jsonl"
     dataset.write_text(json.dumps({"question": "Six times seven?", "answer": "\\boxed{42}"}) + "\n")
@@ -728,10 +774,17 @@ def test_native_source_preserves_defaults_and_applies_caller_settings(endpoint, 
     )
     assert result["results"]["generation_probe"]["exact_match,none"] == 1.0
     payload = endpoint.requests[0]
-    assert payload["temperature"] == overrides.get("temperature", 0.0)
+    if "temperature" in overrides:
+        assert payload["temperature"] == overrides["temperature"]
+    elif overrides.get("do_sample") is False:
+        assert payload["temperature"] == 0.0
+    else:
+        assert "temperature" not in payload
     assert payload["top_p"] == overrides.get("top_p", 0.4)
     if "seed" in overrides:
         assert payload["seed"] == overrides["seed"]
+    else:
+        assert "seed" not in payload
     if "max_gen_toks" in overrides:
         assert payload["max_tokens"] == overrides["max_gen_toks"]
 

@@ -82,7 +82,10 @@ class _Admitted:
         pass
 
 
-def _local_call(model, kind, instances, seeds):
+def _local_call(model, kind, instances, seeds, batch_setting):
+    if batch_setting is not None:
+        attribute, size = batch_setting
+        setattr(model, attribute, size)
     if seeds is not None:
         for seed, initialize in zip(seeds, (random.seed, np.random.seed, utils.set_torch_seed), strict=True):
             if seed is not None:
@@ -98,6 +101,8 @@ class LMBackend:
     session: ClientSession | None = None
     seeds: tuple[int | None, ...] = RunSpec.seeds
     supports_request_seed: bool = False
+    batch_sizes: dict[str, int | str] = field(default_factory=dict)
+    batch_size_attribute: str = "batch_size"
     _pending: list = field(default_factory=list, init=False, repr=False)
     _batch: asyncio.Task | None = field(default=None, init=False, repr=False)
 
@@ -127,11 +132,11 @@ class LMBackend:
         if isinstance(prompt, list):
             prompt = self.model.apply_chat_template(prompt, **request.chat_template)
         parameters = canonical_generation_kwargs(request.generation)
-        if parameters.pop("do_sample", None) is False:
-            parameters["temperature"] = 0.0
         if isinstance(self.model, TemplateAPI):
             output = await self._api_request(request, prompt, parameters)
             return clean_fastchat_response(self.model, conversation, output)
+        if parameters.pop("do_sample", None) is False:
+            parameters["temperature"] = 0.0
         args = (prompt, parameters)
         if request.kind is RequestKind.LIKELIHOOD:
             args = (prompt, request.continuation)
@@ -160,13 +165,15 @@ class LMBackend:
         await asyncio.sleep(0)
         while self._pending:
             pending, self._pending = self._pending, []
-            for kind, rng in dict.fromkeys((instance.request_type, rng) for instance, _, rng in pending):
+            for kind, rng, task in dict.fromkeys((instance.request_type, rng, instance.metadata[0]) for instance, _, rng in pending):
                 batch = [(instance, future) for instance, future, item_rng in pending
-                         if instance.request_type == kind and item_rng == rng and not future.cancelled()]
+                         if instance.request_type == kind and item_rng == rng and instance.metadata[0] == task and not future.cancelled()]
                 if not batch:
                     continue
+                size = self.batch_sizes.get(task)
+                setting = (self.batch_size_attribute, size) if size is not None else None
                 try:
-                    outputs = await asyncio.to_thread(_local_call, self.model, kind, [item for item, _ in batch], rng)
+                    outputs = await asyncio.to_thread(_local_call, self.model, kind, [item for item, _ in batch], rng, setting)
                     if len(outputs) != len(batch):
                         raise ValueError(f"model returned {len(outputs)} outputs for {len(batch)} requests")
                 except Exception as error:
