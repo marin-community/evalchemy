@@ -12,6 +12,7 @@ from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
 
 from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
+from eval.chat_benchmarks.HumanEvalPlus.eval_instruct import HumanEvalPlusBenchmark
 from eval.chat_benchmarks.MTBench import eval_instruct as mtbench_source
 from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
@@ -40,6 +41,29 @@ def _persist(tmp_path, task_name, records):
     table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
     assert table is not None
     return [sample_from_archive_row(row) for row in table.to_pylist(maps_as_pydicts="strict")]
+
+
+def test_humanevalplus_persists_scored_samples_in_the_generation_language(tmp_path):
+    problems = [
+        {"task_id": f"python/{index}", "prompt": "def answer():\n", "test": f"assert answer() == {expected}"}
+        for index, expected in enumerate((42, 43))
+    ]
+    (tmp_path / "humanevalplus-python.jsonl").write_text("".join(json.dumps(problem) + "\n" for problem in problems))
+    source = HumanEvalPlusBenchmark(data_dir=str(tmp_path), timeout=1.0)
+
+    metrics, records = evaluate_source(
+        source,
+        SourceOptions("HumanEvalPlus", source.SOURCE),
+        FixedEndpoint("```python\ndef answer():\n    return 42\n```"),
+    )
+    persisted = _persist(tmp_path / "archive-output", "HumanEvalPlus", records)
+
+    assert {record["sample_namespace"] for record in records} == {"python"}
+    assert {record["source_id"]: record["accuracy"] for record in records} == {"python/0": 1.0, "python/1": 0.0}
+    assert {sample.doc_id: sample.metrics["accuracy"] for sample in persisted} == {
+        record["sample_id"]: record["accuracy"] for record in records
+    }
+    assert metrics["python_pass@1"] == metrics["pass@1"] == 0.5
 
 
 def test_judge_sources_emit_metrics_and_persist_records(tmp_path, monkeypatch):
