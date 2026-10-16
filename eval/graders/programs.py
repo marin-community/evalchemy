@@ -34,7 +34,8 @@ def program(spec: EvalSpec, responses: Sequence[Any]) -> Grade:
         code = '__name__ = "__main__"\n' + code
     result = run(
         tests, code, stdin_mode=reference["stdin"], fn_name=reference.get("entry_point"),
-        test_timeout=timeout, deadline=(timeout + 1) * len(tests) + deadline_grace,
+        # Competition benchmarks use only the original aggregate watchdog.
+        test_timeout=0, deadline=(timeout + 1) * len(tests) + deadline_grace,
         comparison=reference["comparison"],
         maximum_memory_bytes=None,
     )
