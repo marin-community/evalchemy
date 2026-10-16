@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from lm_eval.api.model import LM
+from lm_eval.api.model import LM, CacheHook, hash_args
 
 from eval.contracts.lm_eval_streaming import StreamingTaskManager
 from eval.robust_api import configure_generation_overrides, parse_generation_overrides
@@ -114,12 +114,16 @@ def _plan_request_batch(
     return [by_key[key] if key is not None else None for key in request_keys], entries
 
 
-def _track_request_method(self, method_name: str, requests: List[Any], *args: Any, **kwargs: Any):
-    request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
-    outputs = getattr(self.lm, method_name)(requests, *args, **kwargs)
-    self._sample_manifest.validate_output_count(len(requests), outputs)
-    self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
-    return outputs
+class _LikelihoodCacheHook(CacheHook):
+    """Forward cache writes and checkpoint completed likelihood requests."""
+
+    def __init__(self, original: CacheHook, record: Callable[[str, Any, Any], None]) -> None:
+        self.original = original
+        self.record = record
+
+    def add_partial(self, attr: str, req: Any, res: Any) -> None:
+        self.original.add_partial(attr, req, res)
+        self.record(attr, req, res)
 
 
 def _make_resume_caching_lm_cls():
@@ -128,11 +132,8 @@ def _make_resume_caching_lm_cls():
     class ResumeCachingLM(LM):
         """An LM wrapper that restores completed FineStore requests.
 
-        Mirrors `CachingLM`'s shape (`lm_eval/api/model.py:235`): `generate_until` is
-        intercepted to (a) restore committed responses from FineStore, (b)
-        generate ONLY the remaining requests, (c) record each new completion;
-        everything else delegates to the underlying LM. Sampled requests use
-        distinct unit keys, so each draw can resume independently.
+        Completed responses are restored before calling the underlying LM.
+        Sampled generation requests use distinct keys for each draw.
         """
 
         def __init__(self, lm, manager, task_name, sample_manifest=None):
@@ -147,19 +148,17 @@ def _make_resume_caching_lm_cls():
         # Rank and world size determine the FineStore resume namespace.
         @property
         def rank(self):
-            return getattr(self.lm, "rank", 0)
+            return self.lm.rank
 
         @property
         def world_size(self):
-            return getattr(self.lm, "world_size", 1)
+            return self.lm.world_size
 
-        # Likelihood requests are not resumable yet, but still cross the shared
-        # identity and coverage boundary.
         def loglikelihood(self, requests, *a, **k):
-            return _track_request_method(self, "loglikelihood", requests, *a, **k)
+            return _impl_likelihood(self, self.lm.loglikelihood, "loglikelihood", tuple, requests, *a, **k)
 
         def loglikelihood_rolling(self, requests, *a, **k):
-            return _track_request_method(self, "loglikelihood_rolling", requests, *a, **k)
+            return _impl_likelihood(self, self.lm.loglikelihood_rolling, "loglikelihood_rolling", float, requests, *a, **k)
 
         # The chat-template protocol members below are DEFINED on the base `LM`
         # class (`tokenizer_name` raises NotImplementedError; `chat_template` /
@@ -195,31 +194,84 @@ def _make_resume_caching_lm_cls():
                 raise AttributeError(attr)
             return getattr(lm, attr)
 
-        generate_until = _impl_generate_until
+        def generate_until(self, requests, *a, **k):
+            return _impl_request(
+                self,
+                requests,
+                request_key=lambda unit, request: unit,
+                restore_output=lambda output: output,
+                model_call=lambda pending, record: self.lm.generate_until(pending, *a, **k),
+            )
 
     return ResumeCachingLM
 
-# -- method implementations (module-level so the lazy LM subclass can adopt them) ----
-def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -> List[str]:
-    """Resume-aware `generate_until`.
 
-    For each request: restore a committed unit from FineStore, else
-    regenerate. Newly generated completions are recorded one-by-one. Works for both
-    greedy (`do_sample=False`) and sampled (`do_sample=True`) — the latter is the
-    case `CachingLM` bypasses entirely.
-    """
+def _impl_likelihood(
+    self,
+    model_call: Callable[..., List[Any]],
+    method: str,
+    restore_output: Callable[[Any], Any],
+    requests: List[Any],
+    *args: Any,
+    **kwargs: Any,
+) -> List[Any]:
+    """Checkpoint likelihood callbacks under each matching request's identity."""
+    if self._manager is not None and self.world_size > 1:
+        raise ValueError("Likelihood resume requires world_size=1; skipping requests across ranks can deadlock collectives")
+
+    def run_pending(pending: List[Any], record: Callable[[int, Any], None]) -> List[Any]:
+        if self._manager is None:
+            return model_call(pending, *args, **kwargs)
+        positions: Dict[str, List[int]] = {}
+        for pos, request in enumerate(pending):
+            positions.setdefault(hash_args(method, request.args), []).append(pos)
+
+        def record_partial(attr: str, request_args: Any, output: Any) -> None:
+            if attr != method:
+                return
+            for pos in positions.get(hash_args(attr, request_args), []):
+                record(pos, output)
+
+        original_hook = self.lm.cache_hook
+        self.lm.set_cache_hook(_LikelihoodCacheHook(original_hook, record_partial))
+        try:
+            return model_call(pending, *args, **kwargs)
+        finally:
+            self.lm.set_cache_hook(original_hook)
+
+    return _impl_request(
+        self,
+        requests,
+        # A multiple-choice document has one sample identity but several scores.
+        request_key=lambda unit, request: dict(unit, method=method, request=hash_args(method, request.args)),
+        restore_output=restore_output,
+        model_call=run_pending,
+    )
+
+
+def _impl_request(
+    self,
+    requests: List[Any],
+    *,
+    request_key: Callable[[dict[str, Any], Any], dict[str, Any]],
+    restore_output: Callable[[Any], Any],
+    model_call: Callable[[List[Any], Callable[[int, Any], None]], List[Any]],
+) -> List[Any]:
+    """Restore completed requests and checkpoint new responses in input order."""
     manager = self._manager
     request_entries, unique_entries = _plan_request_batch(self._sample_manifest, requests)
     if manager is None:
-        outputs = self.lm.generate_until(requests, *args, **kwargs)
+        outputs = model_call(requests, lambda pos, output: None)
         self._sample_manifest.validate_output_count(len(requests), outputs)
         self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
         return outputs
-    results: List[Optional[str]] = [None] * len(requests)
+    results: List[Any] = [None] * len(requests)
 
     # Build a unit key per request (stable doc_id-based; sample_idx for sampled).
     keys = [
-        entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {})
+        request_key(
+            entry.resume_unit(self._task_name) if entry is not None else _request_unit_key(self._task_name, req, {}), req
+        )
         for req, entry in zip(requests, request_entries)
     ]
     restored = manager.restore()  # {canonical_key: payload}
@@ -231,7 +283,7 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
         restored_match = find_restored_payload(restored, [unit])
         if restored_match is not None:
             _, payload = restored_match
-            results[pos] = payload["output"]
+            results[pos] = restore_output(payload["output"])
             skipped += 1
             continue
         remaining_reqs.append(req)
@@ -241,23 +293,25 @@ def _impl_generate_until(self, requests: List[Any], *args: Any, **kwargs: Any) -
         logger.info(
             "resume[%s] rank=%s: skipped %d done units, generating %d remaining",
             self._task_name,
-            getattr(self.lm, "rank", 0),
+            self.lm.rank,
             skipped,
             len(remaining_reqs),
         )
 
-    if remaining_reqs:
-        new_outputs = self.lm.generate_until(remaining_reqs, *args, **kwargs)
-        self._sample_manifest.validate_output_count(len(remaining_reqs), new_outputs)
-        for pos, req, output in zip(remaining_positions, remaining_reqs, new_outputs):
-            results[pos] = output
-            if request_entries[pos] is not None:
-                manager.record(
-                    keys[pos],
-                    {"output": output, "sample": request_entries[pos].to_dict()},
-                )
+    def record(pos: int, output: Any) -> None:
+        entry = request_entries[pos]
+        if entry is not None:
+            manager.record(keys[pos], {"output": output, "sample": entry.to_dict()})
 
-    manager.finalize()
+    try:
+        if remaining_reqs:
+            new_outputs = model_call(remaining_reqs, lambda pos, output: record(remaining_positions[pos], output))
+            self._sample_manifest.validate_output_count(len(remaining_reqs), new_outputs)
+            for pos, output in zip(remaining_positions, new_outputs):
+                results[pos] = output
+                record(pos, output)
+    finally:
+        manager.finalize()
     self._sample_manifest.mark_generated(unique_entries, [None] * len(unique_entries))
     return results
 
