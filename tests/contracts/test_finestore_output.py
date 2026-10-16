@@ -1,14 +1,17 @@
 """Contract tests for Evalchemy's FineStore output."""
 
 from argparse import Namespace
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+from threading import Event
 
 import pytest
 from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
 from finestore.reader import ReadView
+from finestore.shard_writer import ShardWriter
 from finestore.store import DataStore
 from sympy import Integer
 
@@ -409,6 +412,67 @@ def test_large_task_publishes_sample_progress_before_result(tmp_path: Path):
     complete = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
     assert complete is not None
     assert complete.num_rows == 1024
+
+
+def test_sample_admission_waits_for_stalled_storage_and_preserves_records(tmp_path: Path, monkeypatch):
+    """A fast replay must not queue the remaining cohort behind a slow shard."""
+    writer_entered = Event()
+    release_writer = Event()
+    producer_started = Event()
+    producer_finished = Event()
+    completed = []
+    original_write = ShardWriter.write_table
+
+    def stalled_write(writer, table):
+        writer_entered.set()
+        if not release_writer.wait(timeout=10):
+            raise TimeoutError("test did not release its filesystem writer")
+        original_write(writer, table)
+
+    # Scale only the byte budget; the DataStore, Arrow conversion, Parquet
+    # writer, manifest commits and subsequent reader remain real.
+    monkeypatch.setattr("eval.contracts.finestore_output._SAMPLE_BUFFER_BYTES", 1024)
+    monkeypatch.setattr(ShardWriter, "write_table", stalled_write)
+    root = str(tmp_path / "archive")
+    expected = [_triviaqa_record(index) for index in range(17)]
+    for record in expected[1:]:
+        record["doc"]["question"] = "large restored source document " * 200
+
+    with FineStoreOutput(root, "triviaqa", ["triviaqa"]) as output, ThreadPoolExecutor(max_workers=2) as pool:
+        output.write_sample("triviaqa", expected[0])
+        writing = pool.submit(output.store.flush)
+
+        def produce():
+            producer_started.set()
+            for record in expected[1:]:
+                output.write_sample("triviaqa", record)
+                completed.append(record["doc_id"])
+            producer_finished.set()
+
+        try:
+            assert writer_entered.wait(timeout=5)
+            producing = pool.submit(produce)
+            assert producer_started.wait(timeout=5)
+            # Observe producer completion while its real filesystem writer is
+            # stalled; bounded admission must wait instead of buffering all rows.
+            assert not producer_finished.wait(timeout=0.5)
+            assert completed == []
+        finally:
+            release_writer.set()
+        writing.result(timeout=10)
+        producing.result(timeout=10)
+        output.finish({"results": {"triviaqa": {"exact_match": 1.0}}})
+
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    persisted = {row["doc_id"]: sample_from_archive_row(row) for row in table.to_pylist(maps_as_pydicts="strict")}
+    assert set(persisted) == {str(record["doc_id"]) for record in expected}
+    for record in expected:
+        sample = persisted[str(record["doc_id"])]
+        assert json.loads(sample.doc) == record["doc"]
+        assert sample.output == "answer"
+        assert sample.metrics == {"exact_match": 1.0}
+    assert read_finestore_output(root, "triviaqa")["results"]["triviaqa"] == {"exact_match": 1.0}
 
 
 def test_grouped_lm_eval_children_keep_distinct_sample_keys(tmp_path: Path):
