@@ -1,6 +1,7 @@
 """Offline source fixtures for math and instruction benchmark item protocols."""
 
 import json
+from pathlib import Path
 
 from eval.chat_benchmarks.AIME24.eval_instruct import AIME24Benchmark
 from eval.chat_benchmarks.AIME25.eval_instruct import AIME25Benchmark
@@ -99,7 +100,7 @@ def test_hle_and_hmmt_preserve_prompt_and_repeat_protocols(monkeypatch):
 
 def test_jeebench_and_ifeval_specs_keep_source_selection(tmp_path, monkeypatch):
     jee = JEEBenchBenchmark()
-    monkeypatch.setattr(jee, "load_questions", lambda: [{"index": 3, "type": "Integer", "question": "\n\nFind 2.", "gold": "2", "subject": "math"}])
+    monkeypatch.setattr(jee, "load_questions", lambda: [{"description": "JEE Adv 2016 Paper 1", "index": 3, "type": "Integer", "question": "\n\nFind 2.", "gold": "2", "subject": "math"}])
     jee_specs = list(jee.iter_specs(_options("JEEBench")))
     assert len(jee_specs) == 3
     assert jee_specs[0].grader.name == "jee"
@@ -111,3 +112,26 @@ def test_jeebench_and_ifeval_specs_keep_source_selection(tmp_path, monkeypatch):
     ifeval_specs = list(IFEvalBenchmark(data_dir=str(tmp_path), start_idx=10, end_idx=12).iter_specs(_options("IFEval")))
     assert [spec.source_id for spec in ifeval_specs] == [10, 11]
     assert ifeval_specs[0].grader.reference == {"protocol": "ifeval"}
+
+
+def test_jeebench_scores_each_paper_when_local_question_indices_repeat(monkeypatch):
+    # Four original rows from the pinned dataset revision recorded in the fixture.
+    # Question 1 appears in different papers and, across years, different subjects.
+    metadata = json.loads((Path(__file__).parent / "fixtures/jeebench-identities.json").read_text())
+    rows = metadata["rows"]
+    source = JEEBenchBenchmark()
+    monkeypatch.setattr(source, "load_questions", lambda: rows)
+    specs = list(source.iter_specs(_options("JEEBench")))
+    answers = {spec.source_id: spec.target for spec in specs}
+
+    for row, spec in zip(rows, specs[::3], strict=True):
+        assert spec.doc == row
+        assert spec.target == row["gold"]
+        assert row["question"].replace("\n\n", "\n").strip() in spec.requests[0].prompt[0]["content"]
+    endpoint = FixedEndpoint(lambda request: "\\boxed{" + answers[request.metadata["source_id"]] + "}")
+    metrics, samples = evaluate_source(source, _options("JEEBench"), endpoint)
+
+    assert metrics["accuracy_avg"] == 1.0
+    assert len(samples) == 12
+    assert len({sample["sample_id"] for sample in samples}) == 4
+    assert len({(sample["sample_id"], sample["sample_repeat"]) for sample in samples}) == 12

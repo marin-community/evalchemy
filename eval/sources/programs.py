@@ -10,6 +10,8 @@ from datasets import concatenate_datasets
 
 
 def difficulty(rating):
+    if not rating:
+        return "Easy"
     if rating < 1000 or rating > 3500:
         return "Easy"
     return "Medium" if rating < 1300 else "Hard"

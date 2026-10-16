@@ -157,12 +157,13 @@ def test_codeelo_source_uses_common_dispatch_and_preserves_exact_output(monkeypa
     assert len(samples.samples["CodeElo"]) == 3
 
 
-def test_codeforces_source_normalizes_stdout_newlines(monkeypatch):
+@pytest.mark.parametrize("rating", [800, None, 0])
+def test_codeforces_source_normalizes_stdout_newlines(monkeypatch, rating):
     from eval.chat_benchmarks.CodeForces import eval_instruct as codeforces
 
     problem = {
         "id": "example", "title": "Two lines", "description": "Print two values",
-        "input_format": "", "output_format": "", "rating": 800, "time_limit": 1,
+        "input_format": "", "output_format": "", "rating": rating, "time_limit": 1,
         "interaction_format": "", "note": "", "editorial": "", "examples": [],
         "official_tests": [{"input": "", "output": "1 2"}],
     }

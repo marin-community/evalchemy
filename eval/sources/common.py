@@ -10,7 +10,6 @@ from typing import Any
 from evalchemy_config.limits import MAX_OUTPUT_ALIASES
 
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
-from eval.runtime.checkpoints import input_digest
 from eval.execution.generation import generation_parameters
 
 # Also scrub the provider-only spelling when applying an explicit source cap.
@@ -64,7 +63,8 @@ def text_specs(
     for ordinal, record in enumerate(selected):
         source_id = next((record[key] for key in ("id", "task_id", "source_index", "index", "key", "question_id", "instance_id", "session_id") if key in record), None)
         if source_id is None:
-            source_id = input_digest(record)
+            # Equal rows at different dataset positions are separate examples.
+            source_id = ordinal
         model_input = prompt(record)
         if isinstance(model_input, str):
             model_input = [{"role": "user", "content": model_input}]
