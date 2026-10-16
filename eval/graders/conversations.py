@@ -1,6 +1,7 @@
 """Named graders for fixed conversations."""
 
 import re
+from tempfile import TemporaryDirectory
 
 from eval.contracts.eval_spec import Grade, GraderSpec, JudgePlan, ModelRequest, RequestKind
 
@@ -38,9 +39,23 @@ def turn_ratings(spec, responses):
 
 
 def livebench(spec, responses):
+    question = dict(spec.doc)
+    answer = {"choices": [{"turns": [str(response).strip() for response in responses]}]}
+    if question["category"] == "instruction_following":
+        from eval.chat_benchmarks.LiveBench.livebench.if_runner.instruction_following_eval.evaluation_main import evaluator
+        from eval.chat_benchmarks.LiveBench.livebench.process_results.instruction_following.utils import score_results
+
+        question_id = question["question_id"]
+        answers = {"candidate": {question_id: {"question_id": question_id, **answer}}}
+        # The corpus route uses strict instruction checks and prompt/instruction
+        # partial credit; play_a_match_gt does not handle these questions.
+        with TemporaryDirectory(prefix="evalchemy-livebench-") as directory:
+            [result] = evaluator([question], answers, directory, "candidate")["strict"]
+        score = score_results(result.follow_all_instructions, result.follow_instruction_list)
+        return Grade({"accuracy": 100 * score})
+
     from eval.chat_benchmarks.LiveBench.livebench.common import MatchSingle
     from eval.chat_benchmarks.LiveBench.livebench.gen_ground_truth_judgment import play_a_match_gt
 
-    answer = {"choices": [{"turns": [str(response).strip() for response in responses]}]}
-    result = play_a_match_gt(MatchSingle(dict(spec.doc), "candidate", answer), output_file=None)
+    result = play_a_match_gt(MatchSingle(question, "candidate", answer), output_file=None)
     return Grade({"accuracy": 100 * float(result["score"])})
