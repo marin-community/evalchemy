@@ -9,23 +9,8 @@ from eval.completion_response import FailedGeneration
 from eval.chat_benchmarks.IFEval.eval_instruct import IFEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.contracts.eval_spec import SourceRef
-from eval.runtime.checkpoints import input_digest
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import FixedEndpoint, evaluate_source
-
-
-class MemoryCheckpoints:
-    def __init__(self):
-        self.rows = {}
-
-    def records(self):
-        yield from sorted(self.rows.values(), key=lambda row: (row.position, input_digest(row.unit)))
-
-    def record(self, row):
-        self.rows[row.position, input_digest(row.unit)] = row
-
-    def finalize(self):
-        pass
+from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints, evaluate_source
 
 
 def test_simpleqa_restores_candidate_and_judge_operations_without_repaying():

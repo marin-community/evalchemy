@@ -3,29 +3,22 @@
 import pytest
 
 from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
+from eval.chat_benchmarks.OlympiadBench.eval_instruct import OlympiadBenchBenchmark
+from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source
+from eval.completion_response import FailedGeneration
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ReducerSpec, SourceRef
 from eval.execution.engine import ItemResult
 from eval.execution.metrics import SourceMetrics
 from eval.graders.conversations import turn_ratings
 from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import evaluate_source
-
-
-class RoutedEndpoint:
-    def __init__(self, response):
-        self.response = response
-        self.requests = []
-
-    async def execute(self, request):
-        self.requests.append(request)
-        return self.response(request) if callable(self.response) else self.response
+from tests.contracts.source_harness import FixedEndpoint, evaluate_source
 
 
 def test_mixeval_preserves_both_split_identities_and_judge_parsers():
     source = MixEvalBenchmark(debug=True)
-    candidate = RoutedEndpoint("candidate")
-    judge = RoutedEndpoint(
+    candidate = FixedEndpoint("candidate")
+    judge = FixedEndpoint(
         lambda request: "[[1.0]]" if "correctness" in request.prompt[-1]["content"].lower() else "[[C]]"
     )
 
@@ -51,8 +44,8 @@ def test_wildbench_preserves_published_truncation_and_weighted_tags(monkeypatch)
     }
     monkeypatch.setattr(wildbench_source, "load_dataset", lambda *_args, **_kwargs: [row])
     source = wildbench_source.WildBenchBenchmark(config=wildbench_source.WildBenchConfig(max_words_to_eval=1))
-    candidate = RoutedEndpoint("one two")
-    judge = RoutedEndpoint('{"score": "7"}')
+    candidate = FixedEndpoint("one two")
+    judge = FixedEndpoint('{"score": "7"}')
 
     metrics, samples = evaluate_source(
         source,
@@ -114,3 +107,70 @@ def test_mtbench_all_invalid_judgments_do_not_create_aggregate_scores():
     metrics = SourceMetrics(repeated=False, policy=ReducerSpec(trial_metric=None))
     metrics.add(_scored_item("MTBench", "invalid", turn_ratings(None, ["[[-1]]", "invalid"]), {}))
     assert metrics.finish("MTBench")["results"]["MTBench"] == {}
+
+
+@pytest.mark.parametrize(
+    "repeats,minerva_solved,judge_available,judge_label",
+    [
+        (10, 0, 4, "incorrect"), (10, 0, 4, "correct"), (10, 0, 0, "correct"),
+        (10, 0, 10, "incorrect"), (10, 2, 2, "correct"), (1, 0, 0, "correct"),
+    ],
+)
+def test_olympiadbench_coverage_counts_judge_observations_and_keeps_fallback_scores(
+    tmp_path, repeats, minerva_solved, judge_available, judge_label,
+):
+    data = tmp_path / "olympiad.jsonl"
+    data.write_text('{"id": "sum", "problem": "Compute 2+2.", "answer": ["4"]}\n')
+    source = OlympiadBenchBenchmark(data_file=str(data), n_repeat=repeats)
+    candidate = FixedEndpoint(
+        lambda request: r"\boxed{4}" if (request.metadata["trial"] or 0) < minerva_solved else r"\boxed{3}"
+    )
+    judge = FixedEndpoint(
+        lambda _request: judge_label if len(judge.requests) <= judge_available else FailedGeneration("model_transport")
+    )
+
+    metrics, samples = evaluate_source(
+        source, SourceOptions("OlympiadBench", SourceRef(str(data))), candidate,
+        judges={"OlympiadBench": judge},
+    )
+
+    solved = minerva_solved + (judge_available if judge_label == "correct" else 0)
+    accuracy = solved / repeats
+    accuracy_name = "accuracy_avg" if repeats > 1 else "accuracy"
+    assert metrics[accuracy_name] == pytest.approx(accuracy)
+    assert metrics["num_total"] == 1
+    assert metrics["num_judged"] == judge_available
+    assert metrics["num_judge_failed"] == repeats - minerva_solved - judge_available
+    assert metrics["judge_coverage"] == pytest.approx(judge_available / (repeats - minerva_solved))
+    assert len(samples) == repeats
+    assert sum(sample["accuracy"] for sample in samples) == solved
+    failed_samples = [sample for sample in samples if sample.get("judge_failed")]
+    assert len(failed_samples) == repeats - minerva_solved - judge_available
+    assert all(sample["accuracy"] == 0.0 for sample in failed_samples)
+    assert all(sample["judge_error"]["category"] == "grader_infrastructure" for sample in failed_samples)
+    if repeats > 1:
+        assert "accuracy" not in metrics
+        assert metrics["num_repeat"] == repeats
+        assert metrics["solved_avg"] == pytest.approx(accuracy)
+        assert [run["accuracy"] for run in metrics["run_stats"]] == [sample["accuracy"] for sample in samples]
+        assert metrics["accuracy_std_err"] == pytest.approx((accuracy * (1 - accuracy) / repeats) ** 0.5)
+
+
+def test_simpleqa_repeated_coverage_uses_judge_observations(tmp_path):
+    data = tmp_path / "simpleqa.csv"
+    data.write_text("problem,answer,metadata\nCapital of France?,Paris,{}\nCapital of Spain?,Madrid,{}\n")
+    judge = FixedEndpoint(
+        lambda _request: "A" if len(judge.requests) % 2 else FailedGeneration("model_transport")
+    )
+
+    metrics, _samples = evaluate_source(
+        SimpleQABenchmark(data_file=str(data)),
+        SourceOptions("SimpleQA", SourceRef(str(data)), num_samples=3),
+        FixedEndpoint("candidate"), judges={"SimpleQA": judge},
+    )
+
+    assert metrics["accuracy"] == 1.0
+    assert metrics["num_total"] == 2
+    assert metrics["num_judged"] == 3
+    assert metrics["num_judge_failed"] == 3
+    assert metrics["judge_coverage"] == pytest.approx(0.5)

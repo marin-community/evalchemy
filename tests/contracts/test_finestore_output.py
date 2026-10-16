@@ -1,6 +1,7 @@
 """Contract tests for Evalchemy's FineStore output."""
 
 from argparse import Namespace
+import json
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
@@ -142,6 +143,41 @@ def test_normalization_does_not_mark_malformed_model_output_as_infrastructure():
 
     assert sample.output == ""
     assert sample.extracted == ""
+
+
+@pytest.mark.parametrize("metric,score", [(None, None), ("accuracy", 0.0), ("score", 0.5)])
+def test_finestore_judge_failure_preserves_error_without_scoring_the_failure_counter(tmp_path, metric, score):
+    judge_error = {
+        "category": "grader_infrastructure", "message": "Judge endpoint unavailable", "exception_type": "ConnectionError",
+    }
+    record = {
+        "doc_id": 0, "doc": {"question": "question"}, "target": "answer",
+        "arguments": [["question", {}]], "resps": [["candidate"]], "filtered_resps": ["candidate"],
+        "metrics": ["judge_failed"], "judge_failed": 1.0,
+        "failure_category": "grader_infrastructure", "judge_error": judge_error,
+        "judge_label": None, "judge_raw": None,
+    }
+    if metric is not None:
+        record.update({metric: score, "metrics": [metric, "judge_failed"]})
+    root = str(tmp_path / "archive")
+
+    _write_result(root, "run", {"results": {"task": {"accuracy": score}}}, {"task": [record]})
+
+    table = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE)
+    assert table is not None
+    sample = sample_from_archive_row(table.to_pylist(maps_as_pydicts="strict")[0])
+    assert sample.output == "candidate"
+    assert sample.extracted == "candidate"
+    assert sample.metrics == ({"judge_failed": 1.0} if metric is None else {"judge_failed": 1.0, metric: score})
+    assert sample.correct is (None if metric is None else False)
+    assert sample.grading is not None
+    assert sample.grading.metric == metric
+    assert sample.grading.score == score
+    assert sample.grading.passed is sample.correct
+    assert json.loads(sample.grading.detail) == {
+        "failure_category": "grader_infrastructure", "judge_error": judge_error,
+        "judge_label": None, "judge_raw": None,
+    }
 
 
 def test_finestore_output_preserves_repeated_trials(tmp_path: Path):

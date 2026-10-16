@@ -1,7 +1,7 @@
 """Observable admission, retry, cancellation and checkpoint behavior."""
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -10,7 +10,7 @@ from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, 
 from eval.execution.engine import CollectSamples, Evaluator
 from eval.runtime.pool import ExecutionPool, RetryPolicy, retry
 from eval.runtime.checkpoints import CheckpointRow, input_digest
-from dataclasses import asdict
+from tests.contracts.source_harness import MemoryCheckpoints
 
 
 def test_pool_bounds_source_consumption_and_preserves_positions_when_grouping():
@@ -103,21 +103,6 @@ def test_retry_recovers_transient_failure_and_propagates_permanent_failure():
     assert len(attempts) == 1
 
 
-class _CheckpointStore:
-    def __init__(self):
-        self.rows = {}
-        self.closed = False
-
-    def records(self):
-        yield from sorted(self.rows.values(), key=lambda row: (row.position, input_digest(row.unit)))
-
-    def record(self, row):
-        self.rows[row.position, input_digest(row.unit)] = row
-
-    def finalize(self):
-        self.closed = True
-
-
 class _Model:
     def __init__(self, fail=False):
         self.requests = []
@@ -156,7 +141,7 @@ def _evaluate(specs, model, store):
 
 
 def test_conversation_checkpoints_each_turn_and_restores_without_aliasing():
-    store = _CheckpointStore()
+    store = MemoryCheckpoints()
     model = _Model()
     result, samples = _evaluate([_spec()], model, store)
 
@@ -176,7 +161,7 @@ def test_conversation_checkpoints_each_turn_and_restores_without_aliasing():
 
 
 def test_failed_transport_is_generated_again_on_resume():
-    store = _CheckpointStore()
+    store = MemoryCheckpoints()
     failed = _Model(fail=True)
     spec = replace(_spec(), requests=_spec().requests[:1])
     _evaluate([spec], failed, store)
@@ -190,7 +175,7 @@ def test_failed_transport_is_generated_again_on_resume():
 
 
 def test_changed_checkpoint_input_refuses_a_stale_response():
-    store = _CheckpointStore()
+    store = MemoryCheckpoints()
     spec = replace(_spec(), requests=_spec().requests[:1])
     _evaluate([spec], _Model(), store)
     changed = replace(spec, requests=(replace(spec.requests[0], generation={"temperature": 0.7}),))

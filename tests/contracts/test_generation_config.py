@@ -24,6 +24,7 @@ from finestore.reader import ReadView
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from eval.chat_benchmarks.MATH500.eval_instruct import MATH500Benchmark
+from eval.chat_benchmarks.MMLUPro.eval_instruct import MMLUProBenchmark, generate_cot_prompt
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.eval import LM_EVAL_ROUTE, evaluate
 from eval.execution.backend import LMBackend
@@ -173,6 +174,72 @@ def test_served_completions_loads_transformers5_tokenizer_config(tmp_path):
 
     assert model.tok_encode("hello") == [1]
     assert model.tok_encode("<|video|>") == [2]
+
+
+@pytest.mark.parametrize(
+    ("num_fewshot", "budget_shots", "headroom", "expected_shots"),
+    [(2, 2, 1, 2), (2, 2, 0, 1), (2, 1, 0, 0), (0, 2, 1, 0)],
+)
+def test_mmlupro_chat_budget_preserves_fitting_demonstrations(
+    endpoint, tmp_path, monkeypatch, num_fewshot, budget_shots, headroom, expected_shots
+):
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+    tokenizer.save(str(tokenizer_dir / "tokenizer.json"))
+    (tokenizer_dir / "tokenizer_config.json").write_text(
+        json.dumps({"tokenizer_class": "TokenizersBackend", "unk_token": "[UNK]"})
+    )
+    question = {
+        "question": "Held-out math question?", "options": ["test-a", "test-b"],
+        "answer": "B", "cot_content": "A: Let's think step by step. test-b", "category": "math",
+    }
+    demonstrations = [
+        {**question, "question": "First math demonstration?"},
+        {**question, "question": "Unrelated history demonstration?", "category": "history"},
+        {**question, "question": "Second math demonstration?"},
+        {**question, "question": "Third unused math demonstration?"},
+    ]
+    monkeypatch.setattr(
+        "eval.chat_benchmarks.MMLUPro.eval_instruct.load_dataset",
+        lambda *_args, **_kwargs: {
+            "validation": demonstrations,
+            "test": [question, {**question, "question": "Held-out question beyond the limit?"}],
+        },
+    )
+    budget_prompt = generate_cot_prompt(demonstrations, question, budget_shots)
+    input_budget = len(tokenizer.encode(budget_prompt).ids) + headroom
+    assert len(budget_prompt) > input_budget
+    benchmark = MMLUProBenchmark(num_fewshot=num_fewshot)
+    model = LocalChatCompletion(
+        model=str(tokenizer_dir if num_fewshot else tmp_path / "no-tokenizer-needed"),
+        base_url=f"http://127.0.0.1:{endpoint.server_port}/v1/chat/completions",
+        tokenizer_backend=None, tokenized_requests=False, auth_token="offline-test",
+    )
+    args = Namespace(
+        model=LOCAL_CHAT_COMPLETIONS, model_args="", gen_kwargs=None, limit=1, num_fewshot=num_fewshot,
+        seed=[0, 1234, 1234, 1234], max_tokens=8, max_length=input_budget + 8,
+    )
+
+    result = evaluate(
+        model, SimpleNamespace(get_benchmark=lambda _task: benchmark), None,
+        ["MMLUPro"], {"MMLUPro": "Evalchemy chat benchmark"}, [1], args=args,
+    )
+
+    assert result["task_outcomes"]["MMLUPro"]["status"] == "succeeded"
+    assert len(endpoint.requests) == 1
+    payload = endpoint.requests[0]
+    prompt = payload["messages"][0]["content"]
+    assert payload["messages"] == [{"role": "user", "content": prompt}]
+    assert "Held-out math question?" in prompt
+    assert ("First math demonstration?" in prompt) is (expected_shots >= 1)
+    assert ("Second math demonstration?" in prompt) is (expected_shots == 2)
+    assert "Unrelated history demonstration?" not in prompt
+    assert "Third unused math demonstration?" not in prompt
+    assert "Held-out question beyond the limit?" not in prompt
+    assert prompt == generate_cot_prompt(demonstrations, question, expected_shots)
+    assert payload["max_tokens"] == 8
 
 
 
@@ -395,7 +462,8 @@ def test_native_source_preserves_defaults_and_applies_caller_settings(endpoint, 
         "generation_kwargs": {"temperature": 0.0, "top_p": 0.4, "do_sample": False},
     }
     (tmp_path / "generation_probe.yaml").write_text(yaml.safe_dump(config))
-    args = Namespace(model_args="", gen_kwargs=overrides, num_fewshot=0, limit=1,
+    args = Namespace(model=LOCAL_CHAT_COMPLETIONS if model_class is LocalChatCompletion else LOCAL_COMPLETIONS,
+                     model_args="", gen_kwargs=overrides, num_fewshot=0, limit=1,
                      seed=[0, 1234, 1234, 1234], apply_chat_template=model_class is LocalChatCompletion)
     result = evaluate(
         _model(endpoint, model_class), SimpleNamespace(tasks={}), TaskManager(include_path=str(tmp_path)),

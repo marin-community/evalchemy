@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -15,6 +16,8 @@ from lm_eval import utils
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.models.api_models import TemplateAPI
+from lm_eval.models.openai_completions import LocalChatCompletion
+from transformers import AutoTokenizer
 
 from eval.completion_response import FailedGeneration
 from eval.contracts.eval_spec import ModelRequest, RequestKind
@@ -26,6 +29,24 @@ from eval.runtime.pool import RetryPolicy, retry
 from eval.execution.run_spec import RunSpec
 
 RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+def prompt_encoder(model: LM) -> Callable[[str], list[int]]:
+    """Resolve token IDs for source prompt budgets without changing transport encoding."""
+    if not isinstance(model, LocalChatCompletion):
+        return model.tok_encode
+
+    # LocalChatCompletion.tok_encode passes text through even with a tokenizer.
+    # Load only when a source needs sizing; zero-shot chat needs no local tokenizer.
+    tokenizer = model.tokenizer
+
+    def encode(text: str) -> list[int]:
+        nonlocal tokenizer
+        if tokenizer is None:
+            tokenizer = AutoTokenizer.from_pretrained(model.model, trust_remote_code=True)
+        return tokenizer.encode(text)
+
+    return encode
 
 
 def retryable_transport(error: Exception) -> bool:

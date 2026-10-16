@@ -76,14 +76,18 @@ class SourceMetrics:
                 metrics.update(num_total=count, num_solved=accuracy * self.means.counts["accuracy"])
                 metrics[stderr_name] = math.sqrt(variance / observed)
         if "judge_failed" in self.means.sums:
-            judged = self.means.counts["accuracy"]
+            observations = self.means.counts["judge_failed"]
+            failed = self.means.sums["judge_failed"]
+            judged = observations - failed
             metrics.update(
                 num_total=count,
                 num_judged=judged,
-                num_judge_failed=self.means.sums["judge_failed"],
-                judge_coverage=judged / count if count else 0.0,
+                num_judge_failed=failed,
+                judge_coverage=judged / observations if observations else 0.0,
             )
-            if not judged:
+            # Math sources retain zero accuracy for failed judges; other sources
+            # leave the score unavailable when no judge returned a grade.
+            if not self.means.counts["accuracy"]:
                 metrics[self.policy.accuracy] = None
         for (tag, group), accumulator in self.groups.items():
             for metric, value in accumulator.finish().items():
@@ -109,8 +113,7 @@ class SourceMetrics:
                 accuracy=accuracy, correct_rate=accuracy, incorrect_rate=incorrect / judged if judged else None,
                 not_attempted_rate=not_attempted / judged if judged else None,
                 accuracy_given_attempted=attempted, f1=2 * accuracy * attempted / (accuracy + attempted) if accuracy is not None and accuracy + attempted else 0.0,
-                num_judged=judged, num_correct=correct, num_incorrect=incorrect, num_not_attempted=not_attempted,
-                num_judge_failed=self.means.sums["judge_failed"], judge_coverage=judged / count,
+                num_correct=correct, num_incorrect=incorrect, num_not_attempted=not_attempted,
             )
         if self.policy.name == "instructions":
             for name in list(metrics):

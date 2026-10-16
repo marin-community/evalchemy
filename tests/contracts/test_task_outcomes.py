@@ -15,10 +15,12 @@ from eval.contracts.finestore_output import FineStoreOutput
 from eval.contracts.task_outcome import EvaluationRunError, TaskRoute, TaskStatus, validate_result_document
 from eval.eval import handle_evaluation_output
 from eval.eval_tracker import DCEvaluationTracker
-from eval.execution.driver import SourcePlan, run_evaluations
+from eval.execution.driver import SourcePlan, run_evaluations, source_plans
 from eval.execution.grading import Grader
 from eval.execution.metrics import SourceMetrics
+from eval.execution.run_spec import RunSpec
 from eval.serve_eval.results import EvalResults
+from eval.task import BaseBenchmark
 
 
 class Model:
@@ -27,6 +29,9 @@ class Model:
 
     def __init__(self, outputs):
         self.outputs = iter(outputs)
+
+    def tok_encode(self, text):
+        return list(text.encode())
 
     def generate_until(self, requests):
         output = next(self.outputs)
@@ -77,6 +82,33 @@ def test_generation_failure_has_no_score_and_does_not_stop_other_tasks(error, ca
     assert result["task_outcomes"]["broken"]["failure"]["category"] is category
     assert "broken" not in result["results"]
     assert result["task_outcomes"]["healthy"]["status"] is TaskStatus.SUCCEEDED
+
+
+def test_eager_source_failure_does_not_stop_other_tasks():
+    class Source(BaseBenchmark):
+        METRICS = ("accuracy",)
+
+        def iter_specs(self, options):
+            if options.task == "broken":
+                raise FileNotFoundError("dataset unavailable")
+            return iter([spec(options.task)])
+
+    tasks = {"broken": Source(), "healthy": Source()}
+    model = Model(["yes"])
+    plans = source_plans(
+        tasks, dict.fromkeys(tasks, TaskRoute.CUSTOM),
+        Namespace(get_benchmark=tasks.__getitem__), None, RunSpec(), model,
+    )
+    result = asyncio.run(run_evaluations(model, plans, workers=1))
+
+    broken = result["task_outcomes"]["broken"]
+    assert broken["status"] is TaskStatus.FAILED
+    assert broken["failure"]["category"] is FailureCategory.RESOURCE
+    assert "broken" not in result["results"]
+    healthy = result["task_outcomes"]["healthy"]
+    assert healthy["status"] is TaskStatus.SUCCEEDED
+    assert healthy["metrics"]["accuracy"] == 1.0
+    assert (healthy["expected_count"], healthy["generated_count"], healthy["scored_count"]) == (1, 1, 1)
 
 
 def test_exhausted_transport_is_not_an_incorrect_answer():

@@ -7,9 +7,14 @@ from dataclasses import dataclass, field, replace
 from itertools import islice
 from typing import Any
 
+from evalchemy_config.limits import MAX_OUTPUT_ALIASES
+
 from eval.contracts.eval_spec import EvalSpec, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.runtime.checkpoints import input_digest
 from eval.execution.generation import generation_parameters
+
+# Also scrub the provider-only spelling when applying an explicit source cap.
+OUTPUT_CAP_ALIASES = (*MAX_OUTPUT_ALIASES, "max_completion_tokens")
 
 
 @dataclass(frozen=True)
@@ -73,7 +78,7 @@ def text_specs(
             if (seed_repeats or options.num_samples > 1) and parameters.get("do_sample") and "seed" not in parameters and options.seed is not None:
                 parameters["seed"] = options.seed + trial
             if options.max_tokens is not None:
-                for alias in ("max_new_tokens", "max_gen_toks", "max_tokens", "max_completion_tokens"):
+                for alias in OUTPUT_CAP_ALIASES:
                     parameters.pop(alias, None)
                 parameters["max_gen_toks"] = options.max_tokens
             yield EvalSpec(
@@ -86,7 +91,7 @@ def text_specs(
 
 
 def conversation_specs(records, options, *, turns, **kwargs):
-    """Expand a fixed conversation into explicit operations, never a source-owned runner."""
+    """Expand fixed conversation turns into dependent model requests."""
     for spec in text_specs(records, options, prompt=lambda row: turns(row)[0], **kwargs):
         first = spec.requests[0]
         requests = [first]

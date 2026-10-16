@@ -136,7 +136,7 @@ class MultipleBenchmark(BaseBenchmark):
                 rows, options, namespace=language,
                 prompt=lambda row: [{"role": "system", "content": self.system_prompt},
                                     {"role": "user", "content": self.task_prompt.format(prompt=row["prompt"], lang=LANGUAGE_MAP[language])}],
-                target=lambda row: row["tests"], grader="program_suite",
+                target=lambda row: row["test"], grader="program_suite",
                 reference=lambda row: {"suite": "MultiPLE", "language": language, "problem": row, "timeout": self.timeout},
                 generation={"temperature": 0, "max_gen_toks": self.max_tokens},
                 tags=lambda row: {"language": language},

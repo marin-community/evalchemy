@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -17,6 +18,7 @@ from eval.sources.common import SourceOptions
 from eval.contracts.eval_spec import SourceRef
 from eval.graders.specs import GRADERS
 from eval.execution.metrics import SourceMetrics
+from eval.chat_benchmarks.MultiPLE.eval_instruct import DATA_DIR, LANUGUAGES, LANGUAGE_MAP, MultipleBenchmark
 
 
 class _FixtureLM(LM):
@@ -41,6 +43,33 @@ class _FixtureBackend:
         if request.kind is RequestKind.LIKELIHOOD:
             return (-1.0 if request.continuation.strip() == "2" else -10.0, True)
         return -float(len(request.prompt))
+
+
+@pytest.mark.parametrize("language", LANUGUAGES)
+def test_multiple_bundled_rows_preserve_prompt_and_grader_reference(language):
+    row = json.loads((Path(DATA_DIR) / f"multipl-e-{language}.json").read_text())[0]
+    source = MultipleBenchmark(languages=[language], max_tokens=768, timeout=3)
+    options = SourceOptions("MultiPLE", source.SOURCE, limit=1)
+
+    specs = list(source.iter_specs(options))
+
+    assert len(specs) == 1
+    spec = specs[0]
+    assert spec.source_id == row["task_id"]
+    assert spec.namespace == language
+    assert spec.doc == row
+    assert spec.target == row["test"]
+    assert spec.requests[0].prompt == [
+        {"role": "system", "content": "You are a helpful programming assistant designed to complete code snippets."},
+        {"role": "user", "content": (
+            "Please generate code to complete the following problem:\n"
+            f"        ```{LANGUAGE_MAP[language]}\n        {row['prompt']}\n        ```\n        "
+        )},
+    ]
+    assert spec.requests[0].generation == {"temperature": 0, "max_gen_toks": 768}
+    assert spec.grader.name == "program_suite"
+    assert spec.grader.reference == {"suite": "MultiPLE", "language": language, "problem": row, "timeout": 3}
+    assert spec.tags == {"language": language}
 
 
 @pytest.mark.parametrize("kind", ["generate_until", "multiple_choice", "loglikelihood_rolling"])

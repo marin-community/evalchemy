@@ -15,7 +15,7 @@ from eval.contracts.sample_manifest import SampleCoverageError
 from eval.contracts.task_outcome import (
     FailureCategory, FailurePhase, TaskOutcome, TaskRoute, TaskStatus, classify_task_exception,
 )
-from eval.execution.backend import LMBackend
+from eval.execution.backend import LMBackend, prompt_encoder
 from eval.execution.engine import CollectSamples, Evaluator, ItemFailure, ItemResult
 from eval.execution.grading import Grader, Graders
 from eval.execution.metrics import SourceMetrics
@@ -65,6 +65,12 @@ def _interleave(plans: list[SourcePlan]) -> Iterator[EvalSpec]:
         yield spec
 
 
+def _source_specs(benchmark, options: SourceOptions) -> Iterator[EvalSpec]:
+    # Some sources load data before returning an iterator. Keep those failures
+    # inside _interleave's per-task preparation boundary.
+    yield from benchmark.iter_specs(options)
+
+
 def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[SourcePlan]:
     plans = []
     imported = set()
@@ -80,14 +86,14 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
                 task, source, run.limit, run.max_length,
                 run.max_tokens if run.max_tokens is not None else benchmark._evaluation_max_tokens,
                 run.generation, run.seeds[0], run.num_samples, run.system_instruction,
-                model.tok_encode,
+                prompt_encoder(model),
             )
             reducer = SourceMetrics(
                 repeated=False, pass_at_k=run.pass_at_k if run.num_samples > 1 else (),
                 policy=description.reducers[0],
             )
             plans.append(SourcePlan(
-                task, route, (benchmark.iter_specs(options),), (task,), reducer,
+                task, route, (_source_specs(benchmark, options),), (task,), reducer,
                 judge_config=JudgeConfig.resolve(judge_model=run.judge_model or benchmark.judge_model)
                 if benchmark.REQUIRES_JUDGE and not run.predict_only else None,
                 expected_examples=description.n_attempted,
