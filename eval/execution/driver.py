@@ -13,6 +13,7 @@ from typing import Protocol
 from aiohttp import ClientSession, ClientTimeout
 
 from eval.contracts.eval_spec import EvalSpec, SourceRef
+from eval.contracts.failures import TRANSPORT_FAILURE_CATEGORIES
 from eval.contracts.sample_manifest import SampleCoverageError
 from eval.contracts.task_outcome import (
     FailureCategory,
@@ -183,11 +184,7 @@ async def run_evaluations(
                         if (
                             isinstance(completed.error, ItemFailure)
                             and completed.error.phase is FailurePhase.GENERATION
-                            and completed.error.category
-                            in {
-                                FailureCategory.MODEL_TRANSPORT,
-                                FailureCategory.AGENT_TIMEOUT,
-                            }
+                            and completed.error.category in TRANSPORT_FAILURE_CATEGORIES
                         ):
                             dropped[completed.job.task][completed.error.category] += 1
                             first_dropped.setdefault(completed.job.task, completed.error)

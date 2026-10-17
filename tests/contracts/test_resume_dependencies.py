@@ -3,12 +3,11 @@
 import importlib
 import sys
 
-from finestore.store import DataStore
 import pytest
-
-from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
+from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import installed_dependency_versions
+from finestore.store import DataStore
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +26,7 @@ def write_distribution(root, name, version, owned=()):
     return path
 
 
-def test_vendor_import_preserves_resume_but_installed_version_change_refuses(tmp_path, monkeypatch):
+def test_vendor_import_and_dependency_updates_preserve_logical_resume(tmp_path, monkeypatch):
     site = tmp_path / "site-packages"
     installed = write_distribution(site, "resume-control-core", "1.0")
     parent = site / "resume_fixture_parent"
@@ -49,8 +48,7 @@ def test_vendor_import_preserves_resume_but_installed_version_change_refuses(tmp
         importlib.import_module("resume_fixture_parent")
         assert FineStoreResumeManager(store, "run", "task", fingerprint()).decide() == "resume"
         installed.write_text("Metadata-Version: 2.1\nName: resume-control-core\nVersion: 2.0\n")
-        with pytest.raises(ResumeRefused):
-            FineStoreResumeManager(store, "run", "task", fingerprint()).decide()
+        assert FineStoreResumeManager(store, "run", "task", fingerprint()).decide() == "resume"
 
 
 def test_independent_overlay_matches_import_precedence(tmp_path, monkeypatch):

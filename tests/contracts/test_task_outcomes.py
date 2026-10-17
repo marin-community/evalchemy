@@ -175,6 +175,22 @@ def test_grader_failure_is_classified_at_the_grading_boundary():
     assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
 
 
+@pytest.mark.parametrize("error", [TimeoutError("archive timeout"), ConnectionError("archive offline")])
+def test_checkpoint_write_failure_cannot_be_tolerated_as_a_dropped_request(error):
+    class Checkpoints(MemoryCheckpoints):
+        def record(self, row):
+            if row.position == 0:
+                raise error
+            super().record(row)
+
+    result = run(
+        ["yes", "yes"], [plan(items=[spec(ordinal=0), spec(ordinal=1)])],
+        checkpoints={"task": Checkpoints()},
+    )
+    assert result["results"] == {}
+    assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.SERIALIZATION
+
+
 @pytest.mark.parametrize("stage", ["add", "finish"])
 def test_reducer_failure_is_a_task_error_and_other_tasks_finish(stage):
     class BrokenMetrics(SourceMetrics):

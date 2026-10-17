@@ -213,12 +213,6 @@ def setup_custom_parser():
         help="Comma-separated k-list for pass@k aggregation (only consulted when --num_samples > 1).",
     )
     parser.add_argument(
-        "--resume-from-revision",
-        choices=["cf5c040"],
-        default=None,
-        help="Opt into audited cf5c040 request recovery; all other fingerprint fields must match.",
-    )
-    parser.add_argument(
         "--resume-mode",
         "--resume_mode",
         dest="resume_mode",

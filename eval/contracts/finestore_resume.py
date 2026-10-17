@@ -22,7 +22,6 @@ from eval.runtime.checkpoints import CheckpointRow
 
 RESUME_TABLE = "evalchemy_operations"
 OPERATION_PROTOCOL = 2
-CF5C040_IMPLEMENTATION = "sha256:cfc225d5f3addefee29a08d5233bdd7c6a43d0647da805848b45f1181fbfb7d1"
 _FLUSH_EVERY = 32
 _READ_WINDOW = 256
 _NAMESPACE = "namespace"
@@ -56,7 +55,6 @@ class FineStoreResumeManager:
     mode: ResumeMode = "auto"
     world_size: int = 1
     rank: int = 0
-    resume_from_revision: Literal["cf5c040"] | None = None
     _decision: str | None = field(default=None, init=False, repr=False)
     _pending_count: int = field(default=0, init=False, repr=False)
 
@@ -85,6 +83,8 @@ class FineStoreResumeManager:
                 **self.fingerprint.to_json(),
                 "world_size": self.world_size,
                 "operation_protocol": OPERATION_PROTOCOL,
+                "provenance": {name: self.fingerprint.inputs[name] for name in ("implementation", "dependencies")
+                               if name in self.fingerprint.inputs},
             }
             with self.store.transaction() as transaction:
                 transaction.write_object(self._fingerprint_blob, json.dumps(document, sort_keys=True).encode())
@@ -101,10 +101,6 @@ class FineStoreResumeManager:
             prior_world_size = int(document["world_size"])
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise ResumeRefused(f"invalid FineStore resume fingerprint for {self._namespace}") from exc
-        # This opt-in bridge covers the audited retry/partial-aggregation fix.
-        # Request identities and input hashes are still checked during replay.
-        if self.resume_from_revision == "cf5c040" and prior.inputs.get("implementation") == CF5C040_IMPLEMENTATION:
-            prior = RunFingerprint(inputs={**prior.inputs, "implementation": self.fingerprint.inputs["implementation"]})
         if not self.fingerprint.matches(prior) or prior_world_size != self.world_size:
             raise ResumeRefused(f"FineStore resume fingerprint changed for {self._namespace}")
         self._decision = "resume"

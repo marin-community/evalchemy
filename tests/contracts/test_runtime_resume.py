@@ -4,14 +4,13 @@ import asyncio
 import json
 from dataclasses import replace
 
-from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
-from finestore.reader import ReadView
-
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.finestore_output import FineStoreOutput, read_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager
 from eval.execution.engine import Evaluator
 from eval.resume.fingerprint import RunFingerprint
+from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
+from finestore.reader import ReadView
 
 
 def test_explicit_grade_output_is_durable_and_audit_cannot_replace_sample_data(tmp_path):
@@ -54,7 +53,13 @@ def test_explicit_grade_output_is_durable_and_audit_cannot_replace_sample_data(t
         assert record["metrics"] == ["accuracy"]
         assert record["accuracy"] == 1.0
         assert (record["doc"], record["target"], record["doc_id"]) == (spec.doc, spec.target, 2)
-        assert (record["task_name"], record["source_id"], record["sample_ordinal"], record["sample_namespace"], record["sample_repeat"]) == ("protocol", "original/01", 2, "original", 3)
+        assert (
+            record["task_name"],
+            record["source_id"],
+            record["sample_ordinal"],
+            record["sample_namespace"],
+            record["sample_repeat"],
+        ) == ("protocol", "original/01", 2, "original", 3)
         assert record["sample_id"] != "forged"
         assert record["arguments"] == [("Original question", {"temperature": 0})]
         assert record["resps"] == [["raw answer"]]
@@ -122,7 +127,11 @@ def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tm
 
     first = run(Backend(interrupted=True))
     assert sum(result.error is not None for result in first) == 1
-    assert ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).num_rows == 2
+    rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
+    assert len(rows) == 3
+    [failed] = [sample_from_archive_row(row) for row in rows
+                if sample_from_archive_row(row).output.startswith("[EVALCHEMY_INFRASTRUCTURE_ERROR]")]
+    assert failed.metrics == {}
     assert read_finestore_output(root, "run") is None
 
     resumed = Backend()
@@ -135,7 +144,9 @@ def test_finestore_replays_partial_conversation_and_supersedes_scored_samples(tm
     ]]
     rows = ReadView(root).scan(ARCHIVE_SAMPLES_TABLE).to_pylist(maps_as_pydicts="strict")
     assert len(rows) == 3
-    conversation = next(sample_from_archive_row(row) for row in rows if sample_from_archive_row(row).output == "second answer")
+    conversation = next(
+        sample_from_archive_row(row) for row in rows if sample_from_archive_row(row).output == "second answer"
+    )
     assert [message.content for message in conversation.prompt_messages] == ["first", "first answer", "second"]
     with FineStoreOutput(root, "run", tasks) as output:
         assert len(list(FineStoreResumeManager(output.store, "run", "conversation", fingerprint).records())) == 3

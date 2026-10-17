@@ -500,12 +500,11 @@ result is preserved on retry. A changed fingerprint raises an
 error. Use a new archive path for an intentional fresh evaluation.
 The inference `base_url` may change when replacing a server, provided it serves
 the same declared model and revision. Model settings, templates, generation
-parameters, judge endpoints, Evalchemy code, and installed dependency versions
-remain part of the fingerprint. For the audited retry and partial-aggregation
-fix, `--resume-from-revision cf5c040` also accepts the exact published cf5c040
-implementation fingerprint. Every other fingerprint field, including the full
-installed dependency map, must match. Request input hashes are checked during
-replay. This opt-in leaves the original archive fingerprint unchanged and must
-be supplied again when resuming that archive with the fixed runtime.
+parameters, and judge configuration remain part of the fingerprint. Evalchemy
+code and installed dependency versions are recorded as provenance and do not
+block recovery after bug fixes or package updates. Source item identities and
+request input hashes are checked during replay, including task data, grader
+configuration, prompts, and decoding settings. Existing archives resume through
+the same command without rewriting their stored fingerprints.
 When W&B logging is enabled, aggregate metrics are sent to W&B and sample records
 remain in FineStore.

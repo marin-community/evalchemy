@@ -57,10 +57,13 @@ MATERIAL_FIELDS = (
     "passk_batch_size",       # pass@k problem-batch size B (decision #4)
 )
 
-# Structurally EXCLUDED from the hashed set — cosmetic; changing them still resumes.
+# Structurally EXCLUDED from the hashed set — operational settings and provenance.
+# Replayed source and request hashes enforce logical identity across code/package updates.
 # (TP / world_size is excluded here for comparability; the FineStore manager checks
 #  world_size separately before restoring rank-local request rows.)
 IGNORED_FIELDS = (
+    "implementation",
+    "dependencies",
     "job_name",
     "run_tag",
     "started_at",

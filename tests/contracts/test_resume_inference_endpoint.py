@@ -2,15 +2,15 @@
 
 import argparse
 import asyncio
+import json
 from dataclasses import replace
 
 import pytest
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.finestore_output import FineStoreOutput
-from eval.contracts.finestore_resume import CF5C040_IMPLEMENTATION, FineStoreResumeManager, ResumeRefused
+from eval.contracts.finestore_resume import OPERATION_PROTOCOL, ResumeRefused
 from eval.execution.engine import Evaluator
 from eval.execution.run_spec import RunSpec
-from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
 
 
@@ -33,13 +33,12 @@ class EndpointBackend:
 def wiring_args(endpoint, num_concurrent=16, **overrides):
     values = dict(
         model_args=f"model=Qwen/Qwen3-8B,revision=abc123,base_url={endpoint},num_concurrent={num_concurrent}",
-        model="local-completions", include_path=None, resume_mode="auto", resume_from_revision=None,
+        model="local-completions", include_path=None, resume_mode="auto",
     )
     return argparse.Namespace(**{**values, **overrides})
 
 
-@pytest.mark.parametrize("bridge", [False, True])
-def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path, bridge):
+def test_replacement_endpoint_and_runtime_executes_only_unfinished_requests(tmp_path):
     root = str(tmp_path / "archive")
     specs = [EvalSpec(
         task="endpoint", source=SourceRef("fixture"), source_id=str(index), ordinal=index,
@@ -52,12 +51,19 @@ def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path, bridge
 
     def run(endpoint, backend, num_concurrent, *, old=False):
         with FineStoreOutput(root, "run", ["endpoint"]) as output:
-            args = wiring_args(endpoint, num_concurrent, resume_from_revision="cf5c040" if bridge else None)
+            args = wiring_args(endpoint, num_concurrent)
             manager = build_resume_wiring(args, backend, RunSpec(), store=output.store)("endpoint")
-            if old and bridge:
-                manager.fingerprint = RunFingerprint(inputs={
-                    **manager.fingerprint.inputs, "implementation": CF5C040_IMPLEMENTATION,
-                })
+            if old:
+                assert manager.decide() == "fresh"
+                # Earlier archives included runtime provenance in canonical_payload.
+                document = {**manager.fingerprint.to_json(), "world_size": 1, "operation_protocol": OPERATION_PROTOCOL}
+                document["canonical_payload"].update(
+                    implementation="sha256:old-code", dependencies={"scorer": "old-version"},
+                )
+                with output.store.transaction() as transaction:
+                    transaction.write_object(
+                        "evalchemy/run/endpoint/resume/fingerprint.json", json.dumps(document).encode(),
+                    )
             engine = Evaluator(backend, grade, output, workers=1, checkpoints={"endpoint": manager})
 
             async def collect():
@@ -95,23 +101,3 @@ def test_replacement_endpoint_refuses_material_changes(tmp_path, change):
         replacement = build_resume_wiring(args, backend, run, store=output.store)
         with pytest.raises(ResumeRefused):
             replacement("endpoint").decide()
-
-
-@pytest.mark.parametrize("change", ["opt_in", "implementation", "dependencies", "model", "run", "judge"])
-def test_audited_bridge_refuses_unapproved_checkpoint_changes(tmp_path, change):
-    old = {"implementation": CF5C040_IMPLEMENTATION, "dependencies": {"scorer": "1"},
-           "model": {"revision": "abc"}, "run": {"temperature": 0}, "judge": None}
-    if change == "implementation":
-        old["implementation"] = "sha256:unknown"
-    with FineStoreOutput(str(tmp_path / "archive"), "run", ["task"]) as output:
-        manager = FineStoreResumeManager(output.store, "run", "task", RunFingerprint(inputs=old))
-        assert manager.decide() == "fresh"
-        new = {**old, "implementation": "sha256:fixed"}
-        if change in {"dependencies", "model", "run", "judge"}:
-            new[change] = {"changed": True}
-        manager = FineStoreResumeManager(
-            output.store, "run", "task", RunFingerprint(inputs=new),
-            resume_from_revision=None if change == "opt_in" else "cf5c040",
-        )
-        with pytest.raises(ResumeRefused):
-            manager.decide()

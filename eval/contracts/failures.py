@@ -37,6 +37,9 @@ class FailureCategory(StrEnum):
     INVALID_RESULT = "invalid_result"
 
 
+TRANSPORT_FAILURE_CATEGORIES = frozenset({FailureCategory.MODEL_TRANSPORT, FailureCategory.AGENT_TIMEOUT})
+
+
 class ModelRequestValidationError(ValueError):
     """Raised before generation when a representative request is malformed."""
 
