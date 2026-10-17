@@ -81,7 +81,7 @@ dependencies = [
     # Native memory-limited graders must start without importing the CLI or
     # inheriting a persistent grading worker's address space.
     "loky>=3.7.0",
-    "marin-finestore>=0.2.113.dev35019671596",
+    "marin-finestore>=0.2.198.dev38999888318",
     "marin-rigging>=0.2.67.dev30673006835",
 ]
 
