@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field, replace
 from contextlib import AsyncExitStack
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Protocol
 
 from eval.completion_response import CompletionClassification, CompletionText, FailedGeneration
@@ -111,11 +111,16 @@ class Evaluator:
                 ),
             )
         except Exception as error:
+            category = classify_task_exception(phase, error)
             if allow_failed_response:
-                category = classify_task_exception(phase, error)
                 self.failures[spec.task][category] += 1
                 return FailedGeneration(category)
-            raise ItemFailure(phase, error) from error
+            if phase is FailurePhase.GENERATION and category in {
+                FailureCategory.MODEL_TRANSPORT, FailureCategory.AGENT_TIMEOUT,
+            }:
+                output = FailedGeneration(category)
+            else:
+                raise ItemFailure(phase, error) from error
         if isinstance(output, CompletionText) and phase is FailurePhase.GENERATION:
             self.response_summary[spec.task][output.response.classification] += 1
         if isinstance(output, FailedGeneration):

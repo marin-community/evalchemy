@@ -6,15 +6,17 @@ from argparse import Namespace
 from dataclasses import replace
 
 import pytest
-from finestore.eval import ARCHIVE_SAMPLES_TABLE
-from finestore.reader import ReadView
-
 from eval.chat_benchmarks.FinanceBench.eval_instruct import FinanceBenchBenchmark
 from eval.chat_benchmarks.JEEBench.eval_instruct import JEEBenchBenchmark
 from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
 from eval.chat_benchmarks.SimpleQA.eval_instruct import SimpleQABenchmark
 from eval.chat_benchmarks.zeroeval.eval_instruct import ZeroEvalBenchmark
-from eval.completion_response import CompletionContentPolicy, CompletionText, FailedGeneration, completion_response_from_chat_choice
+from eval.completion_response import (
+    CompletionContentPolicy,
+    CompletionText,
+    FailedGeneration,
+    completion_response_from_chat_choice,
+)
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.failures import FailureCategory
 from eval.contracts.finestore_output import FineStoreOutput
@@ -28,7 +30,9 @@ from eval.execution.run_spec import RunSpec
 from eval.graders.answer_equivalence import JudgeConfig
 from eval.serve_eval.results import EvalResults
 from eval.task import BaseBenchmark
-from tests.contracts.source_harness import FixedEndpoint
+from finestore.eval import ARCHIVE_SAMPLES_TABLE
+from finestore.reader import ReadView
+from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints
 
 
 class Model:
@@ -133,6 +137,34 @@ def test_exhausted_transport_is_not_an_incorrect_answer():
     assert record["metrics"] == []
 
 
+@pytest.mark.parametrize("failure", [FailedGeneration(FailureCategory.AGENT_TIMEOUT), ConnectionError("bad request")])
+@pytest.mark.parametrize("repeated", [False, True])
+def test_partial_transport_failure_keeps_scored_metrics_and_retries_only_failed_work(failure, repeated):
+    checkpoints = {"task": MemoryCheckpoints()}
+    items = [spec(ordinal=0), spec(ordinal=1)]
+    if repeated:
+        items = [replace(spec(), trial=trial) for trial in (0, 1)]
+    first = run(["yes", failure], [plan(items=items)], checkpoints=checkpoints)
+    outcome = first["task_outcomes"]["task"]
+    assert outcome["status"] is TaskStatus.SUCCEEDED
+    metric = "accuracy_avg" if repeated else "accuracy"
+    assert first["results"]["task"][metric] == 1.0
+    expected = 1 if repeated else 2
+    assert (outcome["expected_count"], outcome["generated_count"], outcome["scored_count"]) == (expected, 1, 1)
+    assert sum(outcome["failure_counts"].values()) == 1
+    [failed] = [sample for sample in first["samples"]["task"] if sample.get("failure_category")]
+    assert failed["metrics"] == []
+    assert failed["failure_category"] in {FailureCategory.AGENT_TIMEOUT, FailureCategory.MODEL_TRANSPORT}
+    validate_result_document(first)
+
+    recovered = run(["no"], [plan(items=items)], checkpoints=checkpoints)
+    assert recovered["results"]["task"][metric] == 0.5
+    outcome = recovered["task_outcomes"]["task"]
+    assert outcome["status"] is TaskStatus.SUCCEEDED
+    assert (outcome["expected_count"], outcome["generated_count"], outcome["scored_count"]) == (expected,) * 3
+    assert outcome["failure_counts"] == {}
+
+
 def test_grader_failure_is_classified_at_the_grading_boundary():
     def broken(_spec, _outputs):
         raise ConnectionError("judge unavailable")
@@ -211,11 +243,16 @@ def test_nonbinary_sources_keep_native_headlines_with_multiple_samples(monkeypat
 @pytest.mark.parametrize("available", [0, 1])
 def test_unavailable_judge_trials_preserve_headlines_and_make_pass_at_k_unavailable(monkeypatch, task, available):
     source = FinanceBenchBenchmark(debug=True) if task == "FinanceBench" else SimpleQABenchmark(debug=True)
-    replies = iter(["correct" if task == "FinanceBench" else "A"] * available + [FailedGeneration("model_transport")] * (2 - available))
+    replies = iter(
+        ["correct" if task == "FinanceBench" else "A"] * available
+        + [FailedGeneration("model_transport")] * (2 - available)
+    )
     monkeypatch.setattr("eval.execution.driver.JudgeConfig.resolve", lambda **_kwargs: JudgeConfig(
         "fixture", "http://offline.invalid/v1", "placeholder",
     ))
-    monkeypatch.setattr("eval.execution.driver.JudgeBackend", lambda *_args: FixedEndpoint(lambda _request: next(replies)))
+    monkeypatch.setattr(
+        "eval.execution.driver.JudgeBackend", lambda *_args: FixedEndpoint(lambda _request: next(replies))
+    )
     model = Model(["candidate"] * 2)
     plans = source_plans(
         [task], {task: TaskRoute.CUSTOM}, Namespace(get_benchmark=lambda _name: source), None,
@@ -278,7 +315,10 @@ def test_empty_source_is_an_incomplete_evaluation():
     assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.INCOMPLETE_EVALUATION
 
 
-@pytest.mark.parametrize("result", [{"results": {}}, {"results": {"task": {"accuracy": 1.0}}, "task_outcomes": {"task": {"status": "succeeded"}}}])
+@pytest.mark.parametrize(
+    "result",
+    [{"results": {}}, {"results": {"task": {"accuracy": 1.0}}, "task_outcomes": {"task": {"status": "succeeded"}}}],
+)
 def test_aggregate_writer_rejects_missing_or_invalid_task_outcomes(result, tmp_path):
     args = Namespace(show_config=False, wandb_args=None, finestore_output_path=str(tmp_path / "archive"))
     with pytest.raises(EvaluationRunError):

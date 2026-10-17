@@ -2,32 +2,37 @@
 
 from __future__ import annotations
 
+import logging
 from collections import Counter, defaultdict, deque
 from collections.abc import Iterable, Iterator
+from contextlib import aclosing
 from copy import copy
 from dataclasses import dataclass, field, replace
-from contextlib import aclosing
-import logging
 from typing import Protocol
+
 from aiohttp import ClientSession, ClientTimeout
 
-from eval.contracts.eval_spec import EvalSpec
+from eval.contracts.eval_spec import EvalSpec, SourceRef
 from eval.contracts.sample_manifest import SampleCoverageError
 from eval.contracts.task_outcome import (
-    FailureCategory, FailurePhase, TaskOutcome, TaskRoute, TaskStatus, classify_task_exception,
+    FailureCategory,
+    FailurePhase,
+    TaskOutcome,
+    TaskRoute,
+    TaskStatus,
+    classify_task_exception,
 )
 from eval.execution.backend import LMBackend, prompt_encoder
 from eval.execution.engine import CollectSamples, Evaluator, ItemFailure, ItemResult
 from eval.execution.grading import Grader, Graders
+from eval.execution.judge import JudgeBackend
 from eval.execution.metrics import SourceMetrics
 from eval.execution.run_spec import RunSpec
-from eval.execution.judge import JudgeBackend
 from eval.graders.answer_equivalence import JudgeConfig
 from eval.graders.specs import GRADERS
+from eval.robust_api import completion_response_text_unavailable
 from eval.sources.common import SourceOptions
 from eval.sources.lm_eval import LMEvalMetrics, LMEvalSource
-from eval.contracts.eval_spec import SourceRef
-from eval.robust_api import completion_response_text_unavailable
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +99,10 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
                 tokenizer_encode=prompt_encoder(model, tokenizer_defaults=True),
             )
             reducer = SourceMetrics(
-                repeated=False, pass_at_k=run.pass_at_k if run.num_samples > 1 and description.reducers[0].trial_metric is not None else (),
+                repeated=False,
+                pass_at_k=(
+                    run.pass_at_k if run.num_samples > 1 and description.reducers[0].trial_metric is not None else ()
+                ),
                 policy=description.reducers[0],
             )
             plans.append(SourcePlan(
@@ -123,7 +131,19 @@ def source_plans(tasks, routes, custom, native, run: RunSpec, model) -> list[Sou
     return plans
 
 
-async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=None, checkpoints=None, predict_only=False, seeds=RunSpec.seeds, supports_request_seed=False, batch_sizes=None, batch_size_attribute="batch_size") -> dict:
+async def run_evaluations(
+    model,
+    plans: list[SourcePlan],
+    *,
+    workers: int,
+    sink=None,
+    checkpoints=None,
+    predict_only=False,
+    seeds=RunSpec.seeds,
+    supports_request_seed=False,
+    batch_sizes=None,
+    batch_size_attribute="batch_size",
+) -> dict:
     samples = CollectSamples() if sink is None else sink
     definitions = dict(GRADERS)
     for plan in plans:
@@ -134,9 +154,16 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
         for task in plan.task_names:
             by_task[task].append(plan)
     scored: dict[str, set[str]] = {task: set() for task in by_task}
+    dropped = defaultdict(Counter)
+    first_dropped = {}
     try:
-        async with LMBackend(model, seeds=seeds, supports_request_seed=supports_request_seed,
-                             batch_sizes=batch_sizes or {}, batch_size_attribute=batch_size_attribute) as backend, ClientSession(timeout=ClientTimeout(total=None)) as judge_session:
+        async with LMBackend(
+            model,
+            seeds=seeds,
+            supports_request_seed=supports_request_seed,
+            batch_sizes=batch_sizes or {},
+            batch_size_attribute=batch_size_attribute,
+        ) as backend, ClientSession(timeout=ClientTimeout(total=None)) as judge_session:
             judges = {
                 task: JudgeBackend(plan.judge_config, judge_session)
                 for plan in plans if plan.judge_config is not None for task in plan.task_names
@@ -147,7 +174,24 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
                 async for completed in stream:
                     task_plans = by_task[completed.job.task]
                     if completed.error is not None:
-                        logger.error("Evaluation %s item %s failed: %s", completed.job.task, completed.job.source_id, completed.error)
+                        logger.error(
+                            "Evaluation %s item %s failed: %s",
+                            completed.job.task,
+                            completed.job.source_id,
+                            completed.error,
+                        )
+                        if (
+                            isinstance(completed.error, ItemFailure)
+                            and completed.error.phase is FailurePhase.GENERATION
+                            and completed.error.category
+                            in {
+                                FailureCategory.MODEL_TRANSPORT,
+                                FailureCategory.AGENT_TIMEOUT,
+                            }
+                        ):
+                            dropped[completed.job.task][completed.error.category] += 1
+                            first_dropped.setdefault(completed.job.task, completed.error)
+                            continue
                         for plan in task_plans:
                             plan.errors.append(completed.error)
                         continue
@@ -168,24 +212,43 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
         generated = sum(manifest.generated_sample_count for manifest in manifests)
         score_count = sum(len(scored[task]) for task in plan.task_names)
         if plan.expected_examples is not None and expected != plan.expected_examples:
-            plan.errors.append(SampleCoverageError(f"source declared {plan.expected_examples} examples but yielded {expected}"))
+            plan.errors.append(
+                SampleCoverageError(f"source declared {plan.expected_examples} examples but yielded {expected}")
+            )
         for manifest in manifests:
             try:
-                manifest.validate_generated()
+                missing = manifest.expected_sample_count - manifest.generated_sample_count
+                explained_drops = dropped[manifest.task_name] and missing <= sum(dropped[manifest.task_name].values())
+                if not explained_drops:
+                    manifest.validate_generated()
                 if not predict_only:
                     manifest.mark_scored(len(scored[manifest.task_name]))
-                    manifest.validate_scored()
+                    if not explained_drops:
+                        manifest.validate_scored()
             except SampleCoverageError as exc:
                 plan.errors.append(exc)
         if not expected:
             plan.errors.append(SampleCoverageError("source produced no evaluation items"))
+        if not predict_only and not score_count:
+            plan.errors.append(next(
+                (first_dropped[task] for task in plan.task_names if task in first_dropped),
+                SampleCoverageError("source produced no scored evaluation items"),
+            ))
         failures = Counter()
         response_summary = Counter()
         for task in plan.task_names:
             failures.update(engine.failures[task])
+            for category, count in dropped[task].items():
+                failures[category] = max(failures[category], count)
             response_summary.update(engine.response_summary[task])
         if completion_response_text_unavailable(response_summary):
-            plan.errors.append(ItemFailure(FailurePhase.GENERATION, ValueError("at least half of chat completions contain no scorer text"), FailureCategory.MALFORMED_MODEL_RESPONSE))
+            plan.errors.append(
+                ItemFailure(
+                    FailurePhase.GENERATION,
+                    ValueError("at least half of chat completions contain no scorer text"),
+                    FailureCategory.MALFORMED_MODEL_RESPONSE,
+                )
+            )
         document = None
         if not plan.errors and not predict_only:
             try:
@@ -194,7 +257,15 @@ async def run_evaluations(model, plans: list[SourcePlan], *, workers: int, sink=
                 plan.errors.append(ItemFailure(FailurePhase.GRADING, error))
         if plan.errors:
             error = plan.errors[0]
-            category = error.category if isinstance(error, ItemFailure) else FailureCategory.INCOMPLETE_EVALUATION if isinstance(error, SampleCoverageError) else classify_task_exception(FailurePhase.EVALUATION, error)
+            category = (
+                error.category
+                if isinstance(error, ItemFailure)
+                else (
+                    FailureCategory.INCOMPLETE_EVALUATION
+                    if isinstance(error, SampleCoverageError)
+                    else classify_task_exception(FailurePhase.EVALUATION, error)
+                )
+            )
             outcome = TaskOutcome.failed(plan.name, plan.route, category, str(error), exception=error)
             outcome = replace(outcome, expected_count=expected, generated_count=generated, scored_count=score_count,
                               failure_counts=failures, completion_response_summary=response_summary)

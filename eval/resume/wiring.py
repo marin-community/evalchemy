@@ -74,6 +74,7 @@ def build_resume_wiring(args, lm, run: RunSpec, *, store: DataStore, judge_confi
             store=store,
             source_prefix=getattr(args, "finestore_output_prefix", DEFAULT_SOURCE_PREFIX),
             task_name=task, fingerprint=fingerprint, mode=args.resume_mode,
+            resume_from_revision=args.resume_from_revision,
         )
 
     return factory

@@ -7,9 +7,10 @@ from dataclasses import replace
 import pytest
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
 from eval.contracts.finestore_output import FineStoreOutput
-from eval.contracts.finestore_resume import ResumeRefused
+from eval.contracts.finestore_resume import CF5C040_IMPLEMENTATION, FineStoreResumeManager, ResumeRefused
 from eval.execution.engine import Evaluator
 from eval.execution.run_spec import RunSpec
+from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
 
 
@@ -32,12 +33,13 @@ class EndpointBackend:
 def wiring_args(endpoint, num_concurrent=16, **overrides):
     values = dict(
         model_args=f"model=Qwen/Qwen3-8B,revision=abc123,base_url={endpoint},num_concurrent={num_concurrent}",
-        model="local-completions", include_path=None, resume_mode="auto",
+        model="local-completions", include_path=None, resume_mode="auto", resume_from_revision=None,
     )
     return argparse.Namespace(**{**values, **overrides})
 
 
-def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path):
+@pytest.mark.parametrize("bridge", [False, True])
+def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path, bridge):
     root = str(tmp_path / "archive")
     specs = [EvalSpec(
         task="endpoint", source=SourceRef("fixture"), source_id=str(index), ordinal=index,
@@ -48,19 +50,22 @@ def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path):
     async def grade(spec, responses):
         return Grade({"accuracy": float(responses[0] == spec.target)})
 
-    def run(endpoint, backend, num_concurrent):
+    def run(endpoint, backend, num_concurrent, *, old=False):
         with FineStoreOutput(root, "run", ["endpoint"]) as output:
-            factory = build_resume_wiring(
-                wiring_args(endpoint, num_concurrent), backend, RunSpec(), store=output.store,
-            )
-            engine = Evaluator(backend, grade, output, workers=1, checkpoints={"endpoint": factory("endpoint")})
+            args = wiring_args(endpoint, num_concurrent, resume_from_revision="cf5c040" if bridge else None)
+            manager = build_resume_wiring(args, backend, RunSpec(), store=output.store)("endpoint")
+            if old and bridge:
+                manager.fingerprint = RunFingerprint(inputs={
+                    **manager.fingerprint.inputs, "implementation": CF5C040_IMPLEMENTATION,
+                })
+            engine = Evaluator(backend, grade, output, workers=1, checkpoints={"endpoint": manager})
 
             async def collect():
                 return [item async for item in engine.run(specs)]
 
             return asyncio.run(collect())
 
-    interrupted = run("http://old-server/v1/completions", EndpointBackend(fail_second=True), 16)
+    interrupted = run("http://old-server/v1/completions", EndpointBackend(fail_second=True), 16, old=True)
     assert sum(item.error is not None for item in interrupted) == 1
     replacement = EndpointBackend()
     recovered = run("http://replacement-server/v1/completions", replacement, 32)
@@ -90,3 +95,23 @@ def test_replacement_endpoint_refuses_material_changes(tmp_path, change):
         replacement = build_resume_wiring(args, backend, run, store=output.store)
         with pytest.raises(ResumeRefused):
             replacement("endpoint").decide()
+
+
+@pytest.mark.parametrize("change", ["opt_in", "implementation", "dependencies", "model", "run", "judge"])
+def test_audited_bridge_refuses_unapproved_checkpoint_changes(tmp_path, change):
+    old = {"implementation": CF5C040_IMPLEMENTATION, "dependencies": {"scorer": "1"},
+           "model": {"revision": "abc"}, "run": {"temperature": 0}, "judge": None}
+    if change == "implementation":
+        old["implementation"] = "sha256:unknown"
+    with FineStoreOutput(str(tmp_path / "archive"), "run", ["task"]) as output:
+        manager = FineStoreResumeManager(output.store, "run", "task", RunFingerprint(inputs=old))
+        assert manager.decide() == "fresh"
+        new = {**old, "implementation": "sha256:fixed"}
+        if change in {"dependencies", "model", "run", "judge"}:
+            new[change] = {"changed": True}
+        manager = FineStoreResumeManager(
+            output.store, "run", "task", RunFingerprint(inputs=new),
+            resume_from_revision=None if change == "opt_in" else "cf5c040",
+        )
+        with pytest.raises(ResumeRefused):
+            manager.decide()

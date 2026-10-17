@@ -501,7 +501,11 @@ error. Use a new archive path for an intentional fresh evaluation.
 The inference `base_url` may change when replacing a server, provided it serves
 the same declared model and revision. Model settings, templates, generation
 parameters, judge endpoints, Evalchemy code, and installed dependency versions
-remain part of the fingerprint. This endpoint policy applies to checkpoints
-created with this version; older checkpoints still refuse across the code change.
+remain part of the fingerprint. For the audited retry and partial-aggregation
+fix, `--resume-from-revision cf5c040` also accepts the exact published cf5c040
+implementation fingerprint. Every other fingerprint field, including the full
+installed dependency map, must match. Request input hashes are checked during
+replay. This opt-in leaves the original archive fingerprint unchanged and must
+be supplied again when resuming that archive with the fixed runtime.
 When W&B logging is enabled, aggregate metrics are sent to W&B and sample records
 remain in FineStore.

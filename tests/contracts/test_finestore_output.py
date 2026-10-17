@@ -1,33 +1,33 @@
 """Contract tests for Evalchemy's FineStore output."""
 
+import json
+import shutil
 from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
-import json
 from pathlib import Path
-import shutil
-from types import SimpleNamespace
 from threading import Event
+from types import SimpleNamespace
 
+import eval.resume.wiring as wiring
 import pytest
-from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
-from finestore.reader import ReadView
-from finestore.shard_writer import ShardWriter
-from finestore.store import DataStore
-from sympy import Integer
-
 from eval.contracts.finestore_output import FineStoreOutput, completed_finestore_output, read_finestore_output
 from eval.contracts.finestore_resume import FineStoreResumeManager, ResumeRefused
 from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.contracts.task_outcome import TaskOutcome, TaskRoute, TaskStatus
 from eval.eval import cli_evaluate, handle_evaluation_output, setup_custom_parser
 from eval.eval_tracker import DCEvaluationTracker
+from eval.execution.run_spec import RunSpec
+from eval.graders.answer_equivalence import JudgeConfig
 from eval.lm_eval_compat import setup_parser
-from eval.serve_eval.results import EvalResults
 from eval.resume.fingerprint import RunFingerprint
 from eval.resume.wiring import build_resume_wiring
-from eval.execution.run_spec import RunSpec
 from eval.runtime.checkpoints import CheckpointRow, ResumeStream, input_digest
-from eval.graders.answer_equivalence import JudgeConfig
+from eval.serve_eval.results import EvalResults
+from finestore.eval import ARCHIVE_SAMPLES_TABLE, sample_from_archive_row
+from finestore.reader import ReadView
+from finestore.shard_writer import ShardWriter
+from finestore.store import DataStore
+from sympy import Integer
 
 
 def _write_result(root, source_prefix, results, samples_by_task):
@@ -152,7 +152,9 @@ def test_normalization_does_not_mark_malformed_model_output_as_infrastructure():
 @pytest.mark.parametrize("metric,score", [(None, None), ("accuracy", 0.0), ("score", 0.5)])
 def test_finestore_judge_failure_preserves_error_without_scoring_the_failure_counter(tmp_path, metric, score):
     judge_error = {
-        "category": "grader_infrastructure", "message": "Judge endpoint unavailable", "exception_type": "ConnectionError",
+        "category": "grader_infrastructure",
+        "message": "Judge endpoint unavailable",
+        "exception_type": "ConnectionError",
     }
     record = {
         "doc_id": 0, "doc": {"question": "question"}, "target": "answer",
@@ -290,7 +292,9 @@ def test_finestore_resume_restores_committed_units(tmp_path: Path):
         first = FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint)
         assert first.decide() == "fresh"
         identity = {"source_id": "0"}
-        first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
+        first.record(
+            CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"})
+        )
         first.finalize()
 
         changed = FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", RunFingerprint(inputs={"task_name": "other"}))
@@ -301,10 +305,16 @@ def test_finestore_resume_restores_committed_units(tmp_path: Path):
         assert retry.decide() == "resume"
         restored = ResumeStream(retry).admit(0, identity)
         assert restored.lookup({"phase": "generate"})["output"] == "42"
-        retry.record(CheckpointRow(1, input_digest({"source_id": "1"}), {"phase": "generate"}, {"input_digest": "input", "output": "43"}))
+        retry.record(
+            CheckpointRow(
+                1, input_digest({"source_id": "1"}), {"phase": "generate"}, {"input_digest": "input", "output": "43"}
+            )
+        )
         retry.finalize()
 
-        assert [row.payload["output"] for row in FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint).records()] == ["42", "43"]
+        assert [
+            row.payload["output"] for row in FineStoreResumeManager(store, "gsm8k_0shot", "gsm8k", fingerprint).records()
+        ] == ["42", "43"]
 
 def test_finestore_resume_refuses_rank_layout_change_and_force_fresh(tmp_path: Path):
     root = str(tmp_path / "archive")
@@ -347,7 +357,11 @@ def test_finestore_output_preserves_completed_task_after_archive_reopens(tmp_pat
     assert ReadView(root).token == committed.token
     with DataStore.open(root) as store:
         other_task = FineStoreResumeManager(store, "arc_0shot", "arc", RunFingerprint(inputs={"task_name": "arc"}))
-        other_task.record(CheckpointRow(0, input_digest({"source_id": "0"}), {"phase": "generate"}, {"input_digest": "input", "output": "A"}))
+        other_task.record(
+            CheckpointRow(
+                0, input_digest({"source_id": "0"}), {"phase": "generate"}, {"input_digest": "input", "output": "A"}
+            )
+        )
         other_task.finalize()
         assert not ReadView(root).is_sealed()
         assert completed_finestore_output(root, "gsm8k_0shot")
@@ -545,7 +559,16 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
 ):
     root = str(tmp_path / "archive")
     args = setup_custom_parser().parse_args(
-        ["--model", "local-completions", "--tasks", "arc_challenge", "--model_args", "model=served", "--output_path", root]
+        [
+            "--model",
+            "local-completions",
+            "--tasks",
+            "arc_challenge",
+            "--model_args",
+            "model=served",
+            "--output_path",
+            root,
+        ]
     )
     model = SimpleNamespace(world_size=1, rank=0, chat_template=lambda _enabled: None)
     with DataStore.open(root) as store:
@@ -564,8 +587,6 @@ def test_cli_refuses_reuse_of_completed_finestore_result(
 @pytest.mark.parametrize("installed_layout", [False, True])
 def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path, monkeypatch, installed_layout):
     if installed_layout:
-        import eval.resume.wiring as wiring
-
         package = tmp_path / "site-packages" / "eval"
         source = Path(wiring.__file__).resolve().parents[1]
         for directory in ("execution", "runtime", "sources", "graders"):
@@ -575,6 +596,7 @@ def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path, 
     args = Namespace(
         model="local-completions",
         resume_mode="auto",
+        resume_from_revision=None,
         output_path=None,
         finestore_output_path=root,
         finestore_output_prefix="gsm8k_0shot",
@@ -587,7 +609,9 @@ def test_finestore_cli_wiring_resumes_without_local_output_path(tmp_path: Path, 
         factory = build_resume_wiring(args, model, run, store=store)
         first = factory("gsm8k")
         identity = {"source_id": "0"}
-        first.record(CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"}))
+        first.record(
+            CheckpointRow(0, input_digest(identity), {"phase": "generate"}, {"input_digest": "input", "output": "42"})
+        )
         first.finalize()
 
         retry = build_resume_wiring(args, model, run, store=store)("gsm8k")
@@ -609,7 +633,9 @@ def test_judge_identity_change_refuses_checkpoint_reuse(tmp_path, change):
     config = {"model": "judge", "base_url": "https://judge.example/v1", "api_key": "key"}
     run = RunSpec.from_args(args)
     with DataStore.open(args.finestore_output_path) as store:
-        first = build_resume_wiring(args, model, run, judge_configs={"MTBench": JudgeConfig(**config)}, store=store)("MTBench")
+        first = build_resume_wiring(args, model, run, judge_configs={"MTBench": JudgeConfig(**config)}, store=store)(
+            "MTBench"
+        )
         first.decide()
         first.finalize()
         changed = JudgeConfig(**{**config, **change})
@@ -686,4 +712,6 @@ def test_finestore_mode_writes_no_local_result_files(tmp_path: Path):
     assert loaded.results == {"gsm8k": {"exact_match,none": 1.0}}
     assert loaded.model_name == "test-model"
     assert loaded.model_source == "local-completions"
-    assert ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl") is None
+    assert (
+        ReadView(str(archive_root)).read_blob("sources/evalchemy/gsm8k_0shot/native/samples_gsm8k_native.jsonl") is None
+    )
