@@ -175,6 +175,34 @@ def test_grader_failure_is_classified_at_the_grading_boundary():
     assert result["task_outcomes"]["task"]["failure"]["category"] is FailureCategory.GRADER_INFRASTRUCTURE
 
 
+def test_missing_sampled_answers_report_partial_sample_coverage_and_resume_missing_trials():
+    items = [replace(spec(), trial=trial) for trial in range(10)]
+    checkpoints = {"task": MemoryCheckpoints()}
+
+    def task():
+        result = plan(items=items)
+        result.reducer = SourceMetrics(repeated=True, pass_at_k=(1, 10))
+        return result
+
+    first = run(["yes", *[FailedGeneration(FailureCategory.AGENT_TIMEOUT) for _ in range(9)]],
+                [task()], checkpoints=checkpoints)
+    outcome = first["task_outcomes"]["task"]
+    assert (outcome["expected_count"], outcome["generated_count"], outcome["scored_count"]) == (1, 1, 1)
+    assert (
+        outcome["expected_sample_count"], outcome["generated_sample_count"], outcome["scored_sample_count"]
+    ) == (10, 1, 1)
+    assert outcome["failure_counts"] == {FailureCategory.AGENT_TIMEOUT: 9}
+    assert first["results"]["task"].get("pass@10") is None
+    assert EvalResults.model_validate(first).task_outcomes["task"].expected_sample_count == 10
+
+    recovered = run(["no"] * 9, [task()], checkpoints=checkpoints)
+    outcome = recovered["task_outcomes"]["task"]
+    assert (
+        outcome["expected_sample_count"], outcome["generated_sample_count"], outcome["scored_sample_count"]
+    ) == (10, 10, 10)
+    assert recovered["results"]["task"]["pass@10"] == 1.0
+
+
 @pytest.mark.parametrize("error", [TimeoutError("archive timeout"), ConnectionError("archive offline")])
 def test_checkpoint_write_failure_cannot_be_tolerated_as_a_dropped_request(error):
     class Checkpoints(MemoryCheckpoints):

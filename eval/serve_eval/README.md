@@ -83,6 +83,11 @@ Successful scored items still contribute aggregate metrics when other model
 requests fail. Task outcomes report expected, generated, and scored coverage and
 failure counts; consumers decide their minimum acceptable coverage. Preparation,
 grading, serialization, and unexplained coverage failures still invalidate the task.
+The `expected_count`, `generated_count`, and `scored_count` fields count distinct
+source problems. The corresponding `expected_sample_count`,
+`generated_sample_count`, and `scored_sample_count` fields count independently
+sampled answers, including repetitions. Requesting ten answers but obtaining one
+therefore reports sample coverage of 1/10 even if problem coverage is 1/1.
 
 Sources declare generation defaults. Values passed through `--gen_kwargs` override
 those defaults for custom and imported lm-eval tasks, for example

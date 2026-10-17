@@ -157,6 +157,7 @@ async def run_evaluations(
     scored: dict[str, set[str]] = {task: set() for task in by_task}
     dropped = defaultdict(Counter)
     first_dropped = {}
+    scored_samples = Counter()
     try:
         async with LMBackend(
             model,
@@ -195,6 +196,7 @@ async def run_evaluations(
                     result: ItemResult = completed.result
                     if not predict_only:
                         scored[result.spec.task].add(result.record["sample_id"])
+                        scored_samples[result.spec.task] += 1
                         for plan in task_plans:
                             try:
                                 plan.reducer.add(result)
@@ -214,7 +216,7 @@ async def run_evaluations(
             )
         for manifest in manifests:
             try:
-                missing = manifest.expected_sample_count - manifest.generated_sample_count
+                missing = manifest.expected_unit_count - manifest.generated_unit_count
                 explained_drops = dropped[manifest.task_name] and missing <= sum(dropped[manifest.task_name].values())
                 if not explained_drops:
                     manifest.validate_generated()
@@ -278,6 +280,12 @@ async def run_evaluations(
                 plan.name, plan.route, TaskStatus.SUCCEEDED, metrics, expected, generated, score_count,
                 failure_counts=failures, completion_response_summary=response_summary,
             )
+        outcome = replace(
+            outcome,
+            expected_sample_count=sum(manifest.expected_unit_count for manifest in manifests),
+            generated_sample_count=sum(manifest.generated_unit_count for manifest in manifests),
+            scored_sample_count=None if predict_only else sum(scored_samples[task] for task in plan.task_names),
+        )
         result["task_outcomes"][plan.name] = outcome.to_dict()
     if sink is None:
         result["samples"] = samples.samples
