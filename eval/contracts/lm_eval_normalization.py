@@ -139,6 +139,10 @@ def _grading(metrics: dict[str, float], extraction_filter: str | None, raw: Mapp
     )
     picked = _primary_metric(metrics)
     if picked is None:
+        if raw.get("failure_category") in _GENERATION_FAILURE_CATEGORIES:
+            # Preserve the extraction key so a recovered score supersedes the
+            # failed sample without inventing a numeric grade for the failure.
+            return Grading(method="lm-eval:transport_failure", filter=extraction_filter or "none", detail=detail)
         if any(_base_metric(name) in _OPERATIONAL_METRICS for name in metrics):
             return Grading(method="lm-eval:judge_failed", filter=extraction_filter, detail=detail)
         return None
