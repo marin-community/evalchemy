@@ -144,7 +144,7 @@ class Evaluator:
                 "doc_id": spec.ordinal, "doc": spec.doc, "target": spec.target,
                 "arguments": [(request.prompt, dict(request.generation))],
                 "resps": [[output]], "filtered_resps": [output],
-                "metrics": [], "failure_category": category,
+                "metrics": [], "failure_category": category, "filter": "none",
             }, spec.ordinal, admitted.entry))
             raise ItemFailure(phase, RuntimeError(f"{unit['phase']} request exhausted retries"), category)
         return output
