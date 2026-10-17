@@ -19,7 +19,7 @@ class EndpointBackend:
         self.fail_second = fail_second
         self.prompts = []
 
-    def chat_template(self, apply_chat_template):
+    def chat_template(self, _apply_chat_template):
         return self.template
 
     async def execute(self, request):
