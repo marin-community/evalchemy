@@ -17,6 +17,7 @@ from eval.runtime.resources import ExecutionMode, Resources
 class Grader:
     function: Callable[[EvalSpec, Sequence[Any]], Grade | JudgePlan]
     mode: ExecutionMode = ExecutionMode.SERIAL
+    extraction_filters: tuple[str, ...] = ("none",)
 
 
 class Graders:
@@ -76,8 +77,13 @@ class TrialMetrics:
             }
         metrics = MeanMetrics()
         for scores in self.items.values():
-            metrics.add({
-                f"pass@{k}": float(estimate_pass_at_k(len(scores), [int(sum(value for value in scores if value is not None))], k)[0])
-                for k in self.k if k <= len(scores)
-            })
+            metrics.add(
+                {
+                    f"pass@{k}": float(
+                        estimate_pass_at_k(len(scores), [int(sum(value for value in scores if value is not None))], k)[0]
+                    )
+                    for k in self.k
+                    if k <= len(scores)
+                }
+            )
         return metrics.finish()

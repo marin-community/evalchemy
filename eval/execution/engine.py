@@ -102,11 +102,13 @@ class Evaluator:
         checkpoints: Mapping[str, Checkpoints] | None = None,
         judges: Mapping[str, ModelBackend] | None = None,
         predict_only: bool = False,
+        extraction_filters: Mapping[str, tuple[str, ...]] | None = None,
     ):
         self.model = model
         self.grade = grade
         self.judges = judges or {}
         self.predict_only = predict_only
+        self.extraction_filters = extraction_filters or {}
         self.sink = sink
         self.pool = ExecutionPool(workers)
         self.io = SerialIO()
@@ -144,7 +146,11 @@ class Evaluator:
                 "doc_id": spec.ordinal, "doc": spec.doc, "target": spec.target,
                 "arguments": [(request.prompt, dict(request.generation))],
                 "resps": [[output]], "filtered_resps": [output],
-                "metrics": [], "failure_category": category, "filter": "none",
+                "metrics": [], "failure_category": category,
+                "filter_variants": [
+                    {"filter": name, "metrics": {}, "filtered_resps": [output]}
+                    for name in self.extraction_filters.get(spec.grader.name, ("none",))
+                ],
             }, spec.ordinal, admitted.entry))
             raise ItemFailure(phase, RuntimeError(f"{unit['phase']} request exhausted retries"), category)
         return output

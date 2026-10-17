@@ -170,8 +170,16 @@ async def run_evaluations(
                 task: JudgeBackend(plan.judge_config, judge_session)
                 for plan in plans if plan.judge_config is not None for task in plan.task_names
             }
-            engine = Evaluator(backend, grading, samples, workers=workers, checkpoints=checkpoints, judges=judges,
-                               predict_only=predict_only)
+            engine = Evaluator(
+                backend,
+                grading,
+                samples,
+                workers=workers,
+                checkpoints=checkpoints,
+                judges=judges,
+                predict_only=predict_only,
+                extraction_filters={name: grader.extraction_filters for name, grader in definitions.items()},
+            )
             async with aclosing(engine.run(_interleave(plans))) as stream:
                 async for completed in stream:
                     task_plans = by_task[completed.job.task]
