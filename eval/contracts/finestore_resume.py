@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import closing
 from collections.abc import Generator
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -79,7 +79,13 @@ class FineStoreResumeManager:
         if stored is None:
             if read_finestore_output(self.root, self.source_prefix) is not None:
                 raise ResumeRefused(f"FineStore result exists without a resume fingerprint for {self._namespace}")
-            document = {**self.fingerprint.to_json(), "world_size": self.world_size, "operation_protocol": OPERATION_PROTOCOL}
+            document = {
+                **self.fingerprint.to_json(),
+                "world_size": self.world_size,
+                "operation_protocol": OPERATION_PROTOCOL,
+                "provenance": {name: self.fingerprint.inputs[name] for name in ("implementation", "dependencies")
+                               if name in self.fingerprint.inputs},
+            }
             with self.store.transaction() as transaction:
                 transaction.write_object(self._fingerprint_blob, json.dumps(document, sort_keys=True).encode())
             self._decision = "fresh"

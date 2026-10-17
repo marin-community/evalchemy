@@ -187,6 +187,16 @@ class SampleManifest:
             )
 
     @property
+    def expected_unit_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    @property
+    def generated_unit_count(self) -> int:
+        with self._lock:
+            return len(self._generated)
+
+    @property
     def expected_sample_count(self) -> int:
         with self._lock:
             return self._sample_count(set(self._entries))

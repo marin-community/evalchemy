@@ -19,8 +19,10 @@ MODEL_IDENTITY_FIELDS = {
     "pretrained", "model", "revision", "tokenizer", "tokenizer_backend", "tokenizer_revision",
     "chat_template", "chat_template_args", "chat_template_kwargs", "extra_body", "completion_content_policy",
     "truncate", "max_length", "max_model_len", "dtype",
-    "lora_local_path", "peft", "add_bos_token", "base_url", "model_url_suffix",
+    "lora_local_path", "peft", "add_bos_token", "model_url_suffix",
 }
+# Inference base_url is transport: replacement servers must serve the same
+# declared model/revision. Judge endpoints remain part of judge identity below.
 
 
 def installed_dependency_versions() -> dict[str, str]:

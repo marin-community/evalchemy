@@ -5,25 +5,23 @@ import json
 
 import pytest
 from aiohttp import ClientResponseError, ClientSession, web
-from lm_eval.models.api_models import JsonChatStr
-
-from eval.runtime import pool as runtime_pool
+from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
+from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source
+from eval.contracts.eval_spec import ModelRequest, RequestKind
+from eval.contracts.lm_eval_normalization import sample_from_lm_eval
 from eval.execution.backend import LMBackend
 from eval.execution.engine import CollectSamples, Evaluator
 from eval.execution.grading import Graders
 from eval.execution.judge import JudgeBackend
 from eval.execution.metrics import SourceMetrics
-from eval.contracts.eval_spec import ModelRequest, RequestKind
-from eval.chat_benchmarks.WildBench import eval_instruct as wildbench_source
-from eval.chat_benchmarks.MixEval.eval_instruct import MixEvalBenchmark
 from eval.graders.answer_equivalence import JudgeConfig
 from eval.graders.specs import GRADERS
-from eval.sources.common import SourceOptions
-from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints
-from eval.contracts.lm_eval_normalization import sample_from_lm_eval
-
+from eval.runtime import pool as runtime_pool
 from eval.sample_logging import canonicalize_samples
 from eval.serve_eval.local_api import RetryingLocalChatCompletions, RetryingLocalCompletions
+from eval.sources.common import SourceOptions
+from lm_eval.models.api_models import JsonChatStr
+from tests.contracts.source_harness import FixedEndpoint, MemoryCheckpoints
 
 
 class _Clock:
@@ -48,15 +46,43 @@ async def _endpoint(handler):
 
 
 def _adapter(kind, base_url, budget, *, timeout=5, attempt_timeout=None):
+    budget_arg = "" if budget is None else f",transport_retry_budget={budget}"
     attempt_timeout_arg = "" if attempt_timeout is None else f",transport_attempt_timeout={attempt_timeout}"
     model_args = (
         f"model=served,base_url={base_url}/{kind},tokenizer_backend=none,"
-        f"tokenized_requests=False,max_length=4096,timeout={timeout},transport_retry_budget={budget}"
+        f"tokenized_requests=False,max_length=4096,timeout={timeout}{budget_arg}"
         f"{attempt_timeout_arg}"
     )
     if kind == "chat/completions":
         return RetryingLocalChatCompletions.create_from_arg_string(model_args)
     return RetryingLocalCompletions.create_from_arg_string(model_args)
+
+
+@pytest.mark.parametrize("budget,successful", [(None, True), (900, False)])
+def test_local_api_long_attempt_respects_default_budget_and_explicit_override(monkeypatch, budget, successful):
+    async def run():
+        adapter = _adapter("completions", "http://unused.invalid/v1", budget, timeout=1800)
+        loop = asyncio.get_running_loop()
+        original_time = loop.time
+        elapsed = 0
+
+        async def slow_http_call(**_kwargs):
+            nonlocal elapsed
+            elapsed += 1000
+            # Let both the request task and its real deadline callbacks run.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return ["answer"]
+
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "time", lambda: original_time() + elapsed)
+            patch.setattr(adapter, "amodel_call", slow_http_call)
+            return await _generate(adapter, "question")
+
+    [output] = asyncio.run(run())
+    assert (output == "answer") is successful
+    if not successful:
+        assert output.failure_category == "AgentTimeoutError"
 
 
 def _prompt(kind):
@@ -150,7 +176,9 @@ def test_wildbench_excludes_unavailable_http_judgments(monkeypatch, available, b
         payload = await request.json()
         if "blocked-judge" in payload["messages"][0]["content"]:
             if bad_response == "blocked":
-                return web.json_response({"choices": [{"index": 0, "finish_reason": "content_filter: PROHIBITED_CONTENT"}]})
+                return web.json_response(
+                    {"choices": [{"index": 0, "finish_reason": "content_filter: PROHIBITED_CONTENT"}]}
+                )
             content = "not a judgment"
         else:
             content = '{"score": "7"}'
@@ -179,7 +207,9 @@ def test_wildbench_excludes_unavailable_http_judgments(monkeypatch, available, b
 
     assert metrics["score"] == (7.0 if available else None)
     assert metrics["adjusted_score"] == (4.0 if available else None)
-    assert metrics["task_macro_score"] == (pytest.approx(4 / sum(source.config.task_weights.values())) if available else None)
+    assert metrics["task_macro_score"] == (
+        pytest.approx(4 / sum(source.config.task_weights.values())) if available else None
+    )
     assert metrics["task_categorized_scores"] == ({"Math & Data Analysis": 4.0} if available else {})
     assert metrics["num_total"] == 1 + available
     assert metrics["num_judged"] == available

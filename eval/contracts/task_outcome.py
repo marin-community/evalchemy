@@ -43,7 +43,7 @@ class TaskFailure:
 
 @dataclass(frozen=True)
 class TaskOutcome:
-    """Validated terminal outcome for one requested task."""
+    """Task metrics with distinct-problem counts and independently sampled-answer counts."""
 
     task_name: str
     route: TaskRoute
@@ -55,6 +55,9 @@ class TaskOutcome:
     failure: TaskFailure | None = None
     failure_counts: Mapping[FailureCategory, int] = field(default_factory=dict)
     completion_response_summary: Mapping[str, int] = field(default_factory=dict)
+    expected_sample_count: int | None = None
+    generated_sample_count: int | None = None
+    scored_sample_count: int | None = None
     schema_version: Literal[1] = TASK_OUTCOME_SCHEMA_VERSION
 
     @classmethod
@@ -66,7 +69,7 @@ class TaskOutcome:
         message: str,
         *,
         exception: BaseException | None = None,
-    ) -> "TaskOutcome":
+    ) -> TaskOutcome:
         failure_message = message.strip()
         if not failure_message:
             failure_message = type(exception).__name__ if exception is not None else category.value
@@ -99,6 +102,9 @@ class TaskOutcome:
             "failure": asdict(self.failure) if self.failure is not None else None,
             "failure_counts": dict(self.failure_counts),
             "completion_response_summary": dict(self.completion_response_summary),
+            "expected_sample_count": self.expected_sample_count,
+            "generated_sample_count": self.generated_sample_count,
+            "scored_sample_count": self.scored_sample_count,
         }
 
 
@@ -254,6 +260,9 @@ def _task_outcome_from_mapping(task_name: str, value: Any) -> TaskOutcome:
         failure=failure,
         failure_counts=failure_counts,
         completion_response_summary=dict(response_summary),
+        expected_sample_count=_serialized_count(value, "expected_sample_count"),
+        generated_sample_count=_serialized_count(value, "generated_sample_count"),
+        scored_sample_count=_serialized_count(value, "scored_sample_count"),
     )
     if violation := _outcome_contract_violation(outcome):
         raise ValueError(violation.message)
@@ -270,6 +279,13 @@ def _serialized_route(value: Any) -> TaskRoute:
 
 
 def _outcome_contract_violation(outcome: TaskOutcome) -> TaskFailure | None:
+    if outcome.expected_sample_count is not None:
+        generated = outcome.generated_sample_count
+        scored = outcome.scored_sample_count
+        if generated is None or generated > outcome.expected_sample_count:
+            return TaskFailure(FailureCategory.INVALID_RESULT, "generated sample count exceeds requested samples")
+        if scored is not None and scored > generated:
+            return TaskFailure(FailureCategory.INVALID_RESULT, "scored sample count exceeds generated samples")
     if outcome.status is TaskStatus.FAILED:
         if outcome.failure is None:
             return TaskFailure(FailureCategory.INVALID_RESULT, "failed outcome has no failure detail")

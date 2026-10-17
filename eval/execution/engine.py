@@ -4,13 +4,19 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field, replace
 from contextlib import AsyncExitStack
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Protocol
 
 from eval.completion_response import CompletionClassification, CompletionText, FailedGeneration
 from eval.contracts.eval_spec import EvalSpec, Grade, JudgePlan, ModelRequest, RequestKind
-from eval.contracts.failures import FailureCategory, FailurePhase, MalformedJudgeResponse, classify_task_exception
+from eval.contracts.failures import (
+    TRANSPORT_FAILURE_CATEGORIES,
+    FailureCategory,
+    FailurePhase,
+    MalformedJudgeResponse,
+    classify_task_exception,
+)
 from eval.contracts.sample_manifest import SampleEntry, SampleManifest, SampleRequest
 from eval.contracts.sample_results import validate_sample_metrics
 from eval.runtime.checkpoints import Checkpoints, ItemJournal, ResumeStream, completed_operation
@@ -36,6 +42,16 @@ class SampleSink(Protocol):
     def write_sample(self, task_name: str, record: Mapping[str, Any]) -> None: ...
 
     def finish_task(self) -> None: ...
+
+
+async def request_response(backend, request, phase, allow_failed_response):
+    try:
+        return await backend.execute(request)
+    except Exception as error:
+        category = classify_task_exception(phase, error)
+        if allow_failed_response or (phase is FailurePhase.GENERATION and category in TRANSPORT_FAILURE_CATEGORIES):
+            return FailedGeneration(category)
+        raise ItemFailure(phase, error) from error
 
 
 @dataclass
@@ -86,11 +102,13 @@ class Evaluator:
         checkpoints: Mapping[str, Checkpoints] | None = None,
         judges: Mapping[str, ModelBackend] | None = None,
         predict_only: bool = False,
+        extraction_filters: Mapping[str, tuple[str, ...]] | None = None,
     ):
         self.model = model
         self.grade = grade
         self.judges = judges or {}
         self.predict_only = predict_only
+        self.extraction_filters = extraction_filters or {}
         self.sink = sink
         self.pool = ExecutionPool(workers)
         self.io = SerialIO()
@@ -103,19 +121,18 @@ class Evaluator:
         spec, checkpoint = admitted.spec, admitted.checkpoint
         try:
             output = await completed_operation(
-                checkpoint, unit, asdict(replace(request, metadata={})), lambda: backend.execute(request),
+                checkpoint, unit, asdict(replace(request, metadata={})),
+                lambda: request_response(backend, request, phase, allow_failed_response),
                 io=self.io,
                 successful=lambda value: not isinstance(value, FailedGeneration) and not (
                     isinstance(value, CompletionText) and value.response.classification is CompletionClassification.EMPTY
                     and phase is not FailurePhase.GRADING
                 ),
             )
+        except ItemFailure:
+            raise
         except Exception as error:
-            if allow_failed_response:
-                category = classify_task_exception(phase, error)
-                self.failures[spec.task][category] += 1
-                return FailedGeneration(category)
-            raise ItemFailure(phase, error) from error
+            raise ItemFailure(FailurePhase.SERIALIZATION, error) from error
         if isinstance(output, CompletionText) and phase is FailurePhase.GENERATION:
             self.response_summary[spec.task][output.response.classification] += 1
         if isinstance(output, FailedGeneration):
@@ -130,6 +147,10 @@ class Evaluator:
                 "arguments": [(request.prompt, dict(request.generation))],
                 "resps": [[output]], "filtered_resps": [output],
                 "metrics": [], "failure_category": category,
+                "filter_variants": [
+                    {"filter": name, "metrics": {}, "filtered_resps": [output]}
+                    for name in self.extraction_filters.get(spec.grader.name, ("none",))
+                ],
             }, spec.ordinal, admitted.entry))
             raise ItemFailure(phase, RuntimeError(f"{unit['phase']} request exhausted retries"), category)
         return output

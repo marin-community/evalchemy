@@ -15,9 +15,9 @@ from lm_eval.evaluator_utils import _process_results, get_sample_size
 from lm_eval.utils import handle_non_serializable, hash_string
 
 from eval.contracts.eval_spec import EvalSpec, Grade, GraderSpec, ModelRequest, RequestKind, SourceRef
-from eval.execution.grading import Grader
 from eval.execution.engine import ItemResult
 from eval.execution.generation import canonical_generation_kwargs, generation_parameters
+from eval.execution.grading import Grader
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,8 @@ class LMEvalSource:
         return f"lm_eval:{self.task_name}"
 
     def grader(self) -> Grader:
-        return Grader(partial(grade_lm_eval, self.task))
+        return Grader(partial(grade_lm_eval, self.task),
+                      extraction_filters=tuple(pipeline.name for pipeline in self.task._filters))
 
     def __iter__(self) -> Iterator[EvalSpec]:
         task = self.task
@@ -132,8 +133,13 @@ class LMEvalSource:
                 kind = RequestKind(instance.request_type)
                 prompt = instance.args[0]
                 request = ModelRequest(
-                    kind, prompt.messages if isinstance(prompt, ChatInput) else prompt,
-                    generation=generation_parameters(canonical_generation_kwargs(instance.args[1]), overrides) if kind is RequestKind.GENERATE else {},
+                    kind,
+                    prompt.messages if isinstance(prompt, ChatInput) else prompt,
+                    generation=(
+                        generation_parameters(canonical_generation_kwargs(instance.args[1]), overrides)
+                        if kind is RequestKind.GENERATE
+                        else {}
+                    ),
                     continuation=instance.args[1] if kind is RequestKind.LIKELIHOOD else None,
                     chat_template=prompt.settings if isinstance(prompt, ChatInput) else {},
                 )
