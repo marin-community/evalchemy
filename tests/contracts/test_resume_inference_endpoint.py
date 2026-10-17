@@ -29,9 +29,9 @@ class EndpointBackend:
         return f"answer to {request.prompt}"
 
 
-def wiring_args(endpoint, **overrides):
+def wiring_args(endpoint, num_concurrent=16, **overrides):
     values = dict(
-        model_args=f"model=Qwen/Qwen3-8B,revision=abc123,base_url={endpoint}",
+        model_args=f"model=Qwen/Qwen3-8B,revision=abc123,base_url={endpoint},num_concurrent={num_concurrent}",
         model="local-completions", include_path=None, resume_mode="auto",
     )
     return argparse.Namespace(**{**values, **overrides})
@@ -48,9 +48,11 @@ def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path):
     async def grade(spec, responses):
         return Grade({"accuracy": float(responses[0] == spec.target)})
 
-    def run(endpoint, backend):
+    def run(endpoint, backend, num_concurrent):
         with FineStoreOutput(root, "run", ["endpoint"]) as output:
-            factory = build_resume_wiring(wiring_args(endpoint), backend, RunSpec(), store=output.store)
+            factory = build_resume_wiring(
+                wiring_args(endpoint, num_concurrent), backend, RunSpec(), store=output.store,
+            )
             engine = Evaluator(backend, grade, output, workers=1, checkpoints={"endpoint": factory("endpoint")})
 
             async def collect():
@@ -58,10 +60,10 @@ def test_replacement_endpoint_executes_only_unfinished_requests(tmp_path):
 
             return asyncio.run(collect())
 
-    interrupted = run("http://old-server/v1/completions", EndpointBackend(fail_second=True))
+    interrupted = run("http://old-server/v1/completions", EndpointBackend(fail_second=True), 16)
     assert sum(item.error is not None for item in interrupted) == 1
     replacement = EndpointBackend()
-    recovered = run("http://replacement-server/v1/completions", replacement)
+    recovered = run("http://replacement-server/v1/completions", replacement, 32)
     assert replacement.prompts == ["second"]
     assert [item.result.grade.metrics for item in recovered] == [{"accuracy": 1.0}, {"accuracy": 1.0}]
 
