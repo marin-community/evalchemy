@@ -498,5 +498,10 @@ retain their native fields unchanged. FineStore's `evalchemy_resume` table
 stores completed request payloads; retries restore them by default. A completed
 result is preserved on retry. A changed fingerprint raises an
 error. Use a new archive path for an intentional fresh evaluation.
+The inference `base_url` may change when replacing a server, provided it serves
+the same declared model and revision. Model settings, templates, generation
+parameters, judge endpoints, Evalchemy code, and installed dependency versions
+remain part of the fingerprint. This endpoint policy applies to checkpoints
+created with this version; older checkpoints still refuse across the code change.
 When W&B logging is enabled, aggregate metrics are sent to W&B and sample records
 remain in FineStore.
